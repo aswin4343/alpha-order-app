@@ -4,7 +4,7 @@ import { useSearch } from '../hooks/useSearch.js'
 import { useDebounce } from '../hooks/useDebounce.js'
 import CustomerPicker from '../components/CustomerPicker.jsx'
 import BrandSelector from '../components/BrandSelector.jsx'
-import { BackIcon, PlusIcon, CloseIcon, WhatsAppIcon, SearchIcon } from '../components/Icons.jsx'
+import { BackIcon, PlusIcon, CloseIcon, WhatsAppIcon, SearchIcon, CopyIcon } from '../components/Icons.jsx'
 import { buildCreditNoteMessage, buildWhatsappUrl } from '../utils/whatsapp.js'
 
 const REASONS = ['Expired', 'Damaged']
@@ -112,6 +112,7 @@ export default function ReturnsPage({ onBack }) {
   const [lines, setLines] = useState([
     { key: 1, name: '', mrp: '', qty: '', reason: '' }
   ])
+  const [toast, setToast] = useState('')
 
   const update = (key, patch) =>
     setLines((prev) => prev.map((l) => (l.key === key ? { ...l, ...patch } : l)))
@@ -130,15 +131,29 @@ export default function ReturnsPage({ onBack }) {
     [customer, lines]
   )
 
-  const send = () => {
-    if (!valid) return
-    const msg = buildCreditNoteMessage({
+  const message = () =>
+    buildCreditNoteMessage({
       brand: settings.brand,
       customer,
       salesperson: settings.salesperson,
       lines: lines.map((l) => ({ name: l.name, mrp: l.mrp, qty: l.qty, reason: l.reason }))
     })
-    window.open(buildWhatsappUrl(msg), '_blank')
+
+  const send = () => {
+    if (!valid) return
+    window.open(buildWhatsappUrl(message()), '_blank')
+  }
+
+  // Copy lets the rep paste into WhatsApp Business manually.
+  const copy = async () => {
+    if (!valid) return
+    try {
+      await navigator.clipboard.writeText(message())
+      setToast('Credit note copied — paste in WhatsApp Business')
+    } catch {
+      setToast('Copy failed')
+    }
+    setTimeout(() => setToast(''), 2600)
   }
 
   return (
@@ -180,18 +195,36 @@ export default function ReturnsPage({ onBack }) {
 
       <div className="fixed bottom-0 left-0 right-0 z-30">
         <div className="mx-auto max-w-md px-3 pb-3 safe-bottom">
-          <button
-            onClick={send}
-            disabled={!valid}
-            className={`w-full flex items-center justify-center gap-2 rounded-xl py-4 font-bold shadow-pop ${
-              valid ? 'bg-brand-600 text-white active:bg-brand-700' : 'bg-slate-200 text-slate-400'
-            }`}
-          >
-            <WhatsAppIcon className="h-6 w-6" />
-            SEND CREDIT NOTE
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={copy}
+              disabled={!valid}
+              aria-label="Copy credit note"
+              className={`h-[56px] w-[56px] shrink-0 rounded-xl flex items-center justify-center border bg-white shadow-pop ${
+                valid ? 'border-slate-200 text-slate-600 active:bg-slate-50' : 'border-slate-100 text-slate-300'
+              }`}
+            >
+              <CopyIcon className="h-5 w-5" />
+            </button>
+            <button
+              onClick={send}
+              disabled={!valid}
+              className={`flex-1 flex items-center justify-center gap-2 rounded-xl py-4 font-bold shadow-pop ${
+                valid ? 'bg-brand-600 text-white active:bg-brand-700' : 'bg-slate-200 text-slate-400'
+              }`}
+            >
+              <WhatsAppIcon className="h-6 w-6" />
+              SEND CREDIT NOTE
+            </button>
+          </div>
         </div>
       </div>
+
+      {toast && (
+        <div className="fixed bottom-24 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm px-4 py-2.5 rounded-full shadow-pop z-50">
+          {toast}
+        </div>
+      )}
     </div>
   )
 }

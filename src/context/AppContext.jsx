@@ -10,6 +10,8 @@ export const useApp = () => useContext(AppContext)
 
 const SETTINGS_KEY = 'atl_settings_v2'
 const SEEDED_KEY = 'atl_seeded_v2'
+// Customers created in-app whose details have NOT yet been sent with an order.
+const PENDING_INTRO_KEY = 'atl_pending_intro_v2'
 
 const DEFAULT_SETTINGS = {
   businessName: 'Alpha Trade Links',
@@ -28,8 +30,24 @@ function loadSettings() {
   return { ...DEFAULT_SETTINGS }
 }
 
+function loadPendingIntro() {
+  try {
+    const raw = localStorage.getItem(PENDING_INTRO_KEY)
+    if (raw) return new Set(JSON.parse(raw))
+  } catch (e) {
+    /* ignore */
+  }
+  return new Set()
+}
+
+function savePendingIntro(set) {
+  localStorage.setItem(PENDING_INTRO_KEY, JSON.stringify(Array.from(set)))
+}
+
 export function AppProvider({ children }) {
   const [settings, setSettings] = useState(loadSettings)
+  // Set of customer ids awaiting their one-time "NEW CUSTOMER" block.
+  const [pendingIntro, setPendingIntro] = useState(loadPendingIntro)
   const [products, setProducts] = useState([])
   const [customers, setCustomers] = useState([])
   const [ready, setReady] = useState(false)
@@ -100,10 +118,36 @@ export function AppProvider({ children }) {
       const next = [rec, ...customers]
       await bulkPut('customers', next)
       setCustomers(next)
+
+      // Queue this customer's details to ride along with their first order.
+      setPendingIntro((prev) => {
+        const s = new Set(prev)
+        s.add(rec.id)
+        savePendingIntro(s)
+        return s
+      })
       return rec
     },
     [customers]
   )
+
+  /** True only until the customer's first order has been sent. */
+  const isIntroPending = useCallback((id) => pendingIntro.has(id), [pendingIntro])
+
+  /**
+   * Called immediately after an order is dispatched. Persists synchronously to
+   * localStorage so the intro can never be sent twice, even if the app is
+   * closed or reloaded right after sending.
+   */
+  const clearIntro = useCallback((id) => {
+    setPendingIntro((prev) => {
+      if (!prev.has(id)) return prev
+      const s = new Set(prev)
+      s.delete(id)
+      savePendingIntro(s)
+      return s
+    })
+  }, [])
 
   const value = {
     ready,
@@ -114,7 +158,9 @@ export function AppProvider({ children }) {
     categories,
     replaceProducts,
     replaceCustomers,
-    addCustomer
+    addCustomer,
+    isIntroPending,
+    clearIntro
   }
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>

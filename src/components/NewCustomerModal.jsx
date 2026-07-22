@@ -1,14 +1,39 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useCallback } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { CloseIcon } from './Icons.jsx'
+
+/**
+ * IMPORTANT: Field and inputCls are declared at MODULE scope, not inside the
+ * component. If they were re-created on each render, React would treat them as
+ * a new component type every keystroke, unmount the old subtree and mount a
+ * fresh <input> — which drops focus and closes the mobile keyboard.
+ * Keeping them out here means the same input element persists across renders.
+ */
+function Field({ label, required, showError, hint, children }) {
+  return (
+    <div className="mb-3.5">
+      <label className="block text-sm font-medium text-slate-600 mb-1.5">
+        {label} {required && <span className="text-red-500">*</span>}
+      </label>
+      {children}
+      {hint && <p className="text-[11px] text-slate-400 mt-1">{hint}</p>}
+      {showError && <p className="text-[11px] text-red-500 mt-1">This field is required</p>}
+    </div>
+  )
+}
+
+const inputCls = (bad) =>
+  `w-full rounded-xl border px-3 py-3 outline-none text-[15px] ${
+    bad ? 'border-red-300 focus:border-red-500' : 'border-slate-200 focus:border-brand-500'
+  }`
 
 /**
  * Customer Creation Module.
  *
  * Validation:
  *   Name, Area, Route, Category, Phone are required.
- *   GSTN filled  -> Email becomes MANDATORY (Save stays disabled until entered)
- *   GSTN empty   -> Email optional
+ *   GSTN filled -> Email becomes MANDATORY (Save disabled until valid)
+ *   GSTN empty  -> Email optional
  */
 export default function NewCustomerModal({ initialName = '', onClose, onCreated }) {
   const { categories, customers, addCustomer } = useApp()
@@ -25,9 +50,16 @@ export default function NewCustomerModal({ initialName = '', onClose, onCreated 
   const [touched, setTouched] = useState(false)
   const [saving, setSaving] = useState(false)
 
-  const set = (k) => (e) => setF((p) => ({ ...p, [k]: e.target.value }))
+  // Stable updater — does not change identity between renders.
+  const set = useCallback(
+    (key) => (e) => {
+      const { value } = e.target
+      setF((prev) => ({ ...prev, [key]: value }))
+    },
+    []
+  )
 
-  // Existing routes, offered as suggestions so reps stay consistent.
+  // Existing routes offered as suggestions so reps stay consistent.
   const routes = useMemo(() => {
     const s = new Set()
     customers.forEach((c) => c.route && s.add(c.route))
@@ -60,24 +92,6 @@ export default function NewCustomerModal({ initialName = '', onClose, onCreated 
     }
   }
 
-  const Field = ({ label, required, error, children, hint }) => (
-    <div className="mb-3.5">
-      <label className="block text-sm font-medium text-slate-600 mb-1.5">
-        {label} {required && <span className="text-red-500">*</span>}
-      </label>
-      {children}
-      {hint && <p className="text-[11px] text-slate-400 mt-1">{hint}</p>}
-      {touched && error && (
-        <p className="text-[11px] text-red-500 mt-1">This field is required</p>
-      )}
-    </div>
-  )
-
-  const inputCls = (bad) =>
-    `w-full rounded-xl border px-3 py-3 outline-none text-[15px] ${
-      touched && bad ? 'border-red-300 focus:border-red-500' : 'border-slate-200 focus:border-brand-500'
-    }`
-
   return (
     <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center">
       <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl max-h-[92vh] flex flex-col">
@@ -89,21 +103,35 @@ export default function NewCustomerModal({ initialName = '', onClose, onCreated 
         </div>
 
         <div className="overflow-y-auto px-4 py-4 scroll-area">
-          <Field label="Customer Name" required error={errors.name}>
-            <input value={f.name} onChange={set('name')} className={inputCls(errors.name)} placeholder="Shop name" />
+          <Field label="Customer Name" required showError={touched && errors.name}>
+            <input
+              value={f.name}
+              onChange={set('name')}
+              className={inputCls(touched && errors.name)}
+              placeholder="Shop name"
+              autoComplete="off"
+              autoCapitalize="characters"
+            />
           </Field>
 
-          <Field label="Customer Area" required error={errors.area}>
-            <input value={f.area} onChange={set('area')} className={inputCls(errors.area)} placeholder="Area / locality" />
+          <Field label="Customer Area" required showError={touched && errors.area}>
+            <input
+              value={f.area}
+              onChange={set('area')}
+              className={inputCls(touched && errors.area)}
+              placeholder="Area / locality"
+              autoComplete="off"
+            />
           </Field>
 
-          <Field label="Route Name" required error={errors.route}>
+          <Field label="Route Name" required showError={touched && errors.route}>
             <input
               value={f.route}
               onChange={set('route')}
               list="route-list"
-              className={inputCls(errors.route)}
+              className={inputCls(touched && errors.route)}
               placeholder="Route"
+              autoComplete="off"
             />
             <datalist id="route-list">
               {routes.map((r) => (
@@ -112,8 +140,12 @@ export default function NewCustomerModal({ initialName = '', onClose, onCreated 
             </datalist>
           </Field>
 
-          <Field label="Customer Category" required error={errors.category}>
-            <select value={f.category} onChange={set('category')} className={inputCls(errors.category)}>
+          <Field label="Customer Category" required showError={touched && errors.category}>
+            <select
+              value={f.category}
+              onChange={set('category')}
+              className={inputCls(touched && errors.category)}
+            >
               <option value="">Select category</option>
               {categories.map((c) => (
                 <option key={c} value={c}>
@@ -123,14 +155,15 @@ export default function NewCustomerModal({ initialName = '', onClose, onCreated 
             </select>
           </Field>
 
-          <Field label="Phone Number" required error={errors.phone}>
+          <Field label="Phone Number" required showError={touched && errors.phone}>
             <input
               value={f.phone}
               onChange={set('phone')}
               inputMode="numeric"
               maxLength={10}
-              className={inputCls(errors.phone)}
+              className={inputCls(touched && errors.phone)}
               placeholder="10-digit mobile"
+              autoComplete="off"
             />
           </Field>
 
@@ -140,21 +173,25 @@ export default function NewCustomerModal({ initialName = '', onClose, onCreated 
               onChange={set('gstn')}
               className={inputCls(false)}
               placeholder="Optional"
+              autoComplete="off"
+              autoCapitalize="characters"
             />
           </Field>
 
           <Field
             label="Email Address"
             required={emailRequired}
-            error={errors.email}
+            showError={touched && errors.email}
             hint={emailRequired ? 'Email is mandatory because GSTN is entered' : 'Optional'}
           >
             <input
               value={f.email}
               onChange={set('email')}
               type="email"
-              className={inputCls(errors.email)}
+              className={inputCls(touched && errors.email)}
               placeholder={emailRequired ? 'Required with GSTN' : 'Optional'}
+              autoComplete="off"
+              autoCapitalize="none"
             />
           </Field>
         </div>

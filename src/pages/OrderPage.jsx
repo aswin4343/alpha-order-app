@@ -13,7 +13,7 @@ import appIcon from '../assets/app_icon.png'
 const getProductText = (p) => p.name
 
 export default function OrderPage({ onOpenSettings, onOpenReturns }) {
-  const { settings, products } = useApp()
+  const { settings, products, isIntroPending, clearIntro } = useApp()
   const [customer, setCustomer] = useState(null)
   const [query, setQuery] = useState('')
   const [quantities, setQuantities] = useState({}) // { id: qty }
@@ -88,23 +88,31 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
     setCustomer(c)
   }
 
+  // A newly created customer's details ride along with their FIRST order only.
+  const showIntro = !!customer && isIntroPending(customer.id)
+
   const message = () =>
     buildOrderMessage({
       brand: settings.brand,
       customer,
       salesperson: settings.salesperson,
-      items
+      items,
+      isNewCustomer: showIntro
     })
 
   const handleSend = () => {
     if (!canSend) return
     window.open(buildWhatsappUrl(message()), '_blank')
+    // Mark as sent so the intro block never repeats for this customer.
+    if (showIntro) clearIntro(customer.id)
   }
 
   const handleCopy = async () => {
     if (!canSend) return
     try {
       await navigator.clipboard.writeText(message())
+      // Copying counts as sending — otherwise the intro would repeat next time.
+      if (showIntro) clearIntro(customer.id)
       setToast('Order copied — paste in WhatsApp Business')
     } catch {
       setToast('Copy failed')
@@ -122,9 +130,10 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
           <button
             onClick={onOpenReturns}
             aria-label="Customer returns"
-            className="h-10 w-10 rounded-full flex items-center justify-center text-slate-500 active:bg-slate-100"
+            className="flex items-center gap-1 h-10 px-2.5 rounded-lg text-slate-600 border border-slate-200 active:bg-slate-100"
           >
-            <ReturnIcon className="h-6 w-6" />
+            <ReturnIcon className="h-5 w-5" />
+            <span className="text-xs font-semibold">Return</span>
           </button>
           <button
             onClick={onOpenSettings}
@@ -138,6 +147,14 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
 
       <main className="mx-auto max-w-md px-3 pt-3 space-y-3">
         <CustomerPicker selected={customer} onSelect={handleSelectCustomer} />
+
+        {showIntro && (
+          <div className="rounded-xl bg-blue-50 border border-blue-200 px-3 py-2">
+            <p className="text-[12px] text-blue-800 font-medium">
+              🆕 New customer — their details will be included with this first order.
+            </p>
+          </div>
+        )}
 
         <div className="flex items-center gap-2 rounded-2xl bg-white shadow-card border border-slate-100 px-4 sticky top-[52px] z-10">
           <SearchIcon className="h-5 w-5 text-slate-400 shrink-0" />

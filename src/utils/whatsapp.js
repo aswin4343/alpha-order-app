@@ -1,4 +1,4 @@
-import { schemeBadge } from './schemes.js'
+import { calculateScheme } from './schemes.js'
 
 // All orders and credit notes are delivered to this number.
 export const ORDER_WHATSAPP_NUMBER = '919747076361'
@@ -20,7 +20,7 @@ const EQ = '\u2550'.repeat(20)
  * Build the order message in the boxed, easy-to-read layout.
  * items: [{ name, brand, qty, unit, slabs }]
  */
-export function buildOrderMessage({ brand, customer, salesperson, items }) {
+export function buildOrderMessage({ brand, customer, salesperson, items, isNewCustomer = false }) {
   const totalProducts = items.length
   const totalQty = items.reduce((s, i) => s + i.qty, 0)
 
@@ -30,21 +30,45 @@ export function buildOrderMessage({ brand, customer, salesperson, items }) {
   L.push(`\uD83C\uDFE2 *${brand || BRANDS[0]}*`)
   L.push(BOT)
 
-  L.push('*CUSTOMER DETAILS*')
-  L.push(RULE)
-  L.push(`*Customer:* ${customer?.name || '-'}`)
-  if (customer?.category) L.push(`*Category:* ${customer.category}`)
-  if (customer?.route) L.push(`*Route:* ${customer.route}`)
+  // One-time registration block for a newly created customer.
+  // Empty optional fields are omitted entirely.
+  if (isNewCustomer) {
+    L.push('\uD83C\uDD95 *NEW CUSTOMER*')
+    L.push(RULE)
+    L.push(`*Customer Name:* ${customer?.name || '-'}`)
+    if (customer?.phone) L.push(`*Phone:* ${customer.phone}`)
+    if (customer?.gstn) L.push(`*GST:* ${customer.gstn}`)
+    if (customer?.email) L.push(`*Email:* ${customer.email}`)
+    if (customer?.area) L.push(`*Address:* ${customer.area}`)
+    if (customer?.route) L.push(`*Route:* ${customer.route}`)
+    if (customer?.category) L.push(`*Category:* ${customer.category}`)
+    L.push('')
+  }
+
+  // On a first order the details above already cover this, so skip the repeat.
+  if (!isNewCustomer) {
+    L.push('*CUSTOMER DETAILS*')
+    L.push(RULE)
+    L.push(`*Customer:* ${customer?.name || '-'}`)
+    if (customer?.category) L.push(`*Category:* ${customer.category}`)
+    if (customer?.route) L.push(`*Route:* ${customer.route}`)
+  }
 
   L.push('\uD83D\uDCE6 *ORDER ITEMS*')
   L.push(RULE)
   items.forEach((i, idx) => {
     L.push(`${itemNumber(idx)} ${i.name}`)
     const unit = i.unit && i.unit !== 'Piece' ? ` ${i.unit}` : ''
-    let qtyLine = `   \u279C Qty: *${i.qty}*${unit}`
-    const badge = schemeBadge(i.slabs)
-    if (badge) qtyLine += `  |  Scheme: ${badge}`
-    L.push(qtyLine)
+    L.push(`   \u279C Qty: *${i.qty}*${unit}`)
+
+    // Show the scheme ONLY when this quantity actually qualifies for it.
+    // Uses the same slab-selection engine as the app UI.
+    const res = calculateScheme(i.qty, i.slabs)
+    if (res.free > 0 && res.slab) {
+      L.push(
+        `   \uD83C\uDF81 Scheme: Buy ${res.slab.buy} Get ${res.slab.free} Free (*${res.free} Free*)`
+      )
+    }
   })
 
   L.push(RULE)
