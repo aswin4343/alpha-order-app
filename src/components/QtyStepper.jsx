@@ -13,13 +13,13 @@ export default function QtyStepper({ qty, onChange }) {
   const active = qty > 0
 
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex items-center gap-1.5">
       <button
         type="button"
         onClick={dec}
         disabled={qty === 0}
         aria-label="Decrease"
-        className={`h-11 w-11 rounded-xl flex items-center justify-center transition active:scale-95 ${
+        className={`h-10 w-10 rounded-xl flex items-center justify-center transition active:scale-95 ${
           qty === 0
             ? 'bg-slate-100 text-slate-300'
             : 'bg-slate-100 text-slate-700 active:bg-slate-200'
@@ -35,7 +35,7 @@ export default function QtyStepper({ qty, onChange }) {
         placeholder="0"
         onChange={handleType}
         onFocus={(e) => e.target.select()}
-        className={`h-11 w-14 text-center text-lg font-semibold rounded-xl border outline-none ${
+        className={`h-10 w-12 text-center text-lg font-semibold rounded-xl border outline-none ${
           active
             ? 'border-brand-500 text-brand-700 bg-brand-50'
             : 'border-slate-200 text-slate-500 bg-white'
@@ -46,7 +46,7 @@ export default function QtyStepper({ qty, onChange }) {
         type="button"
         onClick={inc}
         aria-label="Increase"
-        className="h-11 w-11 rounded-xl flex items-center justify-center bg-brand-600 text-white active:bg-brand-700 transition active:scale-95"
+        className="h-10 w-10 rounded-xl flex items-center justify-center bg-brand-600 text-white active:bg-brand-700 transition active:scale-95"
       >
         <PlusIcon className="h-5 w-5" />
       </button>

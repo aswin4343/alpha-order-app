@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useApp } from '../context/AppContext.jsx'
-import logo from '../assets/logo.png'
+import appIcon from '../assets/app_icon.png'
 
 // Shown once on first launch to capture business details.
 // The WhatsApp delivery number is fixed in the app, so it is not asked here.
@@ -20,7 +20,7 @@ export default function SetupScreen() {
   return (
     <div className="min-h-screen flex flex-col items-center justify-center px-6 bg-white">
       <div className="w-full max-w-sm">
-        <img src={logo} alt="Alpha Trade Links" className="h-20 object-contain mx-auto mb-6" />
+        <img src={appIcon} alt="Alpha Trade Links" className="h-24 w-24 rounded-3xl object-contain mx-auto mb-6" />
         <h1 className="text-xl font-bold text-slate-800 text-center">Welcome</h1>
         <p className="text-sm text-slate-500 text-center mt-1 mb-8">
           Set up your details to start taking orders.

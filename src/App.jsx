@@ -3,12 +3,12 @@ import { useApp } from './context/AppContext.jsx'
 import SetupScreen from './pages/SetupScreen.jsx'
 import OrderPage from './pages/OrderPage.jsx'
 import SettingsPage from './pages/SettingsPage.jsx'
+import ReturnsPage from './pages/ReturnsPage.jsx'
 
 export default function App() {
   const { ready, settings } = useApp()
-  const [route, setRoute] = useState('order') // 'order' | 'settings'
+  const [route, setRoute] = useState('order') // 'order' | 'settings' | 'returns'
 
-  // Simple splash while IndexedDB seeds/loads.
   if (!ready) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-white">
@@ -17,14 +17,14 @@ export default function App() {
     )
   }
 
-  // First launch: capture business details.
-  if (!settings.configured) {
-    return <SetupScreen />
-  }
+  if (!settings.configured) return <SetupScreen />
+  if (route === 'settings') return <SettingsPage onBack={() => setRoute('order')} />
+  if (route === 'returns') return <ReturnsPage onBack={() => setRoute('order')} />
 
-  if (route === 'settings') {
-    return <SettingsPage onBack={() => setRoute('order')} />
-  }
-
-  return <OrderPage onOpenSettings={() => setRoute('settings')} />
+  return (
+    <OrderPage
+      onOpenSettings={() => setRoute('settings')}
+      onOpenReturns={() => setRoute('returns')}
+    />
+  )
 }

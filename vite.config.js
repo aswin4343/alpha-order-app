@@ -10,8 +10,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'logo.png'],
       manifest: {
-        name: 'Alpha Trade Links Order',
-        short_name: 'ATL Order',
+        name: 'Alpha Trade Links Booking',
+        short_name: 'ATL Booking',
         description: 'Fast WhatsApp order generator for FMCG sales reps',
         theme_color: '#059669',
         background_color: '#ffffff',

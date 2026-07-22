@@ -1,26 +1,26 @@
-import { useState, useMemo, useCallback, useRef, useEffect } from 'react'
+import { useState, useMemo, useCallback } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { useSearch } from '../hooks/useSearch.js'
 import { useDebounce } from '../hooks/useDebounce.js'
 import CustomerPicker from '../components/CustomerPicker.jsx'
 import ProductCard from '../components/ProductCard.jsx'
 import OrderSummaryBar from '../components/OrderSummaryBar.jsx'
-import { SearchIcon, CloseIcon, SettingsIcon } from '../components/Icons.jsx'
+import BrandSelector from '../components/BrandSelector.jsx'
+import { SearchIcon, CloseIcon, SettingsIcon, ReturnIcon } from '../components/Icons.jsx'
 import { buildOrderMessage, buildWhatsappUrl } from '../utils/whatsapp.js'
-import logo from '../assets/logo.png'
+import appIcon from '../assets/app_icon.png'
 
 const getProductText = (p) => p.name
 
-export default function OrderPage({ onOpenSettings }) {
+export default function OrderPage({ onOpenSettings, onOpenReturns }) {
   const { settings, products } = useApp()
   const [customer, setCustomer] = useState(null)
   const [query, setQuery] = useState('')
-  // quantities: { [productId]: number }
-  const [quantities, setQuantities] = useState({})
+  const [quantities, setQuantities] = useState({}) // { id: qty }
+  const [units, setUnits] = useState({}) // { id: 'Piece'|'Box' }
+  const [toast, setToast] = useState('')
 
   const debounced = useDebounce(query, 120)
-
-  // When not searching, show selected items first, then a slice of the catalog.
   const searching = debounced.trim().length > 0
   const searchResults = useSearch(products, debounced, getProductText, 80)
 
@@ -30,15 +30,12 @@ export default function OrderPage({ onOpenSettings }) {
     return m
   }, [products])
 
-  // The list to render: search results when searching, otherwise
-  // selected products + a bounded portion of the catalogue.
   const visibleProducts = useMemo(() => {
     if (searching) return searchResults
-    const selectedIds = Object.keys(quantities).filter((id) => quantities[id] > 0)
-    const selected = selectedIds.map((id) => productMap.get(id)).filter(Boolean)
-    const selectedSet = new Set(selectedIds)
-    const rest = products.filter((p) => !selectedSet.has(p.id)).slice(0, 60)
-    return [...selected, ...rest]
+    const ids = Object.keys(quantities).filter((id) => quantities[id] > 0)
+    const chosen = ids.map((id) => productMap.get(id)).filter(Boolean)
+    const set = new Set(ids)
+    return [...chosen, ...products.filter((p) => !set.has(p.id)).slice(0, 50)]
   }, [searching, searchResults, quantities, productMap, products])
 
   const onQty = useCallback((id, val) => {
@@ -50,37 +47,85 @@ export default function OrderPage({ onOpenSettings }) {
     })
   }, [])
 
-  const selectedItems = useMemo(
+  const onUnit = useCallback((id, val) => {
+    setUnits((prev) => ({ ...prev, [id]: val }))
+  }, [])
+
+  const items = useMemo(
     () =>
       Object.keys(quantities)
-        .map((id) => ({ id, qty: quantities[id], name: productMap.get(id)?.name }))
-        .filter((i) => i.name && i.qty > 0),
-    [quantities, productMap]
+        .map((id) => {
+          const p = productMap.get(id)
+          if (!p) return null
+          return {
+            id,
+            name: p.name,
+            qty: quantities[id],
+            unit: units[id] || 'Piece',
+            slabs: p.slabs
+          }
+        })
+        .filter(Boolean),
+    [quantities, units, productMap]
   )
 
-  const totalQty = selectedItems.reduce((s, i) => s + i.qty, 0)
-  const canSend = customer && selectedItems.length > 0
+  const totalQty = items.reduce((s, i) => s + i.qty, 0)
+  const canSend = customer && items.length > 0
+
+  /**
+   * Changing customer clears the in-progress order so items never carry
+   * over to the next shop. Confirm first if there is unsent work.
+   */
+  const handleSelectCustomer = (c) => {
+    if (customer && c?.id !== customer.id && items.length > 0) {
+      const ok = window.confirm(
+        `Switching customer will clear ${items.length} item(s) from this order. Continue?`
+      )
+      if (!ok) return
+    }
+    setQuantities({})
+    setUnits({})
+    setCustomer(c)
+  }
+
+  const message = () =>
+    buildOrderMessage({
+      brand: settings.brand,
+      customer,
+      salesperson: settings.salesperson,
+      items
+    })
 
   const handleSend = () => {
     if (!canSend) return
-    const message = buildOrderMessage({
-      businessName: settings.businessName,
-      salesperson: settings.salesperson,
-      customerName: customer.name,
-      selectedItems
-    })
-    const url = buildWhatsappUrl(message)
-    window.open(url, '_blank')
+    window.open(buildWhatsappUrl(message()), '_blank')
+  }
+
+  const handleCopy = async () => {
+    if (!canSend) return
+    try {
+      await navigator.clipboard.writeText(message())
+      setToast('Order copied — paste in WhatsApp Business')
+    } catch {
+      setToast('Copy failed')
+    }
+    setTimeout(() => setToast(''), 2600)
   }
 
   return (
-    <div className="min-h-screen bg-slate-50 pb-40">
-      {/* Header */}
+    <div className="min-h-screen bg-slate-50 pb-44">
       <header className="sticky top-0 z-20 bg-white/95 backdrop-blur border-b border-slate-100 safe-top">
-        <div className="mx-auto max-w-md px-4 py-2.5 flex items-center justify-between">
-          <div className="flex items-center gap-2 min-w-0">
-            <img src={logo} alt="ATL" className="h-8 object-contain" />
-          </div>
+        <div className="mx-auto max-w-md px-3 py-2 flex items-center gap-2">
+          <img src={appIcon} alt="" className="h-8 w-8 rounded-lg object-contain" />
+          <BrandSelector />
+          <div className="flex-1" />
+          <button
+            onClick={onOpenReturns}
+            aria-label="Customer returns"
+            className="h-10 w-10 rounded-full flex items-center justify-center text-slate-500 active:bg-slate-100"
+          >
+            <ReturnIcon className="h-6 w-6" />
+          </button>
           <button
             onClick={onOpenSettings}
             aria-label="Settings"
@@ -92,11 +137,9 @@ export default function OrderPage({ onOpenSettings }) {
       </header>
 
       <main className="mx-auto max-w-md px-3 pt-3 space-y-3">
-        {/* Step 1: Customer */}
-        <CustomerPicker selected={customer} onSelect={setCustomer} />
+        <CustomerPicker selected={customer} onSelect={handleSelectCustomer} />
 
-        {/* Step 2: Product search */}
-        <div className="flex items-center gap-2 rounded-2xl bg-white shadow-card border border-slate-100 px-4 sticky top-[57px] z-10">
+        <div className="flex items-center gap-2 rounded-2xl bg-white shadow-card border border-slate-100 px-4 sticky top-[52px] z-10">
           <SearchIcon className="h-5 w-5 text-slate-400 shrink-0" />
           <input
             value={query}
@@ -105,21 +148,28 @@ export default function OrderPage({ onOpenSettings }) {
             className="flex-1 py-3.5 text-[15px] outline-none placeholder:text-slate-400"
           />
           {query && (
-            <button onClick={() => setQuery('')} className="text-slate-400 p-1">
+            <button onClick={() => setQuery('')} className="text-slate-400 p-1" aria-label="Clear">
               <CloseIcon className="h-5 w-5" />
             </button>
           )}
         </div>
 
-        {/* Step 3: Product cards */}
         <div className="space-y-2.5">
-          {!searching && selectedItems.length > 0 && (
+          {!searching && items.length > 0 && (
             <p className="text-xs font-semibold text-brand-600 px-1 pt-1">
-              SELECTED ({selectedItems.length})
+              SELECTED ({items.length})
             </p>
           )}
+
           {visibleProducts.map((p) => (
-            <ProductCard key={p.id} product={p} qty={quantities[p.id] || 0} onQty={onQty} />
+            <ProductCard
+              key={p.id}
+              product={p}
+              qty={quantities[p.id] || 0}
+              unit={units[p.id] || 'Piece'}
+              onQty={onQty}
+              onUnit={onUnit}
+            />
           ))}
 
           {searching && searchResults.length === 0 && (
@@ -138,11 +188,18 @@ export default function OrderPage({ onOpenSettings }) {
 
       <OrderSummaryBar
         customer={customer}
-        productCount={selectedItems.length}
+        productCount={items.length}
         totalQty={totalQty}
         disabled={!canSend}
         onSend={handleSend}
+        onCopy={handleCopy}
       />
+
+      {toast && (
+        <div className="fixed bottom-44 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm px-4 py-2.5 rounded-full shadow-pop z-50">
+          {toast}
+        </div>
+      )}
     </div>
   )
 }
