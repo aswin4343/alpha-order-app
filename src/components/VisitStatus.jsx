@@ -1,19 +1,23 @@
 import { useState } from 'react'
+import { CopyIcon } from './Icons.jsx'
 
-export const VISIT_STATUSES = [
-  'Stock Available, No Order',
-  'Owner Not Available, No Order',
-  'Shop Closed, No Order',
-  'Next Visit, No Order',
-  'Others'
+// Reasons requested for the "Visited - No Order" documentation.
+export const VISIT_REASONS = [
+  'Shop Closed',
+  'No Requirement',
+  'Out of Stock',
+  'Owner Not Available',
+  'Already Purchased',
+  'Payment Pending',
+  'Other'
 ]
 
 /**
- * Visit Status selector shown under the customer.
- * When a "No Order" reason is chosen, the order becomes a recorded visit
- * instead of a product order. "Others" reveals a free-text remark.
+ * "Visited - No Order" panel. The rep picks a reason, then either:
+ *   - Copy: copies the SHOP VISIT UPDATE text to paste anywhere, or
+ *   - Save Visit (bottom bar): records it + sends via WhatsApp.
  */
-export default function VisitStatus({ value, remark, onChange, onRemark }) {
+export default function VisitStatus({ value, remark, onChange, onRemark, onCopy }) {
   const [open, setOpen] = useState(false)
   const active = !!value
 
@@ -28,7 +32,7 @@ export default function VisitStatus({ value, remark, onChange, onRemark }) {
         className="w-full flex items-center justify-between"
       >
         <span className="text-sm font-medium text-slate-700">
-          {active ? '📍 No-Order Visit' : 'Mark as visit (no order)'}
+          {active ? '📍 Visited - No Order' : 'Mark as visit (no order)'}
         </span>
         <span className="text-xs text-brand-600 font-semibold">
           {active ? 'Change' : open ? 'Close' : 'Select'}
@@ -36,21 +40,21 @@ export default function VisitStatus({ value, remark, onChange, onRemark }) {
       </button>
 
       {active && (
-        <p className="text-[13px] text-amber-700 mt-1.5 font-medium">{value}</p>
-      )}
-      {active && value === 'Others' && remark && (
-        <p className="text-xs text-slate-500 mt-0.5">“{remark}”</p>
+        <p className="text-[13px] text-amber-700 mt-1.5 font-medium">
+          Reason: {value}
+          {value === 'Other' && remark ? ` — ${remark}` : ''}
+        </p>
       )}
 
       {open && (
         <div className="mt-2 space-y-1.5">
-          {VISIT_STATUSES.map((s) => (
+          {VISIT_REASONS.map((s) => (
             <button
               key={s}
               onClick={() => {
                 onChange(value === s ? '' : s)
-                if (s !== 'Others') onRemark('')
-                if (s !== 'Others') setOpen(false)
+                if (s !== 'Other') onRemark('')
+                if (s !== 'Other') setOpen(false)
               }}
               className={`w-full text-left px-3 py-2.5 rounded-xl text-sm border ${
                 value === s
@@ -62,7 +66,7 @@ export default function VisitStatus({ value, remark, onChange, onRemark }) {
             </button>
           ))}
 
-          {value === 'Others' && (
+          {value === 'Other' && (
             <input
               value={remark}
               onChange={(e) => onRemark(e.target.value)}
@@ -71,20 +75,17 @@ export default function VisitStatus({ value, remark, onChange, onRemark }) {
               className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-brand-500"
             />
           )}
-
-          {active && (
-            <button
-              onClick={() => {
-                onChange('')
-                onRemark('')
-                setOpen(false)
-              }}
-              className="w-full text-center py-2 text-sm text-slate-500 font-medium"
-            >
-              Clear visit status
-            </button>
-          )}
         </div>
+      )}
+
+      {/* Copy button — available as soon as a reason is chosen. */}
+      {active && (
+        <button
+          onClick={onCopy}
+          className="mt-2.5 w-full flex items-center justify-center gap-2 rounded-xl border border-slate-200 py-2.5 text-sm font-semibold text-slate-700 active:bg-slate-50"
+        >
+          <CopyIcon className="h-4 w-4" /> Copy Visit Message
+        </button>
       )}
     </div>
   )

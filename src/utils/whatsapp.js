@@ -20,6 +20,13 @@ const EQ = '\u2550'.repeat(20)
  * Build the order message in the boxed, easy-to-read layout.
  * items: [{ name, brand, qty, unit, slabs }]
  */
+// Map a customer's saved Credit Days into the order's payment terms line.
+function creditTerms(customer) {
+  const cd = customer?.creditDays
+  if (!cd || cd === 'No Credit') return 'Cash'
+  return `${cd} Credit`
+}
+
 export function buildOrderMessage({ brand, customer, salesperson, items, isNewCustomer = false }) {
   const totalProducts = items.length
   const totalQty = items.reduce((s, i) => s + i.qty, 0)
@@ -42,6 +49,7 @@ export function buildOrderMessage({ brand, customer, salesperson, items, isNewCu
     if (customer?.area) L.push(`*Address:* ${customer.area}`)
     if (customer?.route) L.push(`*Route:* ${customer.route}`)
     if (customer?.category) L.push(`*Category:* ${customer.category}`)
+    L.push(`*Credit Terms:* ${creditTerms(customer)}`)
     L.push('')
   }
 
@@ -52,6 +60,7 @@ export function buildOrderMessage({ brand, customer, salesperson, items, isNewCu
     L.push(`*Customer:* ${customer?.name || '-'}`)
     if (customer?.category) L.push(`*Category:* ${customer.category}`)
     if (customer?.route) L.push(`*Route:* ${customer.route}`)
+    L.push(`*Credit Terms:* ${creditTerms(customer)}`)
   }
 
   L.push('\uD83D\uDCE6 *ORDER ITEMS*')
@@ -152,6 +161,30 @@ export function buildVisitMessage({ brand, customer, salesperson, visit }) {
   L.push(EQ)
   L.push('\u2705 Visit recorded.')
   L.push(EQ)
+  return L.join('\n')
+}
+
+/**
+ * Plain "SHOP VISIT UPDATE" text for the Copy button. Uses the exact
+ * layout requested for quick pasting into WhatsApp or any app.
+ */
+export function buildVisitCopyText({ customer, salesperson, reason }) {
+  const d = new Date()
+  const dd = String(d.getDate()).padStart(2, '0')
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const yyyy = d.getFullYear()
+  const L = []
+  L.push('\uD83D\uDCCD SHOP VISIT UPDATE')
+  L.push('')
+  L.push(`Customer: ${customer?.name || ''}`)
+  L.push(`Route: ${customer?.route || ''}`)
+  L.push(`Date: ${dd}-${mm}-${yyyy}`)
+  L.push('')
+  L.push('Status: Visited - No Order')
+  L.push('')
+  L.push(`Reason: ${reason || '____________________'}`)
+  L.push('')
+  L.push(`Sales Executive: ${salesperson || '____________________'}`)
   return L.join('\n')
 }
 

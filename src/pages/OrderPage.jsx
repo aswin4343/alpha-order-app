@@ -7,7 +7,7 @@ import ProductCard from '../components/ProductCard.jsx'
 import OrderSummaryBar from '../components/OrderSummaryBar.jsx'
 import BrandSelector from '../components/BrandSelector.jsx'
 import { SearchIcon, CloseIcon, SettingsIcon, ReturnIcon } from '../components/Icons.jsx'
-import { buildOrderMessage, buildVisitMessage, buildWhatsappUrl } from '../utils/whatsapp.js'
+import { buildOrderMessage, buildVisitMessage, buildVisitCopyText, buildWhatsappUrl } from '../utils/whatsapp.js'
 import VisitStatus from '../components/VisitStatus.jsx'
 import appIcon from '../assets/app_icon.png'
 
@@ -75,7 +75,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
   const totalQty = items.reduce((s, i) => s + i.qty, 0)
   const isVisit = !!visitStatus
   // "Others" needs a remark before it can be saved.
-  const visitReady = isVisit && (visitStatus !== 'Others' || visitRemark.trim().length > 0)
+  const visitReady = isVisit && (visitStatus !== 'Other' || visitRemark.trim().length > 0)
   const canSend = customer && items.length > 0
 
   /**
@@ -127,7 +127,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
       route: customer.route,
       salesperson: settings.salesperson,
       visit_status: visitStatus,
-      custom_remark: visitStatus === 'Others' ? visitRemark.trim() : '',
+      custom_remark: visitStatus === 'Other' ? visitRemark.trim() : '',
       ...loc
     }
     await saveVisit(visit)
@@ -143,6 +143,22 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
     setVisitRemark('')
     setCustomer(null)
     setToast('Visit recorded')
+    setTimeout(() => setToast(''), 2600)
+  }
+
+  const handleCopyVisit = async () => {
+    if (!customer || !visitReady) return
+    const text = buildVisitCopyText({
+      customer,
+      salesperson: settings.salesperson,
+      reason: visitStatus === 'Other' ? (visitRemark.trim() || 'Other') : visitStatus
+    })
+    try {
+      await navigator.clipboard.writeText(text)
+      setToast('Visit message copied')
+    } catch {
+      setToast('Copy failed')
+    }
     setTimeout(() => setToast(''), 2600)
   }
 
@@ -207,6 +223,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
             remark={visitRemark}
             onChange={setVisitStatus}
             onRemark={setVisitRemark}
+            onCopy={handleCopyVisit}
           />
         )}
 
