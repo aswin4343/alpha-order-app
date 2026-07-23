@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useState, useCallback } from 'react'
-import { bulkPut, getAll, count } from '../utils/db.js'
+import { bulkPut, getAll, count, addRecord } from '../utils/db.js'
 import seedProducts from '../data/products.json'
 import seedCustomers from '../data/customers.json'
 import categories from '../data/categories.json'
@@ -65,9 +65,11 @@ export function AppProvider({ children }) {
           localStorage.setItem(SEEDED_KEY, '1')
         }
         const [p, c] = await Promise.all([getAll('products'), getAll('customers')])
+        // Backward compatibility: existing customers get a default credit term.
+        const cFixed = c.map((x) => (x.creditDays ? x : { ...x, creditDays: 'No Credit' }))
         if (!cancelled) {
           setProducts(p)
-          setCustomers(c)
+          setCustomers(cFixed)
           setReady(true)
         }
       } catch (e) {
@@ -111,6 +113,7 @@ export function AppProvider({ children }) {
         area: (data.area || '').trim(),
         route: (data.route || '').trim(),
         category: data.category || '',
+        creditDays: data.creditDays || 'No Credit',
         gstn: (data.gstn || '').trim(),
         phone: (data.phone || '').trim(),
         email: (data.email || '').trim()
@@ -139,6 +142,36 @@ export function AppProvider({ children }) {
    * localStorage so the intro can never be sent twice, even if the app is
    * closed or reloaded right after sending.
    */
+  // Edit an existing customer (e.g. change Credit Days). Any rep may do this
+  // for now; role restriction arrives with V3 admin.
+  const updateCustomer = useCallback(
+    async (id, patch) => {
+      const next = customers.map((c) => (c.id === id ? { ...c, ...patch } : c))
+      await bulkPut('customers', next)
+      setCustomers(next)
+    },
+    [customers]
+  )
+
+  // Save a no-order customer visit locally. sales_rep_id is null until V3 login.
+  const saveVisit = useCallback(async (visit) => {
+    const rec = {
+      id: `v_${Date.now()}`,
+      customer_id: visit.customer_id,
+      customer_name: visit.customer_name,
+      route: visit.route || '',
+      sales_rep_id: null, // assigned in V3 when reps have identities
+      salesperson: visit.salesperson || '',
+      visit_status: visit.visit_status,
+      custom_remark: visit.custom_remark || '',
+      latitude: visit.latitude ?? null,
+      longitude: visit.longitude ?? null,
+      created_at: new Date().toISOString()
+    }
+    await addRecord('visits', rec)
+    return rec
+  }, [])
+
   const clearIntro = useCallback((id) => {
     setPendingIntro((prev) => {
       if (!prev.has(id)) return prev
@@ -159,6 +192,8 @@ export function AppProvider({ children }) {
     replaceProducts,
     replaceCustomers,
     addCustomer,
+    updateCustomer,
+    saveVisit,
     isIntroPending,
     clearIntro
   }

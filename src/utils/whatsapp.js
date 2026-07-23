@@ -121,6 +121,40 @@ export function buildCreditNoteMessage({ brand, customer, salesperson, lines }) 
   return L.join('\n')
 }
 
+/**
+ * Build the no-order visit report message.
+ * visit: { visit_status, custom_remark, latitude, longitude }
+ */
+export function buildVisitMessage({ brand, customer, salesperson, visit }) {
+  const L = []
+  L.push(TOP)
+  L.push('\uD83D\uDCCD  *CUSTOMER VISIT - NO ORDER*')
+  L.push(`\uD83C\uDFE2 *${brand || BRANDS[0]}*`)
+  L.push(BOT)
+  L.push('*CUSTOMER DETAILS*')
+  L.push(RULE)
+  L.push(`*Customer:* ${customer?.name || '-'}`)
+  if (customer?.category) L.push(`*Category:* ${customer.category}`)
+  if (customer?.route) L.push(`*Route:* ${customer.route}`)
+  L.push('\uD83D\uDCDD *VISIT STATUS*')
+  L.push(RULE)
+  L.push(`*Status:* ${visit.visit_status}`)
+  if (visit.custom_remark) L.push(`*Remark:* ${visit.custom_remark}`)
+  if (visit.latitude != null && visit.longitude != null) {
+    L.push(`*Location:* https://maps.google.com/?q=${visit.latitude},${visit.longitude}`)
+  }
+  const now = new Date()
+  L.push(`*Time:* ${now.toLocaleString('en-IN')}`)
+  if (salesperson) {
+    L.push('')
+    L.push(`\uD83D\uDC68\u200D\uD83D\uDCBC *Salesperson:* ${salesperson}`)
+  }
+  L.push(EQ)
+  L.push('\u2705 Visit recorded.')
+  L.push(EQ)
+  return L.join('\n')
+}
+
 export function buildWhatsappUrl(message, number = ORDER_WHATSAPP_NUMBER) {
   return `https://wa.me/${number}?text=${encodeURIComponent(message)}`
 }

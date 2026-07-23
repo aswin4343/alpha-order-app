@@ -2,8 +2,8 @@
 // Stores large datasets: products & customers. Settings live in localStorage.
 
 const DB_NAME = 'atl_order_db'
-const DB_VERSION = 1
-const STORES = ['products', 'customers']
+const DB_VERSION = 2
+const STORES = ['products', 'customers', 'visits']
 
 let dbPromise = null
 
@@ -71,4 +71,14 @@ export async function clearStore(store) {
 
 export async function clearAllStores() {
   await Promise.all(STORES.map((s) => clearStore(s)))
+}
+
+// Append a single visit record (local-only until V3 cloud sync).
+export async function addRecord(store, record) {
+  const os = await tx(store, 'readwrite')
+  return new Promise((resolve, reject) => {
+    const req = os.put(record)
+    req.onsuccess = () => resolve(record)
+    req.onerror = () => reject(req.error)
+  })
 }

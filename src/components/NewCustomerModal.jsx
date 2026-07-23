@@ -22,6 +22,8 @@ function Field({ label, required, showError, hint, children }) {
   )
 }
 
+export const CREDIT_DAYS_OPTIONS = ['No Credit', '7 Days', '10 Days', '15 Days', '21 Days', '30 Days']
+
 const inputCls = (bad) =>
   `w-full rounded-xl border px-3 py-3 outline-none text-[15px] ${
     bad ? 'border-red-300 focus:border-red-500' : 'border-slate-200 focus:border-brand-500'
@@ -43,6 +45,7 @@ export default function NewCustomerModal({ initialName = '', onClose, onCreated 
     area: '',
     route: '',
     category: '',
+    creditDays: 'No Credit',
     gstn: '',
     phone: '',
     email: ''
@@ -148,6 +151,16 @@ export default function NewCustomerModal({ initialName = '', onClose, onCreated 
             >
               <option value="">Select category</option>
               {categories.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <Field label="Credit Days">
+            <select value={f.creditDays} onChange={set('creditDays')} className={inputCls(false)}>
+              {CREDIT_DAYS_OPTIONS.map((c) => (
                 <option key={c} value={c}>
                   {c}
                 </option>

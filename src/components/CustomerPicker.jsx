@@ -4,6 +4,7 @@ import { useSearch } from '../hooks/useSearch.js'
 import { useDebounce } from '../hooks/useDebounce.js'
 import { SearchIcon, CloseIcon, CheckIcon, PlusIcon } from './Icons.jsx'
 import NewCustomerModal from './NewCustomerModal.jsx'
+import EditCustomerModal from './EditCustomerModal.jsx'
 
 const getCustomerText = (c) => `${c.name} ${c.route || ''} ${c.area || ''}`
 
@@ -12,6 +13,7 @@ export default function CustomerPicker({ selected, onSelect }) {
   const [query, setQuery] = useState('')
   const [open, setOpen] = useState(false)
   const [showNew, setShowNew] = useState(false)
+  const [showEdit, setShowEdit] = useState(false)
 
   const debounced = useDebounce(query, 100)
   const results = useSearch(customers, debounced, getCustomerText, 40)
@@ -28,6 +30,7 @@ export default function CustomerPicker({ selected, onSelect }) {
   // Collapsed: show the chosen customer with route.
   if (selected && !open) {
     return (
+      <>
       <div className="flex items-center gap-3 rounded-2xl bg-white shadow-card px-4 py-3 border border-brand-500">
         <div className="h-9 w-9 rounded-full bg-brand-100 text-brand-700 flex items-center justify-center shrink-0">
           <CheckIcon className="h-5 w-5" />
@@ -37,14 +40,48 @@ export default function CustomerPicker({ selected, onSelect }) {
           {selected.route && (
             <p className="text-xs text-slate-400 truncate">{selected.route}</p>
           )}
+          <div className="flex flex-wrap gap-1 mt-1">
+            {selected.category && (
+              <span className="text-[10px] text-slate-500 bg-slate-100 px-1.5 py-0.5 rounded">
+                {selected.category}
+              </span>
+            )}
+            <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+              selected.creditDays && selected.creditDays !== 'No Credit'
+                ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                : 'bg-slate-100 text-slate-500'
+            }`}>
+              Credit: {selected.creditDays || 'No Credit'}
+            </span>
+          </div>
         </div>
-        <button
-          onClick={() => setOpen(true)}
-          className="text-sm font-semibold text-brand-600 px-3 py-1.5 rounded-lg active:bg-brand-50"
-        >
-          Change
-        </button>
+        <div className="flex flex-col gap-1 shrink-0">
+          <button
+            onClick={() => setOpen(true)}
+            className="text-sm font-semibold text-brand-600 px-3 py-1.5 rounded-lg active:bg-brand-50"
+          >
+            Change
+          </button>
+          <button
+            onClick={() => setShowEdit(true)}
+            className="text-xs font-medium text-slate-500 px-3 py-1 rounded-lg active:bg-slate-100"
+          >
+            Edit
+          </button>
+        </div>
       </div>
+
+      {showEdit && (
+        <EditCustomerModal
+          customer={selected}
+          onClose={() => setShowEdit(false)}
+          onSaved={(rec) => {
+            setShowEdit(false)
+            onSelect(rec)
+          }}
+        />
+      )}
+      </>
     )
   }
 

@@ -7,7 +7,10 @@ export default function OrderSummaryBar({
   totalQty,
   disabled,
   onSend,
-  onCopy
+  onCopy,
+  isVisit = false,
+  visitReady = false,
+  onSaveVisit
 }) {
   return (
     <div className="fixed bottom-0 left-0 right-0 z-30">
@@ -35,33 +38,48 @@ export default function OrderSummaryBar({
             </div>
           </div>
 
-          <div className="flex gap-2">
+          {isVisit ? (
             <button
-              onClick={onCopy}
-              disabled={disabled}
-              aria-label="Copy order"
-              className={`h-[52px] w-[52px] shrink-0 rounded-xl flex items-center justify-center border ${
-                disabled
-                  ? 'border-slate-100 text-slate-300'
-                  : 'border-slate-200 text-slate-600 active:bg-slate-50'
-              }`}
-            >
-              <CopyIcon className="h-5 w-5" />
-            </button>
-
-            <button
-              onClick={onSend}
-              disabled={disabled}
-              className={`flex-1 flex items-center justify-center gap-2 rounded-xl py-4 text-base font-bold transition active:scale-[0.99] ${
-                disabled
-                  ? 'bg-slate-100 text-slate-400'
-                  : 'bg-brand-600 text-white active:bg-brand-700 shadow-lg shadow-brand-600/20'
+              onClick={onSaveVisit}
+              disabled={!visitReady}
+              className={`w-full flex items-center justify-center gap-2 rounded-xl py-4 text-base font-bold transition active:scale-[0.99] ${
+                visitReady
+                  ? 'bg-amber-500 text-white active:bg-amber-600 shadow-lg shadow-amber-500/20'
+                  : 'bg-slate-100 text-slate-400'
               }`}
             >
               <WhatsAppIcon className="h-6 w-6" />
-              SEND ORDER
+              SAVE VISIT (NO ORDER)
             </button>
-          </div>
+          ) : (
+            <div className="flex gap-2">
+              <button
+                onClick={onCopy}
+                disabled={disabled}
+                aria-label="Copy order"
+                className={`h-[52px] w-[52px] shrink-0 rounded-xl flex items-center justify-center border ${
+                  disabled
+                    ? 'border-slate-100 text-slate-300'
+                    : 'border-slate-200 text-slate-600 active:bg-slate-50'
+                }`}
+              >
+                <CopyIcon className="h-5 w-5" />
+              </button>
+
+              <button
+                onClick={onSend}
+                disabled={disabled}
+                className={`flex-1 flex items-center justify-center gap-2 rounded-xl py-4 text-base font-bold transition active:scale-[0.99] ${
+                  disabled
+                    ? 'bg-slate-100 text-slate-400'
+                    : 'bg-brand-600 text-white active:bg-brand-700 shadow-lg shadow-brand-600/20'
+                }`}
+              >
+                <WhatsAppIcon className="h-6 w-6" />
+                SEND ORDER
+              </button>
+            </div>
+          )}
         </div>
       </div>
     </div>

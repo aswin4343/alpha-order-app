@@ -7,18 +7,21 @@ import ProductCard from '../components/ProductCard.jsx'
 import OrderSummaryBar from '../components/OrderSummaryBar.jsx'
 import BrandSelector from '../components/BrandSelector.jsx'
 import { SearchIcon, CloseIcon, SettingsIcon, ReturnIcon } from '../components/Icons.jsx'
-import { buildOrderMessage, buildWhatsappUrl } from '../utils/whatsapp.js'
+import { buildOrderMessage, buildVisitMessage, buildWhatsappUrl } from '../utils/whatsapp.js'
+import VisitStatus from '../components/VisitStatus.jsx'
 import appIcon from '../assets/app_icon.png'
 
 const getProductText = (p) => p.name
 
 export default function OrderPage({ onOpenSettings, onOpenReturns }) {
-  const { settings, products, isIntroPending, clearIntro } = useApp()
+  const { settings, products, isIntroPending, clearIntro, saveVisit } = useApp()
   const [customer, setCustomer] = useState(null)
   const [query, setQuery] = useState('')
   const [quantities, setQuantities] = useState({}) // { id: qty }
   const [units, setUnits] = useState({}) // { id: 'Piece'|'Box' }
   const [toast, setToast] = useState('')
+  const [visitStatus, setVisitStatus] = useState('')
+  const [visitRemark, setVisitRemark] = useState('')
 
   const debounced = useDebounce(query, 120)
   const searching = debounced.trim().length > 0
@@ -70,6 +73,9 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
   )
 
   const totalQty = items.reduce((s, i) => s + i.qty, 0)
+  const isVisit = !!visitStatus
+  // "Others" needs a remark before it can be saved.
+  const visitReady = isVisit && (visitStatus !== 'Others' || visitRemark.trim().length > 0)
   const canSend = customer && items.length > 0
 
   /**
@@ -85,6 +91,8 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
     }
     setQuantities({})
     setUnits({})
+    setVisitStatus('')
+    setVisitRemark('')
     setCustomer(c)
   }
 
@@ -100,10 +108,47 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
       isNewCustomer: showIntro
     })
 
+  const getLocation = () =>
+    new Promise((resolve) => {
+      if (!navigator.geolocation) return resolve({})
+      navigator.geolocation.getCurrentPosition(
+        (pos) => resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }),
+        () => resolve({}),
+        { enableHighAccuracy: false, timeout: 4000, maximumAge: 60000 }
+      )
+    })
+
+  const handleVisit = async () => {
+    if (!customer || !visitReady) return
+    const loc = await getLocation()
+    const visit = {
+      customer_id: customer.id,
+      customer_name: customer.name,
+      route: customer.route,
+      salesperson: settings.salesperson,
+      visit_status: visitStatus,
+      custom_remark: visitStatus === 'Others' ? visitRemark.trim() : '',
+      ...loc
+    }
+    await saveVisit(visit)
+    const msg = buildVisitMessage({
+      brand: settings.brand,
+      customer,
+      salesperson: settings.salesperson,
+      visit
+    })
+    window.open(buildWhatsappUrl(msg), '_blank')
+    // Reset for next customer.
+    setVisitStatus('')
+    setVisitRemark('')
+    setCustomer(null)
+    setToast('Visit recorded')
+    setTimeout(() => setToast(''), 2600)
+  }
+
   const handleSend = () => {
     if (!canSend) return
     window.open(buildWhatsappUrl(message()), '_blank')
-    // Mark as sent so the intro block never repeats for this customer.
     if (showIntro) clearIntro(customer.id)
   }
 
@@ -154,6 +199,15 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
               🆕 New customer — their details will be included with this first order.
             </p>
           </div>
+        )}
+
+        {customer && (
+          <VisitStatus
+            value={visitStatus}
+            remark={visitRemark}
+            onChange={setVisitStatus}
+            onRemark={setVisitRemark}
+          />
         )}
 
         <div className="flex items-center gap-2 rounded-2xl bg-white shadow-card border border-slate-100 px-4 sticky top-[52px] z-10">
@@ -210,6 +264,9 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
         disabled={!canSend}
         onSend={handleSend}
         onCopy={handleCopy}
+        isVisit={isVisit}
+        visitReady={visitReady}
+        onSaveVisit={handleVisit}
       />
 
       {toast && (
