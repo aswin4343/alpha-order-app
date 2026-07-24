@@ -131,24 +131,37 @@ export default function ReturnsPage({ onBack }) {
     [customer, lines]
   )
 
-  const message = () =>
+  const message = (location) =>
     buildCreditNoteMessage({
       brand: settings.brand,
       customer,
       salesperson: settings.salesperson,
-      lines: lines.map((l) => ({ name: l.name, mrp: l.mrp, qty: l.qty, reason: l.reason }))
+      lines: lines.map((l) => ({ name: l.name, mrp: l.mrp, qty: l.qty, reason: l.reason })),
+      location
     })
 
-  const send = () => {
+  const getLocation = () =>
+    new Promise((resolve) => {
+      if (!navigator.geolocation) return resolve(null)
+      navigator.geolocation.getCurrentPosition(
+        (pos) => resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }),
+        () => resolve(null),
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 }
+      )
+    })
+
+  const send = async () => {
     if (!valid) return
-    window.open(buildWhatsappUrl(message()), '_blank')
+    const loc = await getLocation()
+    window.open(buildWhatsappUrl(message(loc)), '_blank')
   }
 
   // Copy lets the rep paste into WhatsApp Business manually.
   const copy = async () => {
     if (!valid) return
     try {
-      await navigator.clipboard.writeText(message())
+      const loc = await getLocation()
+      await navigator.clipboard.writeText(message(loc))
       setToast('Credit note copied — paste in WhatsApp Business')
     } catch {
       setToast('Copy failed')

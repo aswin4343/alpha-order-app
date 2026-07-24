@@ -22,6 +22,8 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
   const [toast, setToast] = useState('')
   const [visitStatus, setVisitStatus] = useState('')
   const [visitRemark, setVisitRemark] = useState('')
+  const [gpsBusy, setGpsBusy] = useState(false)
+  const [gpsFailed, setGpsFailed] = useState(false)
 
   const debounced = useDebounce(query, 120)
   const searching = debounced.trim().length > 0
@@ -99,13 +101,14 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
   // A newly created customer's details ride along with their FIRST order only.
   const showIntro = !!customer && isIntroPending(customer.id)
 
-  const message = () =>
+  const message = (location) =>
     buildOrderMessage({
       brand: settings.brand,
       customer,
       salesperson: settings.salesperson,
       items,
-      isNewCustomer: showIntro
+      isNewCustomer: showIntro,
+      location
     })
 
   const getLocation = () =>
@@ -114,7 +117,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
       navigator.geolocation.getCurrentPosition(
         (pos) => resolve({ latitude: pos.coords.latitude, longitude: pos.coords.longitude }),
         () => resolve({}),
-        { enableHighAccuracy: false, timeout: 4000, maximumAge: 60000 }
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 30000 }
       )
     })
 
@@ -162,24 +165,36 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
     setTimeout(() => setToast(''), 2600)
   }
 
-  const handleSend = () => {
+  // Every order attempts to capture current GPS. Soft policy: if it fails we
+  // warn and let the rep retry, but never block the sale. A failed capture is
+  // stamped 'Not captured' in the message for accountability.
+  const dispatchOrder = async (viaCopy) => {
     if (!canSend) return
-    window.open(buildWhatsappUrl(message()), '_blank')
+    setGpsBusy(true)
+    setToast('Getting location…')
+    const loc = await getLocation()
+    setGpsBusy(false)
+    setToast('')
+    const ok = loc && loc.latitude != null
+    setGpsFailed(!ok)
+    const text = message(ok ? loc : null)
+    if (viaCopy) {
+      try {
+        await navigator.clipboard.writeText(text)
+        setToast(ok ? 'Order copied' : 'Copied — location not captured')
+      } catch {
+        setToast('Copy failed')
+      }
+      setTimeout(() => setToast(''), 2600)
+    } else {
+      window.open(buildWhatsappUrl(text), '_blank')
+    }
     if (showIntro) clearIntro(customer.id)
   }
 
-  const handleCopy = async () => {
-    if (!canSend) return
-    try {
-      await navigator.clipboard.writeText(message())
-      // Copying counts as sending — otherwise the intro would repeat next time.
-      if (showIntro) clearIntro(customer.id)
-      setToast('Order copied — paste in WhatsApp Business')
-    } catch {
-      setToast('Copy failed')
-    }
-    setTimeout(() => setToast(''), 2600)
-  }
+  const handleSend = () => dispatchOrder(false)
+
+  const handleCopy = () => dispatchOrder(true)
 
   return (
     <div className="min-h-screen bg-slate-50 pb-44">
@@ -213,6 +228,14 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
           <div className="rounded-xl bg-blue-50 border border-blue-200 px-3 py-2">
             <p className="text-[12px] text-blue-800 font-medium">
               🆕 New customer — their details will be included with this first order.
+            </p>
+          </div>
+        )}
+
+        {gpsFailed && (
+          <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 flex items-center justify-between gap-2">
+            <p className="text-[12px] text-amber-800 font-medium">
+              📍 Location not captured. Enable GPS and resend for accurate tracking.
             </p>
           </div>
         )}

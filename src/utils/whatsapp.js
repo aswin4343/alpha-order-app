@@ -27,7 +27,7 @@ function creditTerms(customer) {
   return `${cd} Credit`
 }
 
-export function buildOrderMessage({ brand, customer, salesperson, items, isNewCustomer = false }) {
+export function buildOrderMessage({ brand, customer, salesperson, items, isNewCustomer = false, location = null }) {
   const totalProducts = items.length
   const totalQty = items.reduce((s, i) => s + i.qty, 0)
 
@@ -86,17 +86,28 @@ export function buildOrderMessage({ brand, customer, salesperson, items, isNewCu
   L.push(`\uD83D\uDCE6 Total Products : *${totalProducts}*`)
   L.push(`\uD83D\uDD22 Total Quantity : *${totalQty}*`)
   if (salesperson) L.push(`\uD83D\uDC68\u200D\uD83D\uDCBC *Salesperson:* ${salesperson}`)
+  L.push(locationLine(location))
   L.push(EQ)
   L.push('\u2705 Please process this order.')
   L.push(EQ)
   return L.join('\n')
 }
 
+// Consistent GPS line used by orders, credit notes and visits.
+// Prints a Google Maps link when coordinates exist, else a clear stamp so
+// missing locations are visible for accountability.
+export function locationLine(location) {
+  if (location && location.latitude != null && location.longitude != null) {
+    return `\uD83D\uDCCD Current Location:\nhttps://maps.google.com/?q=${location.latitude},${location.longitude}`
+  }
+  return '\uD83D\uDCCD Current Location: Not captured'
+}
+
 /**
  * Build the credit note (customer return) message in the same boxed layout.
  * lines: [{ name, brand, mrp, qty, reason }]
  */
-export function buildCreditNoteMessage({ brand, customer, salesperson, lines }) {
+export function buildCreditNoteMessage({ brand, customer, salesperson, lines, location = null }) {
   const totalQty = lines.reduce((s, l) => s + Number(l.qty || 0), 0)
   const L = []
   L.push(TOP)
@@ -124,6 +135,7 @@ export function buildCreditNoteMessage({ brand, customer, salesperson, lines }) 
   L.push(`\uD83D\uDCE6 Total Products : *${lines.length}*`)
   L.push(`\uD83D\uDD22 Total Quantity : *${totalQty}*`)
   if (salesperson) L.push(`\uD83D\uDC68\u200D\uD83D\uDCBC *Salesperson:* ${salesperson}`)
+  L.push(locationLine(location))
   L.push(EQ)
   L.push('\u2705 Please process this credit note.')
   L.push(EQ)
