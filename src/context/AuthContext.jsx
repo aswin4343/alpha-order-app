@@ -33,9 +33,19 @@ export function AuthProvider({ children }) {
       setLoading(false)
     })()
 
-    const { data: sub } = supabase.auth.onAuthStateChange((_e, sess) => {
+    const { data: sub } = supabase.auth.onAuthStateChange(async (event, sess) => {
+      // Keep session and profile strictly in lockstep. On sign-out, clear both
+      // so no previous rep's identity can linger into the next session.
+      if (event === 'SIGNED_OUT' || !sess) {
+        setSession(null)
+        setProfile(null)
+        return
+      }
       setSession(sess)
-      loadProfile(sess?.user?.id)
+      // Clear the old profile first, then load the new one, so a stale profile
+      // can never be paired with a new session (prevents wrong rep attribution).
+      setProfile(null)
+      await loadProfile(sess.user?.id)
     })
     return () => {
       active = false

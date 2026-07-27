@@ -1,5 +1,16 @@
 import { supabase } from './supabase.js'
 
+/**
+ * Always fetch the CURRENT authenticated user id straight from Supabase at the
+ * moment of saving. Never rely on a possibly-stale id held in React state —
+ * that was causing visits/orders to be attributed to the previous rep after a
+ * user switch. This is the source of truth.
+ */
+export async function currentUserId() {
+  const { data } = await supabase.auth.getUser()
+  return data?.user?.id ?? null
+}
+
 // ---------------------------------------------------------------------------
 // Cloud sync helpers for Phase 3A.
 // Privacy: only shop_name + route go to the cloud for customers — never the

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
-import { loadMyPerformance } from '../utils/cloudSync.js'
+import { loadMyPerformance, currentUserId } from '../utils/cloudSync.js'
 import { BackIcon } from '../components/Icons.jsx'
 
 function StatCard({ label, value, sub }) {
@@ -39,7 +39,8 @@ export default function PerformancePage({ onBack }) {
     let active = true
     ;(async () => {
       try {
-        const p = await loadMyPerformance(user.id)
+        const uid = (await currentUserId()) || user.id
+        const p = await loadMyPerformance(uid)
         if (active) setPerf(p)
       } catch {
         if (active) setError(true)

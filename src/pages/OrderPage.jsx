@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
-import { saveCloudOrder } from '../utils/cloudSync.js'
+import { saveCloudOrder, currentUserId } from '../utils/cloudSync.js'
 import PreviousOrdersModal from '../components/PreviousOrdersModal.jsx'
 import { useSearch } from '../hooks/useSearch.js'
 import { useDebounce } from '../hooks/useDebounce.js'
@@ -179,12 +179,13 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
       ...loc
     }
     await saveVisit(visit)
-    // Also persist to cloud (rep-attributed).
+    // Also persist to cloud (rep-attributed). Fresh id at save time.
     try {
+      const uid = (await currentUserId()) || user.id
       await import('../utils/cloudSync.js').then((m) =>
         m.saveCloudVisit({
           customer,
-          userId: user.id,
+          userId: uid,
           visitStatus,
           remark: visit.custom_remark,
           location: loc
@@ -247,11 +248,13 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
     const text = message(ok ? loc : null)
 
     // Persist the order to Supabase (rep-attributed; PII stays local).
+    // Use the FRESH authenticated id at save time to avoid stale attribution.
     try {
+      const uid = (await currentUserId()) || user.id
       await saveCloudOrder({
         customer,
         brand: settings.brand,
-        userId: user.id,
+        userId: uid,
         items,
         location: ok ? loc : null
       })
