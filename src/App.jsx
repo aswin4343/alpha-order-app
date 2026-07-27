@@ -5,6 +5,7 @@ import LoginScreen from './pages/LoginScreen.jsx'
 import OrderPage from './pages/OrderPage.jsx'
 import SettingsPage from './pages/SettingsPage.jsx'
 import ReturnsPage from './pages/ReturnsPage.jsx'
+import PerformancePage from './pages/PerformancePage.jsx'
 
 function Splash() {
   return (
@@ -30,11 +31,13 @@ export default function App() {
 
   if (route === 'settings') return <SettingsPage onBack={() => setRoute('order')} />
   if (route === 'returns') return <ReturnsPage onBack={() => setRoute('order')} />
+  if (route === 'performance') return <PerformancePage onBack={() => setRoute('order')} />
 
   return (
     <OrderPage
       onOpenSettings={() => setRoute('settings')}
       onOpenReturns={() => setRoute('returns')}
+      onOpenPerformance={() => setRoute('performance')}
     />
   )
 }

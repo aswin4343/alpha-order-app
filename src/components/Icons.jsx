@@ -70,3 +70,12 @@ export const CopyIcon = (p) => (
     <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
   </svg>
 )
+
+export const ChartIcon = (p) => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" {...p}>
+    <path d="M3 3v18h18" />
+    <rect x="7" y="12" width="3" height="6" />
+    <rect x="12" y="8" width="3" height="10" />
+    <rect x="17" y="4" width="3" height="14" />
+  </svg>
+)

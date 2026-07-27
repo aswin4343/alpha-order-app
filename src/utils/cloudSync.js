@@ -108,3 +108,55 @@ export async function loadPreviousOrders(shopName, route) {
   }
   return data || []
 }
+
+/**
+ * Personal performance counts for the logged-in rep.
+ * Returns orders + visits totals for today / this week / this month.
+ */
+export async function loadMyPerformance(userId) {
+  const now = new Date()
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  // Week starts Monday.
+  const dow = (now.getDay() + 6) % 7
+  const startOfWeek = new Date(startOfToday)
+  startOfWeek.setDate(startOfToday.getDate() - dow)
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
+
+  const [ordersRes, visitsRes] = await Promise.all([
+    supabase
+      .from('orders')
+      .select('id, total_quantity, shop_name, created_at')
+      .eq('sales_rep_id', userId),
+    supabase
+      .from('visits')
+      .select('id, created_at')
+      .eq('sales_rep_id', userId)
+  ])
+
+  const orders = ordersRes.data || []
+  const visits = visitsRes.data || []
+
+  const inRange = (iso, start) => new Date(iso) >= start
+
+  const countOrders = (start) => orders.filter((o) => inRange(o.created_at, start)).length
+  const countQty = (start) =>
+    orders.filter((o) => inRange(o.created_at, start)).reduce((s, o) => s + (o.total_quantity || 0), 0)
+  const countVisits = (start) => visits.filter((v) => inRange(v.created_at, start)).length
+  const countShops = (start) =>
+    new Set(orders.filter((o) => inRange(o.created_at, start)).map((o) => o.shop_name)).size
+
+  const block = (start) => ({
+    orders: countOrders(start),
+    quantity: countQty(start),
+    visits: countVisits(start),
+    shops: countShops(start)
+  })
+
+  return {
+    today: block(startOfToday),
+    week: block(startOfWeek),
+    month: block(startOfMonth),
+    totalOrders: orders.length,
+    totalVisits: visits.length
+  }
+}

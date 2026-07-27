@@ -2,20 +2,21 @@ import { useState, useMemo, useCallback } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
 import { saveCloudOrder } from '../utils/cloudSync.js'
+import PreviousOrdersModal from '../components/PreviousOrdersModal.jsx'
 import { useSearch } from '../hooks/useSearch.js'
 import { useDebounce } from '../hooks/useDebounce.js'
 import CustomerPicker from '../components/CustomerPicker.jsx'
 import ProductCard from '../components/ProductCard.jsx'
 import OrderSummaryBar from '../components/OrderSummaryBar.jsx'
 import BrandSelector from '../components/BrandSelector.jsx'
-import { SearchIcon, CloseIcon, SettingsIcon, ReturnIcon } from '../components/Icons.jsx'
+import { SearchIcon, CloseIcon, SettingsIcon, ReturnIcon, ChartIcon } from '../components/Icons.jsx'
 import { buildOrderMessage, buildVisitMessage, buildVisitCopyText, buildWhatsappUrl } from '../utils/whatsapp.js'
 import VisitStatus from '../components/VisitStatus.jsx'
 import appIcon from '../assets/app_icon.png'
 
 const getProductText = (p) => p.name
 
-export default function OrderPage({ onOpenSettings, onOpenReturns }) {
+export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerformance }) {
   const { settings, products, isIntroPending, clearIntro, saveVisit } = useApp()
   const { user, profile } = useAuth()
   const [customer, setCustomer] = useState(null)
@@ -27,10 +28,18 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
   const [visitRemark, setVisitRemark] = useState('')
   const [gpsBusy, setGpsBusy] = useState(false)
   const [gpsFailed, setGpsFailed] = useState(false)
+  const [showPrevOrders, setShowPrevOrders] = useState(false)
 
   const debounced = useDebounce(query, 120)
   const searching = debounced.trim().length > 0
   const searchResults = useSearch(products, debounced, getProductText, 80)
+
+  // Lookup by exact product name (for reloading previous orders).
+  const productByName = useMemo(() => {
+    const m = new Map()
+    products.forEach((p) => m.set(p.name.toUpperCase(), p))
+    return m
+  }, [products])
 
   const productMap = useMemo(() => {
     const m = new Map()
@@ -45,6 +54,36 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
     const set = new Set(ids)
     return [...chosen, ...products.filter((p) => !set.has(p.id)).slice(0, 50)]
   }, [searching, searchResults, quantities, productMap, products])
+
+  // Load a previous cloud order into the current cart. Items whose products
+  // still exist are added; missing ones are counted for a small notice.
+  const loadPreviousOrder = useCallback(
+    (order) => {
+      const nextQ = {}
+      const nextU = {}
+      let missing = 0
+      ;(order.order_items || []).forEach((it) => {
+        const prod = productByName.get((it.product_name || '').toUpperCase())
+        if (prod) {
+          nextQ[prod.id] = (nextQ[prod.id] || 0) + it.qty
+          nextU[prod.id] = it.unit || 'Piece'
+        } else {
+          missing += 1
+        }
+      })
+      setQuantities(nextQ)
+      setUnits(nextU)
+      setShowPrevOrders(false)
+      const loaded = Object.keys(nextQ).length
+      setToast(
+        missing > 0
+          ? `Loaded ${loaded} item(s); ${missing} no longer in catalogue`
+          : `Loaded ${loaded} item(s) — edit or add more, then send`
+      )
+      setTimeout(() => setToast(''), 3200)
+    },
+    [productByName]
+  )
 
   const onQty = useCallback((id, val) => {
     setQuantities((prev) => {
@@ -100,6 +139,8 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
     setVisitStatus('')
     setVisitRemark('')
     setCustomer(c)
+    // Offer to reload this shop's previous orders (cloud lookup).
+    if (c) setShowPrevOrders(true)
   }
 
   // A newly created customer's details ride along with their FIRST order only.
@@ -235,6 +276,13 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
           <BrandSelector />
           <div className="flex-1" />
           <button
+            onClick={onOpenPerformance}
+            aria-label="My performance"
+            className="h-10 w-10 rounded-full flex items-center justify-center text-slate-500 active:bg-slate-100"
+          >
+            <ChartIcon className="h-6 w-6" />
+          </button>
+          <button
             onClick={onOpenReturns}
             aria-label="Customer returns"
             className="flex items-center gap-1 h-10 px-2.5 rounded-lg text-slate-600 border border-slate-200 active:bg-slate-100"
@@ -327,6 +375,14 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
           )}
         </div>
       </main>
+
+      {showPrevOrders && customer && (
+        <PreviousOrdersModal
+          customer={customer}
+          onClose={() => setShowPrevOrders(false)}
+          onLoad={loadPreviousOrder}
+        />
+      )}
 
       <OrderSummaryBar
         customer={customer}
