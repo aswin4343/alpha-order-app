@@ -10,7 +10,7 @@ import ProductCard from '../components/ProductCard.jsx'
 import OrderSummaryBar from '../components/OrderSummaryBar.jsx'
 import BrandSelector from '../components/BrandSelector.jsx'
 import { SearchIcon, CloseIcon, SettingsIcon, ReturnIcon, ChartIcon } from '../components/Icons.jsx'
-import { buildOrderMessage, buildVisitMessage, buildVisitCopyText, buildWhatsappUrl } from '../utils/whatsapp.js'
+import { buildOrderMessage, buildVisitMessage, buildWhatsappUrl } from '../utils/whatsapp.js'
 import VisitStatus from '../components/VisitStatus.jsx'
 import appIcon from '../assets/app_icon.png'
 
@@ -210,14 +210,22 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
 
   const handleCopyVisit = async () => {
     if (!customer || !visitReady) return
-    const text = buildVisitCopyText({
+    // Capture GPS and build the SAME message as Save Visit (with location line).
+    const loc = await getLocation()
+    const visit = {
+      visit_status: visitStatus,
+      custom_remark: visitStatus === 'Other' ? visitRemark.trim() : '',
+      ...loc
+    }
+    const text = buildVisitMessage({
+      brand: settings.brand,
       customer,
-      salesperson: settings.salesperson,
-      reason: visitStatus === 'Other' ? (visitRemark.trim() || 'Other') : visitStatus
+      salesperson: profile?.full_name || settings.salesperson,
+      visit
     })
     try {
       await navigator.clipboard.writeText(text)
-      setToast('Visit message copied')
+      setToast(loc?.latitude != null ? 'Visit copied' : 'Copied — location not captured')
     } catch {
       setToast('Copy failed')
     }
