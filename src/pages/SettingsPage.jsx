@@ -125,9 +125,11 @@ export default function SettingsPage({ onBack }) {
           <input value={businessName} onChange={(e) => setBusinessName(e.target.value)}
             className="w-full rounded-xl border border-slate-200 px-3 py-3 outline-none focus:border-brand-500 mb-4" />
 
-          <label className="block text-sm font-medium text-slate-600 mb-1.5">Salesperson Name</label>
-          <input value={salesperson} onChange={(e) => setSalesperson(e.target.value)} placeholder="optional"
-            className="w-full rounded-xl border border-slate-200 px-3 py-3 outline-none focus:border-brand-500 mb-4" />
+          <label className="block text-sm font-medium text-slate-600 mb-1.5">Salesperson</label>
+          <div className="w-full rounded-xl border border-slate-100 bg-slate-50 px-3 py-3 text-slate-700 mb-4">
+            {profile?.full_name || 'Signed-in user'}
+            <span className="text-xs text-slate-400 ml-2">(from your login)</span>
+          </div>
 
           <label className="block text-sm font-medium text-slate-600 mb-1.5">Default Brand</label>
           <select value={settings.brand} onChange={(e) => updateSettings({ brand: e.target.value })}

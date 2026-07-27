@@ -173,7 +173,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
       customer_id: customer.id,
       customer_name: customer.name,
       route: customer.route,
-      salesperson: settings.salesperson,
+      salesperson: profile?.full_name || settings.salesperson,
       visit_status: visitStatus,
       custom_remark: visitStatus === 'Other' ? visitRemark.trim() : '',
       ...loc

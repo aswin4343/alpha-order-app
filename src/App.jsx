@@ -6,6 +6,7 @@ import OrderPage from './pages/OrderPage.jsx'
 import SettingsPage from './pages/SettingsPage.jsx'
 import ReturnsPage from './pages/ReturnsPage.jsx'
 import PerformancePage from './pages/PerformancePage.jsx'
+import AdminDashboard from './pages/AdminDashboard.jsx'
 
 function Splash() {
   return (
@@ -28,6 +29,9 @@ export default function App() {
 
   // Logged in but profile/products still loading.
   if (!ready || !profile) return <Splash />
+
+  // Admins get the dashboard; salespeople get the ordering app.
+  if (profile.role === 'admin') return <AdminDashboard />
 
   if (route === 'settings') return <SettingsPage onBack={() => setRoute('order')} />
   if (route === 'returns') return <ReturnsPage onBack={() => setRoute('order')} />

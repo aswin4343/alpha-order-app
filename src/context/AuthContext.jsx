@@ -54,6 +54,9 @@ export function AuthProvider({ children }) {
   }, [loadProfile])
 
   const signIn = useCallback(async (email, password) => {
+    // Always clear any existing session first so switching reps can never
+    // leave a previous identity active underneath the new login.
+    await supabase.auth.signOut()
     const { error } = await supabase.auth.signInWithPassword({ email, password })
     return error
   }, [])

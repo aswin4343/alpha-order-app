@@ -122,6 +122,17 @@ export function AppProvider({ children }) {
       await bulkPut('customers', next)
       setCustomers(next)
 
+      // Register this genuinely new shop in the cloud right away, flagged as
+      // rep-created, so it counts as a "new shop" even before its first order.
+      // PII (phone/GST/email) stays local — only shop name + route + category go up.
+      try {
+        const { currentUserId, ensureCloudCustomer } = await import('../utils/cloudSync.js')
+        const uid = await currentUserId()
+        if (uid) await ensureCloudCustomer(rec, uid, true)
+      } catch (e) {
+        console.error('cloud new-customer register failed', e)
+      }
+
       // Queue this customer's details to ride along with their first order.
       setPendingIntro((prev) => {
         const s = new Set(prev)
