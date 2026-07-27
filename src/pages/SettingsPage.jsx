@@ -1,5 +1,6 @@
 import { useRef, useState } from 'react'
 import { useApp } from '../context/AppContext.jsx'
+import { useAuth } from '../context/AuthContext.jsx'
 import { BackIcon } from '../components/Icons.jsx'
 import { BRANDS, ORDER_WHATSAPP_NUMBER } from '../utils/whatsapp.js'
 import {
@@ -46,6 +47,7 @@ export default function SettingsPage({ onBack }) {
     settings, updateSettings, products, customers,
     replaceProducts, replaceCustomers
   } = useApp()
+  const { profile, isAdmin, signOut } = useAuth()
 
   const [businessName, setBusinessName] = useState(settings.businessName)
   const [salesperson, setSalesperson] = useState(settings.salesperson)
@@ -101,6 +103,23 @@ export default function SettingsPage({ onBack }) {
       </header>
 
       <main className="mx-auto max-w-md px-3 pt-3 space-y-3">
+        <Section title="Account">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="font-semibold text-slate-800">{profile?.full_name || 'Salesperson'}</p>
+              <p className="text-xs text-slate-400">
+                {isAdmin ? 'Administrator' : 'Salesperson'}{profile?.route ? ` · ${profile.route}` : ''}
+              </p>
+            </div>
+            <button
+              onClick={signOut}
+              className="text-sm font-semibold text-red-600 px-3 py-2 rounded-lg active:bg-red-50"
+            >
+              Sign Out
+            </button>
+          </div>
+        </Section>
+
         <Section title="Business Profile">
           <label className="block text-sm font-medium text-slate-600 mb-1.5">Business Name</label>
           <input value={businessName} onChange={(e) => setBusinessName(e.target.value)}

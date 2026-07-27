@@ -1,23 +1,33 @@
 import { useState } from 'react'
+import { useAuth } from './context/AuthContext.jsx'
 import { useApp } from './context/AppContext.jsx'
-import SetupScreen from './pages/SetupScreen.jsx'
+import LoginScreen from './pages/LoginScreen.jsx'
 import OrderPage from './pages/OrderPage.jsx'
 import SettingsPage from './pages/SettingsPage.jsx'
 import ReturnsPage from './pages/ReturnsPage.jsx'
 
+function Splash() {
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-white">
+      <div className="h-10 w-10 rounded-full border-4 border-brand-100 border-t-brand-600 animate-spin" />
+    </div>
+  )
+}
+
 export default function App() {
-  const { ready, settings } = useApp()
-  const [route, setRoute] = useState('order') // 'order' | 'settings' | 'returns'
+  const { loading, session, profile } = useAuth()
+  const { ready } = useApp()
+  const [route, setRoute] = useState('order')
 
-  if (!ready) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-white">
-        <div className="h-10 w-10 rounded-full border-4 border-brand-100 border-t-brand-600 animate-spin" />
-      </div>
-    )
-  }
+  // Wait for auth to resolve first.
+  if (loading) return <Splash />
 
-  if (!settings.configured) return <SetupScreen />
+  // Not logged in → login screen.
+  if (!session) return <LoginScreen />
+
+  // Logged in but profile/products still loading.
+  if (!ready || !profile) return <Splash />
+
   if (route === 'settings') return <SettingsPage onBack={() => setRoute('order')} />
   if (route === 'returns') return <ReturnsPage onBack={() => setRoute('order')} />
 
