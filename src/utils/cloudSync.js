@@ -122,7 +122,7 @@ export async function loadMyPerformance(userId) {
   startOfWeek.setDate(startOfToday.getDate() - dow)
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
 
-  const [ordersRes, visitsRes] = await Promise.all([
+  const [ordersRes, visitsRes, custRes] = await Promise.all([
     supabase
       .from('orders')
       .select('id, total_quantity, shop_name, created_at')
@@ -130,11 +130,16 @@ export async function loadMyPerformance(userId) {
     supabase
       .from('visits')
       .select('id, created_at')
-      .eq('sales_rep_id', userId)
+      .eq('sales_rep_id', userId),
+    supabase
+      .from('customers')
+      .select('id, created_at')
+      .eq('created_by', userId)
   ])
 
   const orders = ordersRes.data || []
   const visits = visitsRes.data || []
+  const customers = custRes.data || []
 
   const inRange = (iso, start) => new Date(iso) >= start
 
@@ -144,12 +149,15 @@ export async function loadMyPerformance(userId) {
   const countVisits = (start) => visits.filter((v) => inRange(v.created_at, start)).length
   const countShops = (start) =>
     new Set(orders.filter((o) => inRange(o.created_at, start)).map((o) => o.shop_name)).size
+  const countNewCustomers = (start) =>
+    customers.filter((c) => inRange(c.created_at, start)).length
 
   const block = (start) => ({
     orders: countOrders(start),
     quantity: countQty(start),
     visits: countVisits(start),
-    shops: countShops(start)
+    shops: countShops(start),
+    newCustomers: countNewCustomers(start)
   })
 
   return {
@@ -157,6 +165,7 @@ export async function loadMyPerformance(userId) {
     week: block(startOfWeek),
     month: block(startOfMonth),
     totalOrders: orders.length,
-    totalVisits: visits.length
+    totalVisits: visits.length,
+    totalNewCustomers: customers.length
   }
 }

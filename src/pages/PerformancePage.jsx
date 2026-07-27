@@ -19,11 +19,12 @@ function Period({ title, data }) {
       <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2 px-1">
         {title}
       </p>
-      <div className="grid grid-cols-4 gap-2">
+      <div className="grid grid-cols-3 gap-2">
         <StatCard label="Orders" value={data.orders} />
         <StatCard label="Qty" value={data.quantity} />
         <StatCard label="Shops" value={data.shops} />
         <StatCard label="Visits" value={data.visits} />
+        <StatCard label="New Shops" value={data.newCustomers} />
       </div>
     </div>
   )
@@ -96,6 +97,10 @@ export default function PerformancePage({ onBack }) {
               <div className="flex items-center justify-between mt-2">
                 <span className="text-sm text-slate-500">All-time visits</span>
                 <span className="font-bold text-slate-800">{perf.totalVisits}</span>
+              </div>
+              <div className="flex items-center justify-between mt-2">
+                <span className="text-sm text-slate-500">All-time new shops</span>
+                <span className="font-bold text-slate-800">{perf.totalNewCustomers}</span>
               </div>
             </div>
           </>
