@@ -11,7 +11,6 @@ import BrandSelector from '../components/BrandSelector.jsx'
 import { SearchIcon, CloseIcon, SettingsIcon, ReturnIcon } from '../components/Icons.jsx'
 import { buildOrderMessage, buildVisitMessage, buildVisitCopyText, buildWhatsappUrl } from '../utils/whatsapp.js'
 import VisitStatus from '../components/VisitStatus.jsx'
-import VoiceOrderModal from '../components/VoiceOrderModal.jsx'
 import appIcon from '../assets/app_icon.png'
 
 const getProductText = (p) => p.name
@@ -28,7 +27,6 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
   const [visitRemark, setVisitRemark] = useState('')
   const [gpsBusy, setGpsBusy] = useState(false)
   const [gpsFailed, setGpsFailed] = useState(false)
-  const [showVoice, setShowVoice] = useState(false)
 
   const debounced = useDebounce(query, 120)
   const searching = debounced.trim().length > 0
@@ -57,26 +55,6 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
     })
   }, [])
 
-  // Fill the order form from confirmed voice items (adds to existing quantities).
-  const applyVoiceItems = useCallback((voiceItems) => {
-    setQuantities((prev) => {
-      const next = { ...prev }
-      voiceItems.forEach(({ id, qty }) => {
-        next[id] = (next[id] || 0) + qty
-      })
-      return next
-    })
-    setUnits((prev) => {
-      const next = { ...prev }
-      voiceItems.forEach(({ id, unit }) => {
-        next[id] = unit
-      })
-      return next
-    })
-    setShowVoice(false)
-    setToast(`Added ${voiceItems.length} item(s) from voice`)
-    setTimeout(() => setToast(''), 2600)
-  }, [])
 
   const onUnit = useCallback((id, val) => {
     setUnits((prev) => ({ ...prev, [id]: val }))
@@ -303,13 +281,6 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
           />
         )}
 
-        <button
-          onClick={() => setShowVoice(true)}
-          className="w-full flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-r from-brand-600 to-brand-500 text-white py-3 font-bold shadow-card active:scale-[0.99]"
-        >
-          🎤 Voice Order
-        </button>
-
         <div className="flex items-center gap-2 rounded-2xl bg-white shadow-card border border-slate-100 px-4 sticky top-[52px] z-10">
           <SearchIcon className="h-5 w-5 text-slate-400 shrink-0" />
           <input
@@ -369,9 +340,6 @@ export default function OrderPage({ onOpenSettings, onOpenReturns }) {
         onSaveVisit={handleVisit}
       />
 
-      {showVoice && (
-        <VoiceOrderModal onClose={() => setShowVoice(false)} onApply={applyVoiceItems} />
-      )}
 
       {toast && (
         <div className="fixed bottom-44 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm px-4 py-2.5 rounded-full shadow-pop z-50">
