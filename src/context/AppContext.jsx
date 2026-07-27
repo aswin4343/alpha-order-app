@@ -44,6 +44,32 @@ function savePendingIntro(set) {
   localStorage.setItem(PENDING_INTRO_KEY, JSON.stringify(Array.from(set)))
 }
 
+// Downloads the cloud catalogue only when its version is newer than what we
+// last cached locally. Returns the fresh product list, or null if unchanged
+// or unavailable (offline / not set up yet) — in which case the local cache
+// keeps working untouched.
+const CAT_VERSION_KEY = 'atl_catalogue_version'
+
+async function syncProductsFromCloud(localProducts) {
+  try {
+    const { getCatalogueMeta, fetchAllCloudProducts } = await import('../utils/cloudSync.js')
+    const meta = await getCatalogueMeta()
+    if (!meta || !meta.product_count) return null // cloud not populated yet
+    const localVersion = Number(localStorage.getItem(CAT_VERSION_KEY) || 0)
+    if (meta.version <= localVersion && localProducts && localProducts.length) {
+      return null // already up to date
+    }
+    const fresh = await fetchAllCloudProducts()
+    if (!fresh || !fresh.length) return null
+    await bulkPut('products', fresh)
+    localStorage.setItem(CAT_VERSION_KEY, String(meta.version))
+    return fresh
+  } catch (e) {
+    console.error('product cloud sync failed (using local cache)', e)
+    return null
+  }
+}
+
 export function AppProvider({ children }) {
   const [settings, setSettings] = useState(loadSettings)
   // Set of customer ids awaiting their one-time "NEW CUSTOMER" block.
@@ -72,6 +98,13 @@ export function AppProvider({ children }) {
           setCustomers(cFixed)
           setReady(true)
         }
+
+        // Then, in the background, sync products from the cloud if the admin has
+        // published a newer catalogue. Local cache keeps the app instant/offline;
+        // this just refreshes it when signal is available.
+        syncProductsFromCloud(p).then((fresh) => {
+          if (!cancelled && fresh) setProducts(fresh)
+        })
       } catch (e) {
         console.error('Init failed', e)
         if (!cancelled) {

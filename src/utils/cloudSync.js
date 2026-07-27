@@ -291,3 +291,88 @@ export async function loadAdminDashboard() {
 
   return { reps, teamMonth, teamToday, activity }
 }
+
+// ---------------------------------------------------------------------------
+// PRODUCTS — cloud catalogue (admin-managed, rep-downloaded)
+// ---------------------------------------------------------------------------
+
+/** Read the catalogue meta (version + count). */
+export async function getCatalogueMeta() {
+  const { data, error } = await supabase
+    .from('catalogue_meta')
+    .select('*')
+    .eq('id', 1)
+    .maybeSingle()
+  if (error) return null
+  return data
+}
+
+/** Fetch ALL products from the cloud (paged to be safe over 1000). */
+export async function fetchAllCloudProducts() {
+  const pageSize = 1000
+  let from = 0
+  let all = []
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { data, error } = await supabase
+      .from('products')
+      .select('*')
+      .order('sort_order', { ascending: true })
+      .range(from, from + pageSize - 1)
+    if (error) throw error
+    all = all.concat(data || [])
+    if (!data || data.length < pageSize) break
+    from += pageSize
+  }
+  // Normalise back to the app's product shape.
+  return all.map((p) => ({
+    id: p.id,
+    name: p.name,
+    slabs: p.slabs || [],
+    base: p.base,
+    mrp: p.mrp,
+    retail: p.retail,
+    wholesale: p.wholesale,
+    net: p.net || []
+  }))
+}
+
+/**
+ * REPLACE-ALL upload (admin only). Wipes the products table and inserts the
+ * given list, then bumps the catalogue version so reps know to re-download.
+ * Inserts in chunks to stay within request limits.
+ */
+export async function replaceAllCloudProducts(products) {
+  // 1. delete everything
+  const { error: delErr } = await supabase.from('products').delete().neq('id', '')
+  if (delErr) throw delErr
+
+  // 2. insert in chunks
+  const rows = products.map((p, idx) => ({
+    id: p.id || `p${idx}`,
+    name: p.name,
+    slabs: p.slabs || [],
+    base: p.base ?? null,
+    mrp: p.mrp ?? null,
+    retail: p.retail ?? null,
+    wholesale: p.wholesale ?? null,
+    net: p.net || [],
+    sort_order: idx
+  }))
+  const chunk = 500
+  for (let i = 0; i < rows.length; i += chunk) {
+    const { error } = await supabase.from('products').insert(rows.slice(i, i + chunk))
+    if (error) throw error
+  }
+
+  // 3. bump version
+  const meta = await getCatalogueMeta()
+  const nextVersion = (meta?.version || 0) + 1
+  const { error: metaErr } = await supabase
+    .from('catalogue_meta')
+    .update({ version: nextVersion, product_count: rows.length, updated_at: new Date().toISOString() })
+    .eq('id', 1)
+  if (metaErr) throw metaErr
+
+  return { count: rows.length, version: nextVersion }
+}

@@ -102,3 +102,41 @@ export async function readJsonFile(file) {
   const text = await file.text()
   return JSON.parse(text)
 }
+
+// Rich product import for admin management. Reads name + prices + scheme.
+// Accepts flexible column names. Scheme via Buy/Free columns or a "6+1" text.
+export async function importFullProducts(file) {
+  const rows = await readSheet(file, 'product')
+  const out = []
+  let id = 0
+  for (const row of rows) {
+    const name = pick(row, ['ItemName', 'Item Name', 'Product Name', 'Product', 'Name', 'Item'])
+    if (!name) continue
+    const numOrNull = (v) => {
+      const s = pick(row, Array.isArray(v) ? v : [v])
+      if (s === '') return null
+      const n = parseFloat(s.replace(/[^0-9.]/g, ''))
+      return isNaN(n) ? null : n
+    }
+    const mrp = numOrNull(['MRP', 'M.R.P'])
+    const retail = numOrNull(['rtpAfterTax', 'RTP', 'Retail', 'Retail Price', 'RP', 'Rate'])
+    const wholesale = numOrNull(['Wholesale', 'WSP', 'WP', 'Wholesale Price'])
+    const base = numOrNull(['baseRate', 'Base', 'Base Rate'])
+    const buy = numOrNull(['buy', 'Buy'])
+    const free = numOrNull(['free', 'Free'])
+    const net = numOrNull(['netAfterTax', 'Net', 'Net Rate', 'NR'])
+
+    const slabs = buy && free ? [[buy, free]] : []
+    out.push({
+      id: `p${id++}`,
+      name,
+      slabs,
+      base: base,
+      mrp,
+      retail,
+      wholesale,
+      net: base != null && net != null ? [net] : []
+    })
+  }
+  return out
+}
