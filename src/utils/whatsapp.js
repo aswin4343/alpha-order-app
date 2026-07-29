@@ -63,22 +63,37 @@ export function buildOrderMessage({ brand, customer, salesperson, items, isNewCu
     L.push(`*Credit Terms:* ${creditTerms(customer)}`)
   }
 
-  L.push('\uD83D\uDCE6 *ORDER ITEMS*')
-  L.push(RULE)
-  items.forEach((i, idx) => {
+  // Render one item's lines (name, qty, scheme if qualifying).
+  const pushItem = (i, idx) => {
     L.push(`${itemNumber(idx)} ${i.name}`)
     const unit = i.unit && i.unit !== 'Piece' ? ` ${i.unit}` : ''
     L.push(`   \u279C Qty: *${i.qty}*${unit}`)
-
-    // Show the scheme ONLY when this quantity actually qualifies for it.
-    // Uses the same slab-selection engine as the app UI.
     const res = calculateScheme(i.qty, i.slabs)
     if (res.free > 0 && res.slab) {
       L.push(
         `   \uD83C\uDF81 Scheme: Buy ${res.slab.buy} Get ${res.slab.free} Free (*${res.free} Free*)`
       )
     }
-  })
+  }
+
+  const addons = items.filter((i) => i.isAddon)
+  const originals = items.filter((i) => !i.isAddon)
+
+  if (addons.length > 0) {
+    // Rep loaded a previous order and added extras — split the two clearly so
+    // the office knows the ORIGINAL was already sent and only ADD-ONS are new.
+    L.push('\uD83D\uDCE6 *ORIGINAL ORDER*')
+    L.push(RULE)
+    originals.forEach((i, idx) => pushItem(i, idx))
+    L.push(RULE)
+    L.push('\u2795 *ADD-ONS* (newly added)')
+    L.push(RULE)
+    addons.forEach((i, idx) => pushItem(i, idx))
+  } else {
+    L.push('\uD83D\uDCE6 *ORDER ITEMS*')
+    L.push(RULE)
+    items.forEach((i, idx) => pushItem(i, idx))
+  }
 
   L.push(RULE)
   L.push('\uD83D\uDCCA *ORDER SUMMARY*')

@@ -32,7 +32,7 @@ function TeamStat({ label, value }) {
   )
 }
 
-export default function AdminDashboard({ onOpenProducts }) {
+export default function AdminDashboard({ onOpenProducts, onOpenSalespeople, onOpenAnnounce }) {
   const { profile, signOut } = useAuth()
   const [data, setData] = useState(null)
   const [error, setError] = useState(false)
@@ -118,6 +118,26 @@ export default function AdminDashboard({ onOpenProducts }) {
             >
               <span className="flex items-center gap-2 text-sm font-semibold text-slate-700">
                 📦 Product & Price Management
+              </span>
+              <span className="text-slate-300">›</span>
+            </button>
+
+            <button
+              onClick={onOpenSalespeople}
+              className="w-full rounded-2xl bg-white shadow-card border border-slate-100 p-3 mb-4 flex items-center justify-between active:bg-slate-50"
+            >
+              <span className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                👥 Salespeople (Rename)
+              </span>
+              <span className="text-slate-300">›</span>
+            </button>
+
+            <button
+              onClick={onOpenAnnounce}
+              className="w-full rounded-2xl bg-white shadow-card border border-slate-100 p-3 mb-4 flex items-center justify-between active:bg-slate-50"
+            >
+              <span className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                📢 Send Announcement
               </span>
               <span className="text-slate-300">›</span>
             </button>

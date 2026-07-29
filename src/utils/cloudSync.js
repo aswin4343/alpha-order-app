@@ -376,3 +376,136 @@ export async function replaceAllCloudProducts(products) {
 
   return { count: rows.length, version: nextVersion }
 }
+
+// ---------------------------------------------------------------------------
+// SALESPERSON MANAGEMENT (admin) — rename display names.
+// Login id/password are unchanged; only the shown name updates.
+// ---------------------------------------------------------------------------
+
+/** List all salespeople (admin only). */
+export async function listSalespeople() {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id, full_name, role, route')
+    .eq('role', 'salesperson')
+    .order('full_name', { ascending: true })
+  if (error) throw error
+  return data || []
+}
+
+/** Rename a salesperson's display name (admin only). */
+export async function renameSalesperson(id, newName) {
+  const { error } = await supabase
+    .from('profiles')
+    .update({ full_name: newName })
+    .eq('id', id)
+  if (error) throw error
+}
+
+// ---------------------------------------------------------------------------
+// ANNOUNCEMENTS (in-app notifications)
+// ---------------------------------------------------------------------------
+
+/** Admin: send an announcement to all reps or a selected list. */
+export async function sendAnnouncement({ title, body, highPriority, audience, repIds }) {
+  const uid = await currentUserId()
+  const { data: ann, error } = await supabase
+    .from('announcements')
+    .insert({
+      title,
+      body: body || '',
+      high_priority: !!highPriority,
+      audience,
+      created_by: uid
+    })
+    .select('id')
+    .single()
+  if (error) throw error
+
+  // Determine recipient list.
+  let targets = repIds
+  if (audience === 'all') {
+    const { data: reps, error: repErr } = await supabase
+      .from('profiles')
+      .select('id')
+      .eq('role', 'salesperson')
+    if (repErr) throw repErr
+    targets = (reps || []).map((r) => r.id)
+  }
+
+  if (targets && targets.length) {
+    const rows = targets.map((rid) => ({ announcement_id: ann.id, rep_id: rid }))
+    const { error: rErr } = await supabase.from('announcement_recipients').insert(rows)
+    if (rErr) throw rErr
+  }
+  return ann.id
+}
+
+/** Admin: list sent announcements (newest first) with recipient + read counts. */
+export async function listSentAnnouncements() {
+  const { data, error } = await supabase
+    .from('announcements')
+    .select('id, title, body, high_priority, audience, created_at, announcement_recipients(read_at)')
+    .order('created_at', { ascending: false })
+    .limit(50)
+  if (error) throw error
+  return (data || []).map((a) => {
+    const rcpts = a.announcement_recipients || []
+    return {
+      id: a.id,
+      title: a.title,
+      body: a.body,
+      highPriority: a.high_priority,
+      audience: a.audience,
+      createdAt: a.created_at,
+      total: rcpts.length,
+      read: rcpts.filter((r) => r.read_at).length
+    }
+  })
+}
+
+/** Rep: fetch my announcements (newest first) with my read status. */
+export async function loadMyAnnouncements() {
+  const uid = await currentUserId()
+  const { data, error } = await supabase
+    .from('announcement_recipients')
+    .select('id, read_at, announcements(id, title, body, high_priority, created_at)')
+    .eq('rep_id', uid)
+    .order('read_at', { ascending: true, nullsFirst: true })
+  if (error) throw error
+  const list = (data || [])
+    .filter((r) => r.announcements)
+    .map((r) => ({
+      recipientId: r.id,
+      readAt: r.read_at,
+      id: r.announcements.id,
+      title: r.announcements.title,
+      body: r.announcements.body,
+      highPriority: r.announcements.high_priority,
+      createdAt: r.announcements.created_at
+    }))
+    .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
+  return list
+}
+
+/** Rep: how many unread announcements (for the bell badge). */
+export async function countUnreadAnnouncements() {
+  const uid = await currentUserId()
+  if (!uid) return 0
+  const { count, error } = await supabase
+    .from('announcement_recipients')
+    .select('id', { count: 'exact', head: true })
+    .eq('rep_id', uid)
+    .is('read_at', null)
+  if (error) return 0
+  return count || 0
+}
+
+/** Rep: mark one announcement as read. */
+export async function markAnnouncementRead(recipientId) {
+  const { error } = await supabase
+    .from('announcement_recipients')
+    .update({ read_at: new Date().toISOString() })
+    .eq('id', recipientId)
+  if (error) console.error('mark read failed', error)
+}

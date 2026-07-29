@@ -8,6 +8,9 @@ import ReturnsPage from './pages/ReturnsPage.jsx'
 import PerformancePage from './pages/PerformancePage.jsx'
 import AdminDashboard from './pages/AdminDashboard.jsx'
 import ProductAdminPage from './pages/ProductAdminPage.jsx'
+import SalespeopleAdminPage from './pages/SalespeopleAdminPage.jsx'
+import AnnouncementsAdminPage from './pages/AnnouncementsAdminPage.jsx'
+import AnnouncementsPage from './pages/AnnouncementsPage.jsx'
 
 function Splash() {
   return (
@@ -21,6 +24,7 @@ export default function App() {
   const { loading, session, profile } = useAuth()
   const { ready } = useApp()
   const [route, setRoute] = useState('order')
+  const [unreadTick, setUnreadTick] = useState(0)
 
   // Wait for auth to resolve first.
   if (loading) return <Splash />
@@ -34,18 +38,30 @@ export default function App() {
   // Admins get the dashboard; salespeople get the ordering app.
   if (profile.role === 'admin') {
     if (route === 'products') return <ProductAdminPage onBack={() => setRoute('order')} />
-    return <AdminDashboard onOpenProducts={() => setRoute('products')} />
+    if (route === 'salespeople') return <SalespeopleAdminPage onBack={() => setRoute('order')} />
+    if (route === 'announce') return <AnnouncementsAdminPage onBack={() => setRoute('order')} />
+    return (
+      <AdminDashboard
+        onOpenProducts={() => setRoute('products')}
+        onOpenSalespeople={() => setRoute('salespeople')}
+        onOpenAnnounce={() => setRoute('announce')}
+      />
+    )
   }
 
   if (route === 'settings') return <SettingsPage onBack={() => setRoute('order')} />
   if (route === 'returns') return <ReturnsPage onBack={() => setRoute('order')} />
   if (route === 'performance') return <PerformancePage onBack={() => setRoute('order')} />
+  if (route === 'announcements')
+    return <AnnouncementsPage onBack={() => setRoute('order')} onChanged={() => setUnreadTick((t) => t + 1)} />
 
   return (
     <OrderPage
       onOpenSettings={() => setRoute('settings')}
       onOpenReturns={() => setRoute('returns')}
       onOpenPerformance={() => setRoute('performance')}
+      onOpenAnnouncements={() => setRoute('announcements')}
+      unreadTick={unreadTick}
     />
   )
 }

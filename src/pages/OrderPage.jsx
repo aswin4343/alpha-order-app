@@ -1,7 +1,7 @@
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
-import { saveCloudOrder, currentUserId } from '../utils/cloudSync.js'
+import { saveCloudOrder, currentUserId, countUnreadAnnouncements } from '../utils/cloudSync.js'
 import PreviousOrdersModal from '../components/PreviousOrdersModal.jsx'
 import { useSearch } from '../hooks/useSearch.js'
 import { useDebounce } from '../hooks/useDebounce.js'
@@ -9,14 +9,14 @@ import CustomerPicker from '../components/CustomerPicker.jsx'
 import ProductCard from '../components/ProductCard.jsx'
 import OrderSummaryBar from '../components/OrderSummaryBar.jsx'
 import BrandSelector from '../components/BrandSelector.jsx'
-import { SearchIcon, CloseIcon, SettingsIcon, ReturnIcon, ChartIcon } from '../components/Icons.jsx'
+import { SearchIcon, CloseIcon, SettingsIcon, ReturnIcon, ChartIcon, BellIcon } from '../components/Icons.jsx'
 import { buildOrderMessage, buildVisitMessage, buildWhatsappUrl } from '../utils/whatsapp.js'
 import VisitStatus from '../components/VisitStatus.jsx'
 import appIcon from '../assets/app_icon.png'
 
 const getProductText = (p) => p.name
 
-export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerformance }) {
+export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerformance, onOpenAnnouncements, unreadTick }) {
   const { settings, products, isIntroPending, clearIntro, saveVisit } = useApp()
   const { user, profile } = useAuth()
   const [customer, setCustomer] = useState(null)
@@ -28,7 +28,11 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   const [visitRemark, setVisitRemark] = useState('')
   const [gpsBusy, setGpsBusy] = useState(false)
   const [gpsFailed, setGpsFailed] = useState(false)
+  const [unread, setUnread] = useState(0)
   const [showPrevOrders, setShowPrevOrders] = useState(false)
+  // Product ids that came from a loaded previous order (the "original").
+  // Anything ordered on top of these becomes an ADD-ON in the message.
+  const [originalIds, setOriginalIds] = useState(null) // null = not a loaded order
 
   const debounced = useDebounce(query, 120)
   const searching = debounced.trim().length > 0
@@ -73,6 +77,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
       })
       setQuantities(nextQ)
       setUnits(nextU)
+      setOriginalIds(new Set(Object.keys(nextQ)))
       setShowPrevOrders(false)
       const loaded = Object.keys(nextQ).length
       setToast(
@@ -110,12 +115,18 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
             name: p.name,
             qty: quantities[id],
             unit: units[id] || 'Piece',
-            slabs: p.slabs
+            slabs: p.slabs,
+            // Add-on = added after loading a previous order.
+            isAddon: originalIds ? !originalIds.has(id) : false
           }
         })
         .filter(Boolean),
-    [quantities, units, productMap]
+    [quantities, units, productMap, originalIds]
   )
+
+  // Only treat as an add-on order if a previous order was loaded AND at least
+  // one new item was added on top of it.
+  const hasAddons = !!originalIds && items.some((i) => i.isAddon)
 
   const totalQty = items.reduce((s, i) => s + i.qty, 0)
   const isVisit = !!visitStatus
@@ -136,6 +147,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
     }
     setQuantities({})
     setUnits({})
+    setOriginalIds(null)
     setVisitStatus('')
     setVisitRemark('')
     setCustomer(c)
@@ -155,6 +167,16 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
       isNewCustomer: showIntro,
       location
     })
+
+  useEffect(() => {
+    let active = true
+    countUnreadAnnouncements().then((n) => {
+      if (active) setUnread(n)
+    })
+    return () => {
+      active = false
+    }
+  }, [unreadTick])
 
   const getLocation = () =>
     new Promise((resolve) => {
@@ -287,6 +309,18 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
           <BrandSelector />
           <div className="flex-1" />
           <button
+            onClick={onOpenAnnouncements}
+            aria-label="Announcements"
+            className="relative h-10 w-10 rounded-full flex items-center justify-center text-slate-500 active:bg-slate-100"
+          >
+            <BellIcon className="h-6 w-6" />
+            {unread > 0 && (
+              <span className="absolute top-1 right-1 min-w-[16px] h-4 px-1 rounded-full bg-red-500 text-white text-[10px] font-bold flex items-center justify-center">
+                {unread > 9 ? '9+' : unread}
+              </span>
+            )}
+          </button>
+          <button
             onClick={onOpenPerformance}
             aria-label="My performance"
             className="h-10 w-10 rounded-full flex items-center justify-center text-slate-500 active:bg-slate-100"
@@ -318,6 +352,14 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
           <div className="rounded-xl bg-blue-50 border border-blue-200 px-3 py-2">
             <p className="text-[12px] text-blue-800 font-medium">
               🆕 New customer — their details will be included with this first order.
+            </p>
+          </div>
+        )}
+
+        {originalIds && (
+          <div className="rounded-xl bg-indigo-50 border border-indigo-200 px-3 py-2">
+            <p className="text-[12px] text-indigo-800 font-medium">
+              📋 Editing a loaded order. New items you add will be sent under an <b>ADD-ONS</b> section.
             </p>
           </div>
         )}
