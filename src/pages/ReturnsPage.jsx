@@ -7,7 +7,7 @@ import BrandSelector from '../components/BrandSelector.jsx'
 import { BackIcon, PlusIcon, CloseIcon, WhatsAppIcon, SearchIcon, CopyIcon } from '../components/Icons.jsx'
 import { buildCreditNoteMessage, buildWhatsappUrl } from '../utils/whatsapp.js'
 
-const REASONS = ['Expired', 'Damaged']
+const REASONS = ['Expired', 'Damaged', 'No Need', 'Slow Moving', 'Other']
 const getProductText = (p) => `${p.name} ${p.brand || ''}`
 
 /** One return line: product picker + MRP + qty + reason. */
@@ -102,6 +102,15 @@ function ReturnLine({ line, index, onChange, onRemove, products }) {
           <option key={r} value={r}>{r}</option>
         ))}
       </select>
+
+      {line.reason === 'Other' && (
+        <input
+          value={line.customReason || ''}
+          onChange={(e) => onChange(line.key, { customReason: e.target.value })}
+          placeholder="Please specify the reason"
+          className="w-full mt-2 rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-brand-500"
+        />
+      )}
     </div>
   )
 }
@@ -110,7 +119,7 @@ export default function ReturnsPage({ onBack }) {
   const { settings, products } = useApp()
   const [customer, setCustomer] = useState(null)
   const [lines, setLines] = useState([
-    { key: 1, name: '', mrp: '', qty: '', reason: '' }
+    { key: 1, name: '', mrp: '', qty: '', reason: '', customReason: '' }
   ])
   const [toast, setToast] = useState('')
 
@@ -118,7 +127,7 @@ export default function ReturnsPage({ onBack }) {
     setLines((prev) => prev.map((l) => (l.key === key ? { ...l, ...patch } : l)))
 
   const addLine = () =>
-    setLines((prev) => [...prev, { key: Date.now(), name: '', mrp: '', qty: '', reason: '' }])
+    setLines((prev) => [...prev, { key: Date.now(), name: '', mrp: '', qty: '', reason: '', customReason: '' }])
 
   const removeLine = (key) =>
     setLines((prev) => (prev.length === 1 ? prev : prev.filter((l) => l.key !== key)))
@@ -127,7 +136,7 @@ export default function ReturnsPage({ onBack }) {
     () =>
       customer &&
       lines.length > 0 &&
-      lines.every((l) => l.name && l.mrp && Number(l.qty) > 0 && l.reason),
+      lines.every((l) => l.name && l.mrp && Number(l.qty) > 0 && l.reason && (l.reason !== 'Other' || l.customReason.trim())),
     [customer, lines]
   )
 
@@ -136,7 +145,7 @@ export default function ReturnsPage({ onBack }) {
       brand: settings.brand,
       customer,
       salesperson: settings.salesperson,
-      lines: lines.map((l) => ({ name: l.name, mrp: l.mrp, qty: l.qty, reason: l.reason })),
+      lines: lines.map((l) => ({ name: l.name, mrp: l.mrp, qty: l.qty, reason: l.reason === 'Other' ? (l.customReason.trim() || 'Other') : l.reason })),
       location
     })
 

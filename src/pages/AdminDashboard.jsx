@@ -61,7 +61,7 @@ export default function AdminDashboard({ onOpenProducts, onOpenSalespeople, onOp
   return (
     <div className="min-h-screen bg-slate-50 pb-10">
       <header className="sticky top-0 z-20 bg-white border-b border-slate-100 safe-top">
-        <div className="mx-auto max-w-md px-3 py-2.5 flex items-center gap-2">
+        <div className="mx-auto max-w-5xl px-3 sm:px-6 py-2.5 flex items-center gap-2">
           <img src={appIcon} alt="" className="h-8 w-8 rounded-lg object-contain" />
           <div className="flex-1 min-w-0">
             <h1 className="text-base font-bold text-slate-800 leading-tight">Admin Dashboard</h1>
@@ -82,7 +82,7 @@ export default function AdminDashboard({ onOpenProducts, onOpenSalespeople, onOp
         </div>
       </header>
 
-      <main className="mx-auto max-w-md px-3 pt-3">
+      <main className="mx-auto max-w-5xl px-3 sm:px-6 pt-3">
         {error && (
           <p className="text-center text-sm text-red-500 py-6">
             Could not load dashboard. Check your connection and try Refresh.
@@ -111,37 +111,40 @@ export default function AdminDashboard({ onOpenProducts, onOpenSalespeople, onOp
               Today: {data.teamToday.orders} orders · {data.teamToday.visits} visits
             </p>
 
-            {/* Management tools */}
-            <button
-              onClick={onOpenProducts}
-              className="w-full rounded-2xl bg-white shadow-card border border-slate-100 p-3 mb-4 flex items-center justify-between active:bg-slate-50"
-            >
-              <span className="flex items-center gap-2 text-sm font-semibold text-slate-700">
-                📦 Product & Price Management
-              </span>
-              <span className="text-slate-300">›</span>
-            </button>
+            {/* Management tools — row on desktop, stacked on mobile */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-4">
+              <button
+                onClick={onOpenProducts}
+                className="rounded-2xl bg-white shadow-card border border-slate-100 p-3 flex items-center justify-between active:bg-slate-50"
+              >
+                <span className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                  📦 Product & Price
+                </span>
+                <span className="text-slate-300">›</span>
+              </button>
+              <button
+                onClick={onOpenSalespeople}
+                className="rounded-2xl bg-white shadow-card border border-slate-100 p-3 flex items-center justify-between active:bg-slate-50"
+              >
+                <span className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                  👥 Salespeople
+                </span>
+                <span className="text-slate-300">›</span>
+              </button>
+              <button
+                onClick={onOpenAnnounce}
+                className="rounded-2xl bg-white shadow-card border border-slate-100 p-3 flex items-center justify-between active:bg-slate-50"
+              >
+                <span className="flex items-center gap-2 text-sm font-semibold text-slate-700">
+                  📢 Announcement
+                </span>
+                <span className="text-slate-300">›</span>
+              </button>
+            </div>
 
-            <button
-              onClick={onOpenSalespeople}
-              className="w-full rounded-2xl bg-white shadow-card border border-slate-100 p-3 mb-4 flex items-center justify-between active:bg-slate-50"
-            >
-              <span className="flex items-center gap-2 text-sm font-semibold text-slate-700">
-                👥 Salespeople (Rename)
-              </span>
-              <span className="text-slate-300">›</span>
-            </button>
-
-            <button
-              onClick={onOpenAnnounce}
-              className="w-full rounded-2xl bg-white shadow-card border border-slate-100 p-3 mb-4 flex items-center justify-between active:bg-slate-50"
-            >
-              <span className="flex items-center gap-2 text-sm font-semibold text-slate-700">
-                📢 Send Announcement
-              </span>
-              <span className="text-slate-300">›</span>
-            </button>
-
+            {/* Two-column layout on desktop: leaderboard | activity */}
+            <div className="lg:grid lg:grid-cols-2 lg:gap-6">
+            <div>
             {/* Period toggle */}
             <div className="flex gap-1.5 mb-3">
               {PERIODS.map((p) => (
@@ -214,6 +217,9 @@ export default function AdminDashboard({ onOpenProducts, onOpenSalespeople, onOp
               )}
             </div>
 
+            </div>{/* end leaderboard column */}
+
+            <div>
             {/* Recent activity */}
             <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2 px-1">
               Recent Activity
@@ -239,6 +245,9 @@ export default function AdminDashboard({ onOpenProducts, onOpenSalespeople, onOp
                 <p className="text-center text-sm text-slate-400 py-6">No activity yet.</p>
               )}
             </div>
+
+            </div>{/* end activity column */}
+            </div>{/* end two-column grid */}
 
             <p className="text-center text-[11px] text-slate-400 mt-5">
               Score = orders×10 + new shops×15 + visits×2 + qty÷10

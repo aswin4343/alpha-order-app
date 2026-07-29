@@ -16,23 +16,88 @@ import appIcon from '../assets/app_icon.png'
 
 const getProductText = (p) => p.name
 
+// ---- Working-session persistence (survives background reloads) ----
+const SESSION_KEY = 'atl_order_session_v1'
+
+function loadSession() {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY)
+    if (!raw) return null
+    const s = JSON.parse(raw)
+    // Only restore if there is actual work in progress.
+    const hasWork =
+      s &&
+      (s.customer ||
+        (s.quantities && Object.keys(s.quantities).length) ||
+        s.visitStatus)
+    return hasWork ? s : null
+  } catch {
+    return null
+  }
+}
+
+function saveSession(state) {
+  try {
+    const hasWork =
+      state.customer ||
+      (state.quantities && Object.keys(state.quantities).length) ||
+      state.visitStatus
+    if (hasWork) {
+      localStorage.setItem(SESSION_KEY, JSON.stringify(state))
+    } else {
+      localStorage.removeItem(SESSION_KEY)
+    }
+  } catch {
+    /* storage full or unavailable — ignore */
+  }
+}
+
+function clearSession() {
+  try {
+    localStorage.removeItem(SESSION_KEY)
+  } catch {
+    /* ignore */
+  }
+}
+
 export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerformance, onOpenAnnouncements, unreadTick }) {
   const { settings, products, isIntroPending, clearIntro, saveVisit } = useApp()
   const { user, profile } = useAuth()
-  const [customer, setCustomer] = useState(null)
+
+  // Restore any in-progress order that was interrupted (app switch, background
+  // reload, screen lock). Mobile browsers often discard the page in the
+  // background, so we persist the working session and rehydrate it here.
+  const saved = loadSession()
+
+  const [customer, setCustomer] = useState(saved?.customer ?? null)
   const [query, setQuery] = useState('')
-  const [quantities, setQuantities] = useState({}) // { id: qty }
-  const [units, setUnits] = useState({}) // { id: 'Piece'|'Box' }
+  const [quantities, setQuantities] = useState(saved?.quantities ?? {}) // { id: qty }
+  const [units, setUnits] = useState(saved?.units ?? {}) // { id: 'Piece'|'Box' }
   const [toast, setToast] = useState('')
-  const [visitStatus, setVisitStatus] = useState('')
-  const [visitRemark, setVisitRemark] = useState('')
+  const [visitStatus, setVisitStatus] = useState(saved?.visitStatus ?? '')
+  const [visitRemark, setVisitRemark] = useState(saved?.visitRemark ?? '')
   const [gpsBusy, setGpsBusy] = useState(false)
   const [gpsFailed, setGpsFailed] = useState(false)
   const [unread, setUnread] = useState(0)
   const [showPrevOrders, setShowPrevOrders] = useState(false)
   // Product ids that came from a loaded previous order (the "original").
   // Anything ordered on top of these becomes an ADD-ON in the message.
-  const [originalIds, setOriginalIds] = useState(null) // null = not a loaded order
+  const [originalIds, setOriginalIds] = useState(
+    saved?.originalIds ? new Set(saved.originalIds) : null
+  )
+
+  // Continuously persist the working session so nothing is lost if the browser
+  // reloads the page after returning from another app.
+  useEffect(() => {
+    saveSession({
+      customer,
+      quantities,
+      units,
+      visitStatus,
+      visitRemark,
+      originalIds: originalIds ? Array.from(originalIds) : null
+    })
+  }, [customer, quantities, units, visitStatus, visitRemark, originalIds])
 
   const debounced = useDebounce(query, 120)
   const searching = debounced.trim().length > 0
@@ -227,6 +292,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
     setVisitStatus('')
     setVisitRemark('')
     setCustomer(null)
+    clearSession()
     setToast('Visit recorded')
     setTimeout(() => setToast(''), 2600)
   }
@@ -295,6 +361,8 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
       window.open(buildWhatsappUrl(text), '_blank')
     }
     if (showIntro) clearIntro(customer.id)
+    // Order has been dispatched — the working session is no longer "unsaved".
+    clearSession()
   }
 
   const handleSend = () => dispatchOrder(false)
