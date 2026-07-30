@@ -509,3 +509,65 @@ export async function markAnnouncementRead(recipientId) {
     .eq('id', recipientId)
   if (error) console.error('mark read failed', error)
 }
+
+// ===========================================================================
+// V4 DELIVERY MODULE — Phase 4A (foundation: admin view, staff, assignment)
+// ===========================================================================
+
+/** Delivery Admin: dashboard counts + all deliveries (optionally by route). */
+export async function loadDeliveryAdmin(routeFilter) {
+  let q = supabase
+    .from('deliveries')
+    .select('id, order_id, shop_name, route, sales_rep_name, assigned_to, assigned_at, status, created_at')
+    .order('created_at', { ascending: false })
+  if (routeFilter) q = q.eq('route', routeFilter)
+  const { data, error } = await q
+  if (error) throw error
+  const deliveries = data || []
+
+  const counts = {
+    total: deliveries.length,
+    pending: deliveries.filter((d) => d.status === 'pending').length,
+    assigned: deliveries.filter((d) => d.status === 'assigned').length,
+    in_progress: deliveries.filter((d) => d.status === 'in_progress').length,
+    delivered: deliveries.filter((d) => d.status === 'delivered').length,
+    partial: deliveries.filter((d) => d.status === 'partial').length,
+    failed: deliveries.filter((d) => d.status === 'failed').length
+  }
+
+  // Distinct routes for the filter dropdown.
+  const routes = Array.from(new Set(deliveries.map((d) => d.route).filter(Boolean))).sort()
+
+  return { deliveries, counts, routes }
+}
+
+/** List delivery staff (reps). */
+export async function listDeliveryStaff() {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id, full_name, mobile, assigned_routes, active, role')
+    .eq('role', 'delivery_rep')
+    .order('full_name', { ascending: true })
+  if (error) throw error
+  return data || []
+}
+
+/** Edit delivery staff details (name, mobile, routes, active). */
+export async function updateDeliveryStaff(id, patch) {
+  const { error } = await supabase.from('profiles').update(patch).eq('id', id)
+  if (error) throw error
+}
+
+/** Assign a delivery to a staff member. */
+export async function assignDelivery(deliveryId, staffId) {
+  const { error } = await supabase
+    .from('deliveries')
+    .update({
+      assigned_to: staffId,
+      assigned_at: new Date().toISOString(),
+      status: 'assigned',
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', deliveryId)
+  if (error) throw error
+}

@@ -72,6 +72,8 @@ export function AuthProvider({ children }) {
     profile,
     role: profile?.role ?? null,
     isAdmin: profile?.role === 'admin',
+    isDeliveryAdmin: profile?.role === 'delivery_admin',
+    isDeliveryRep: profile?.role === 'delivery_rep',
     loading,
     signIn,
     signOut

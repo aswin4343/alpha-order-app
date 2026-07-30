@@ -11,6 +11,8 @@ import ProductAdminPage from './pages/ProductAdminPage.jsx'
 import SalespeopleAdminPage from './pages/SalespeopleAdminPage.jsx'
 import AnnouncementsAdminPage from './pages/AnnouncementsAdminPage.jsx'
 import AnnouncementsPage from './pages/AnnouncementsPage.jsx'
+import DeliveryAdminDashboard from './pages/DeliveryAdminDashboard.jsx'
+import DeliveryRepDashboard from './pages/DeliveryRepDashboard.jsx'
 
 function Splash() {
   return (
@@ -48,6 +50,11 @@ export default function App() {
       />
     )
   }
+
+  // V4 Delivery roles — completely separate screens. Sales users never reach
+  // here, so the existing Sales experience is unchanged (backward compatible).
+  if (profile.role === 'delivery_admin') return <DeliveryAdminDashboard />
+  if (profile.role === 'delivery_rep') return <DeliveryRepDashboard />
 
   if (route === 'settings') return <SettingsPage onBack={() => setRoute('order')} />
   if (route === 'returns') return <ReturnsPage onBack={() => setRoute('order')} />
