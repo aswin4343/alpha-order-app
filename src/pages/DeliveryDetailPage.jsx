@@ -7,6 +7,7 @@ import {
   startDelivery
 } from '../utils/cloudSync.js'
 import { buildDeliveryReport } from '../utils/whatsapp.js'
+import { uploadDeliveryPhoto } from '../utils/photoUpload.js'
 import { BackIcon } from '../components/Icons.jsx'
 
 // Fixed undelivered reasons + Other.
@@ -29,6 +30,9 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted }) {
   const [toast, setToast] = useState('')
   const [completed, setCompleted] = useState(false)
   const [reportText, setReportText] = useState('')
+  const [billPhoto, setBillPhoto] = useState(null)   // {url}
+  const [productPhoto, setProductPhoto] = useState(null)
+  const [uploading, setUploading] = useState('')
 
   useEffect(() => {
     let active = true
@@ -79,6 +83,28 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted }) {
       )
     })
 
+  // Capture + upload a photo (camera preferred). kind: 'bill' | 'product'
+  const onPhoto = async (kind, e) => {
+    const file = e.target.files?.[0]
+    e.target.value = ''
+    if (!file) return
+    setUploading(kind)
+    try {
+      const res = await uploadDeliveryPhoto(delivery.id, file, kind)
+      if (kind === 'bill') setBillPhoto(res)
+      else setProductPhoto(res)
+      setToast(kind === 'bill' ? 'Bill photo added' : 'Product photo added')
+    } catch (err) {
+      console.error(err)
+      setToast('Photo upload failed — try again')
+    } finally {
+      setUploading('')
+      setTimeout(() => setToast(''), 2600)
+    }
+  }
+
+  const hasPhoto = !!billPhoto || !!productPhoto
+
   // Validation: any undelivered item needs a reason.
   const ready =
     items &&
@@ -88,6 +114,11 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted }) {
   const finish = async () => {
     if (!ready) {
       setToast('Add a reason for each item not delivered.')
+      setTimeout(() => setToast(''), 2600)
+      return
+    }
+    if (!hasPhoto) {
+      setToast('At least one photo (bill or product) is required.')
       setTimeout(() => setToast(''), 2600)
       return
     }
@@ -106,7 +137,8 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted }) {
         note: note.trim(),
         location: loc,
         deliveredBy: profile?.full_name || 'Delivery',
-        status
+        status,
+        photos: [billPhoto, productPhoto].filter(Boolean)
       })
       setReportText(text)
       setCompleted(true)
@@ -260,6 +292,30 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted }) {
                   className="w-full rounded-xl border border-slate-200 px-3 py-3 outline-none focus:border-brand-500 resize-none"
                 />
               </div>
+
+              {/* Proof-of-delivery photos (camera). At least one required. */}
+              <div className="mt-4">
+                <p className="text-sm font-medium text-slate-600 mb-2">
+                  Proof photos <span className="text-red-500">*</span>
+                  <span className="text-xs text-slate-400 ml-1">(at least one)</span>
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  <PhotoTile
+                    label="Bill Photo"
+                    photo={billPhoto}
+                    uploading={uploading === 'bill'}
+                    onCapture={(e) => onPhoto('bill', e)}
+                    inputId="bill-photo"
+                  />
+                  <PhotoTile
+                    label="Product Photo"
+                    photo={productPhoto}
+                    uploading={uploading === 'product'}
+                    onCapture={(e) => onPhoto('product', e)}
+                    inputId="product-photo"
+                  />
+                </div>
+              </div>
             </>
           )
         )}
@@ -270,14 +326,14 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted }) {
           <div className="mx-auto max-w-md">
             <button
               onClick={finish}
-              disabled={busy || !ready}
+              disabled={busy || !ready || !hasPhoto}
               className={`w-full rounded-xl py-4 font-bold ${
-                ready && !busy
+                ready && hasPhoto && !busy
                   ? 'bg-brand-600 text-white active:bg-brand-700'
                   : 'bg-slate-100 text-slate-400'
               }`}
             >
-              {busy ? 'Saving…' : 'Complete Delivery'}
+              {busy ? 'Saving…' : !hasPhoto ? 'Add a photo to complete' : 'Complete Delivery'}
             </button>
           </div>
         </div>
@@ -294,3 +350,46 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted }) {
   )
 }
 
+
+// A single photo capture tile. `capture="environment"` opens the rear camera
+// directly on mobile; accept="image/*" ensures it's an image.
+function PhotoTile({ label, photo, uploading, onCapture, inputId }) {
+  return (
+    <div className="rounded-2xl border border-slate-200 bg-white p-2">
+      <p className="text-[11px] font-medium text-slate-500 mb-1.5 text-center">{label}</p>
+      {photo ? (
+        <div className="relative">
+          <img src={photo.url} alt={label} className="w-full h-28 object-cover rounded-xl" />
+          <label
+            htmlFor={inputId}
+            className="absolute bottom-1 right-1 bg-white/90 text-brand-700 text-[10px] font-semibold px-2 py-1 rounded-lg shadow"
+          >
+            Retake
+          </label>
+        </div>
+      ) : (
+        <label
+          htmlFor={inputId}
+          className="flex flex-col items-center justify-center h-28 rounded-xl border-2 border-dashed border-slate-200 text-slate-400 cursor-pointer active:bg-slate-50"
+        >
+          {uploading ? (
+            <div className="h-6 w-6 rounded-full border-2 border-brand-100 border-t-brand-600 animate-spin" />
+          ) : (
+            <>
+              <span className="text-2xl">📷</span>
+              <span className="text-[11px] mt-1">Take photo</span>
+            </>
+          )}
+        </label>
+      )}
+      <input
+        id={inputId}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        onChange={onCapture}
+        className="hidden"
+      />
+    </div>
+  )
+}

@@ -263,10 +263,6 @@ function StaffManager({ staff, onChanged }) {
 
   return (
     <div>
-      <p className="text-xs text-slate-500 mb-3 px-1">
-        Delivery staff are created in Supabase with the <b>delivery_rep</b> role. Here you set
-        their name, mobile, routes, and enable/disable them.
-      </p>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
         {staff.map((s) => (
           <div key={s.id} className="rounded-2xl bg-white shadow-card border border-slate-100 p-3">

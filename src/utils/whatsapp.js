@@ -221,7 +221,7 @@ export function buildWhatsappUrl(message, number = ORDER_WHATSAPP_NUMBER) {
 
 // Delivery completion report — copyable text. Photo links are pasted
 // separately by the rep (photos handled in Phase 4C).
-export function buildDeliveryReport({ delivery, items, note, location, deliveredBy, status }) {
+export function buildDeliveryReport({ delivery, items, note, location, deliveredBy, status, photos }) {
   const L = []
   L.push(TOP)
   L.push('\uD83D\uDE9A  *DELIVERY REPORT*')
@@ -257,6 +257,14 @@ export function buildDeliveryReport({ delivery, items, note, location, delivered
   if (deliveredBy) {
     L.push('')
     L.push(`\uD83D\uDE9A *Delivered by:* ${deliveredBy}`)
+  }
+  if (photos && photos.length) {
+    L.push('\uD83D\uDCF7 *PROOF PHOTOS*')
+    L.push(RULE)
+    photos.forEach((ph) => {
+      const label = ph.kind === 'bill' ? 'Bill' : 'Product'
+      L.push(`${label}: ${ph.url}`)
+    })
   }
   const now = new Date()
   L.push(`*Time:* ${now.toLocaleString('en-IN')}`)
