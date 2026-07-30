@@ -571,3 +571,90 @@ export async function assignDelivery(deliveryId, staffId) {
     .eq('id', deliveryId)
   if (error) throw error
 }
+
+// ===========================================================================
+// V4 DELIVERY — Phase 4B (rep execution: checklist + completion)
+// ===========================================================================
+
+/**
+ * Load a delivery's products for the checklist. Seeds delivery_items from the
+ * order's order_items on first open (so the rep sees exactly what to deliver).
+ */
+export async function loadDeliveryDetail(delivery) {
+  // Already seeded?
+  const { data: existing, error: exErr } = await supabase
+    .from('delivery_items')
+    .select('*')
+    .eq('delivery_id', delivery.id)
+    .order('created_at', { ascending: true })
+  if (exErr) throw exErr
+
+  if (existing && existing.length) return existing
+
+  // Seed from the order's items.
+  const { data: orderItems, error: oiErr } = await supabase
+    .from('order_items')
+    .select('product_name, qty, unit')
+    .eq('order_id', delivery.order_id)
+  if (oiErr) throw oiErr
+
+  const rows = (orderItems || []).map((oi) => ({
+    delivery_id: delivery.id,
+    product_name: oi.product_name,
+    ordered_qty: oi.qty,
+    unit: oi.unit || 'Piece',
+    delivered: false,
+    delivered_qty: null,
+    reason: ''
+  }))
+  if (rows.length) {
+    const { data: inserted, error: insErr } = await supabase
+      .from('delivery_items')
+      .insert(rows)
+      .select('*')
+    if (insErr) throw insErr
+    return inserted
+  }
+  return []
+}
+
+/** Save the checklist state for one delivery item. */
+export async function saveDeliveryItem(itemId, patch) {
+  const { error } = await supabase.from('delivery_items').update(patch).eq('id', itemId)
+  if (error) throw error
+}
+
+/**
+ * Complete a delivery. Determines overall status from the items:
+ *  - all delivered → 'delivered'
+ *  - none delivered → 'failed'
+ *  - some → 'partial'
+ */
+export async function completeDelivery({ deliveryId, items, note, location }) {
+  const anyDelivered = items.some((i) => i.delivered)
+  const allDelivered = items.every((i) => i.delivered)
+  const status = allDelivered ? 'delivered' : anyDelivered ? 'partial' : 'failed'
+
+  const { error } = await supabase
+    .from('deliveries')
+    .update({
+      status,
+      completion_note: note || '',
+      completed_at: new Date().toISOString(),
+      latitude: location?.latitude ?? null,
+      longitude: location?.longitude ?? null,
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', deliveryId)
+  if (error) throw error
+  return status
+}
+
+/** Mark a delivery as in-progress (rep opened/started it). */
+export async function startDelivery(deliveryId) {
+  await supabase
+    .from('deliveries')
+    .update({ status: 'in_progress', updated_at: new Date().toISOString() })
+    .eq('id', deliveryId)
+    .eq('status', 'assigned') // only bump from assigned
+}

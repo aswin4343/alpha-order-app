@@ -218,3 +218,48 @@ export function buildVisitCopyText({ customer, salesperson, reason }) {
 export function buildWhatsappUrl(message, number = ORDER_WHATSAPP_NUMBER) {
   return `https://wa.me/${number}?text=${encodeURIComponent(message)}`
 }
+
+// Delivery completion report — copyable text. Photo links are pasted
+// separately by the rep (photos handled in Phase 4C).
+export function buildDeliveryReport({ delivery, items, note, location, deliveredBy, status }) {
+  const L = []
+  L.push(TOP)
+  L.push('\uD83D\uDE9A  *DELIVERY REPORT*')
+  L.push(`\uD83C\uDFE2 *${BRANDS[0]}*`)
+  L.push(BOT)
+  L.push('*DELIVERY DETAILS*')
+  L.push(RULE)
+  L.push(`*Shop:* ${delivery.shop_name}`)
+  if (delivery.route) L.push(`*Route:* ${delivery.route}`)
+  const statusLabel =
+    status === 'delivered' ? '\u2705 Fully Delivered'
+      : status === 'partial' ? '\u26A0\uFE0F Partially Delivered'
+      : '\u274C Not Delivered'
+  L.push(`*Status:* ${statusLabel}`)
+  L.push('\uD83D\uDCE6 *ITEMS*')
+  L.push(RULE)
+  items.forEach((i, idx) => {
+    const mark = i.delivered ? '\u2705' : '\u274C'
+    const qty =
+      i.delivered && i.delivered_qty != null && i.delivered_qty !== i.ordered_qty
+        ? `${i.delivered_qty}/${i.ordered_qty}`
+        : `${i.ordered_qty}`
+    const unit = i.unit && i.unit !== 'Piece' ? ` ${i.unit}` : ''
+    L.push(`${mark} ${idx + 1}. ${i.product_name} — *${qty}*${unit}`)
+    if (!i.delivered && i.reason) L.push(`     \u2192 ${i.reason}`)
+  })
+  if (note) {
+    L.push('\uD83D\uDCDD *NOTE*')
+    L.push(RULE)
+    L.push(note)
+  }
+  L.push(locationLine(location))
+  if (deliveredBy) {
+    L.push('')
+    L.push(`\uD83D\uDE9A *Delivered by:* ${deliveredBy}`)
+  }
+  const now = new Date()
+  L.push(`*Time:* ${now.toLocaleString('en-IN')}`)
+  L.push(EQ)
+  return L.join('\n')
+}

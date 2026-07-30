@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
 import { supabase } from '../utils/supabase.js'
 import appIcon from '../assets/app_icon.png'
+import DeliveryDetailPage from './DeliveryDetailPage.jsx'
 
 /**
  * Delivery Rep dashboard — Phase 4A shows their assigned orders (read-only).
@@ -12,25 +13,38 @@ export default function DeliveryRepDashboard() {
   const { profile, signOut } = useAuth()
   const [list, setList] = useState(null)
   const [error, setError] = useState(false)
+  const [selected, setSelected] = useState(null)
+
+  const load = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('deliveries')
+        .select('id, order_id, shop_name, route, sales_rep_name, status, created_at')
+        .order('created_at', { ascending: false })
+      if (error) throw error
+      setList(data || [])
+    } catch {
+      setError(true)
+    }
+  }
 
   useEffect(() => {
-    let active = true
-    ;(async () => {
-      try {
-        const { data, error } = await supabase
-          .from('deliveries')
-          .select('id, shop_name, route, sales_rep_name, status, created_at')
-          .order('created_at', { ascending: false })
-        if (error) throw error
-        if (active) setList(data || [])
-      } catch {
-        if (active) setError(true)
-      }
-    })()
-    return () => {
-      active = false
-    }
+    load()
   }, [])
+
+  // Show the detail screen when a delivery is opened.
+  if (selected) {
+    return (
+      <DeliveryDetailPage
+        delivery={selected}
+        onBack={() => setSelected(null)}
+        onCompleted={() => {
+          setSelected(null)
+          load()
+        }}
+      />
+    )
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 pb-10">
@@ -64,19 +78,34 @@ export default function DeliveryRepDashboard() {
         <div className="space-y-2">
           {list &&
             list.map((d) => (
-              <div key={d.id} className="rounded-2xl bg-white shadow-card border border-slate-100 p-3">
-                <p className="font-semibold text-slate-800">{d.shop_name}</p>
-                <p className="text-[11px] text-slate-400">
-                  {d.route || 'No route'} · Sales: {d.sales_rep_name || '—'}
-                </p>
-                <span className="inline-block mt-1.5 text-[10px] font-semibold px-2 py-0.5 rounded-full bg-blue-50 text-blue-700">
-                  {d.status}
-                </span>
-              </div>
+              <button
+                key={d.id}
+                onClick={() => setSelected(d)}
+                className="w-full text-left rounded-2xl bg-white shadow-card border border-slate-100 p-3 active:bg-slate-50"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-slate-800 truncate">{d.shop_name}</p>
+                    <p className="text-[11px] text-slate-400 truncate">
+                      {d.route || 'No route'} · Sales: {d.sales_rep_name || '—'}
+                    </p>
+                    <span className={`inline-block mt-1.5 text-[10px] font-semibold px-2 py-0.5 rounded-full ${
+                      d.status === 'delivered' ? 'bg-green-50 text-green-700'
+                        : d.status === 'partial' ? 'bg-orange-50 text-orange-700'
+                        : d.status === 'failed' ? 'bg-red-50 text-red-700'
+                        : d.status === 'in_progress' ? 'bg-amber-50 text-amber-700'
+                        : 'bg-blue-50 text-blue-700'
+                    }`}>
+                      {d.status}
+                    </span>
+                  </div>
+                  <span className="text-slate-300 text-xl shrink-0">›</span>
+                </div>
+              </button>
             ))}
         </div>
         <p className="text-center text-[11px] text-slate-400 mt-6">
-          Delivery checklist, proof-of-delivery photos and completion are coming next.
+          Tap a delivery to view items and complete it. Proof-of-delivery photos come next.
         </p>
       </main>
     </div>
