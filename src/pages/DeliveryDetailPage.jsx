@@ -107,9 +107,12 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted }) {
     setPhotoError('')
     try {
       const res = await uploadDeliveryPhoto(delivery.id, file, kind)
-      if (kind === 'bill') setBillPhoto(res)
-      else setProductPhoto(res)
-      setToast(kind === 'bill' ? 'Bill photo added' : 'Product photo added')
+      // Add a cache-buster so the freshly-uploaded image shows immediately as a
+      // thumbnail (no manual refresh needed), even if the CDN is still warming.
+      const shown = { ...res, url: `${res.url}?t=${Date.now()}` }
+      if (kind === 'bill') setBillPhoto(shown)
+      else setProductPhoto(shown)
+      setToast(kind === 'bill' ? 'Bill photo added ✓' : 'Product photo added ✓')
       setTimeout(() => setToast(''), 2600)
     } catch (err) {
       console.error('photo upload error', err)
@@ -156,7 +159,9 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted }) {
         location: loc,
         deliveredBy: profile?.full_name || 'Delivery',
         status,
-        photos: [billPhoto, productPhoto].filter(Boolean)
+        photos: [billPhoto, productPhoto]
+          .filter(Boolean)
+          .map((p) => ({ ...p, url: p.url.split('?')[0] }))
       })
       setReportText(text)
       setCompleted(true)
@@ -383,11 +388,16 @@ function PhotoTile({ label, photo, uploading, onCapture, inputId }) {
       {photo ? (
         <div className="relative">
           <img src={photo.url} alt={label} className="w-full h-28 object-cover rounded-xl" />
+          {uploading && (
+            <div className="absolute inset-0 bg-white/70 rounded-xl flex items-center justify-center">
+              <div className="h-6 w-6 rounded-full border-2 border-brand-100 border-t-brand-600 animate-spin" />
+            </div>
+          )}
           <label
             htmlFor={inputId}
             className="absolute bottom-1 right-1 bg-white/90 text-brand-700 text-[10px] font-semibold px-2 py-1 rounded-lg shadow"
           >
-            Retake
+            {uploading ? 'Uploading…' : 'Retake'}
           </label>
         </div>
       ) : (

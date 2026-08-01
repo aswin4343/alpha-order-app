@@ -89,7 +89,7 @@ export async function loadDeliveryPhotos(deliveryId) {
     .from('delivery_photos')
     .select('id, kind, url, created_at')
     .eq('delivery_id', deliveryId)
-    .order('created_at', { ascending: true })
+    .order('created_at', { ascending: false }) // newest first, so retakes win
   if (error) return []
   return data || []
 }
