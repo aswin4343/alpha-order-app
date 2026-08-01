@@ -33,6 +33,7 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted }) {
   const [billPhoto, setBillPhoto] = useState(null)   // {url}
   const [productPhoto, setProductPhoto] = useState(null)
   const [uploading, setUploading] = useState('')
+  const [photoError, setPhotoError] = useState('')
 
   useEffect(() => {
     let active = true
@@ -89,17 +90,20 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted }) {
     e.target.value = ''
     if (!file) return
     setUploading(kind)
+    setPhotoError('')
     try {
       const res = await uploadDeliveryPhoto(delivery.id, file, kind)
       if (kind === 'bill') setBillPhoto(res)
       else setProductPhoto(res)
       setToast(kind === 'bill' ? 'Bill photo added' : 'Product photo added')
+      setTimeout(() => setToast(''), 2600)
     } catch (err) {
-      console.error(err)
-      setToast('Photo upload failed — try again')
+      console.error('photo upload error', err)
+      // Show the real reason so we can diagnose on the phone.
+      const reason = err?.message || err?.error || 'Unknown error'
+      setPhotoError(`Upload failed: ${reason}`)
     } finally {
       setUploading('')
-      setTimeout(() => setToast(''), 2600)
     }
   }
 
@@ -315,6 +319,11 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted }) {
                     inputId="product-photo"
                   />
                 </div>
+                {photoError && (
+                  <div className="mt-2 rounded-xl bg-red-50 border border-red-200 px-3 py-2">
+                    <p className="text-[12px] text-red-700 break-words">{photoError}</p>
+                  </div>
+                )}
               </div>
             </>
           )

@@ -43,13 +43,29 @@ export function compressImage(file, maxWidth = 1280, quality = 0.7) {
  * kind: 'bill' | 'product'
  */
 export async function uploadDeliveryPhoto(deliveryId, file, kind) {
-  const blob = await compressImage(file)
+  // Try to compress; if the phone's image can't be processed (e.g. HEIC or a
+  // canvas quirk), fall back to uploading the original file so a photo is
+  // never silently lost.
+  let blob
+  let ext = 'jpg'
+  let contentType = 'image/jpeg'
+  try {
+    blob = await compressImage(file)
+  } catch (e) {
+    console.warn('compression failed, uploading original', e)
+    blob = file
+    // keep original type/extension
+    contentType = file.type || 'image/jpeg'
+    const guess = (file.name && file.name.split('.').pop()) || 'jpg'
+    ext = guess.toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg'
+  }
+
   const stamp = Date.now()
-  const path = `${deliveryId}/${kind}_${stamp}.jpg`
+  const path = `${deliveryId}/${kind}_${stamp}.${ext}`
 
   const { error: upErr } = await supabase.storage
     .from(BUCKET)
-    .upload(path, blob, { contentType: 'image/jpeg', upsert: false })
+    .upload(path, blob, { contentType, upsert: false })
   if (upErr) throw upErr
 
   const { data } = supabase.storage.from(BUCKET).getPublicUrl(path)

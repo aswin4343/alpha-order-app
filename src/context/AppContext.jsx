@@ -70,6 +70,50 @@ async function syncProductsFromCloud(localProducts) {
   }
 }
 
+// Download the shared customer list and merge with local records. Local records
+// (which carry full phone/GST/address) are preserved; cloud-only shops are added
+// so new shops created by any rep appear for everyone. Matching is by
+// shop name + route (case-insensitive) to avoid duplicates.
+async function syncCustomersFromCloud(localCustomers) {
+  try {
+    const { fetchAllCloudCustomers } = await import('../utils/cloudSync.js')
+    const cloud = await fetchAllCloudCustomers()
+    if (!cloud || !cloud.length) return null
+
+    const key = (name, route) =>
+      `${(name || '').trim().toUpperCase()}|${(route || '').trim().toUpperCase()}`
+    const haveKeys = new Set((localCustomers || []).map((c) => key(c.name, c.route)))
+
+    const additions = []
+    cloud.forEach((cc) => {
+      const k = key(cc.shop_name, cc.route)
+      if (!haveKeys.has(k)) {
+        additions.push({
+          id: `cloud_${cc.id}`,
+          name: cc.shop_name,
+          area: '',
+          route: cc.route || '',
+          category: cc.category || '',
+          creditDays: 'No Credit',
+          gstn: '',
+          phone: '',
+          email: '',
+          fromCloud: true
+        })
+        haveKeys.add(k)
+      }
+    })
+
+    if (!additions.length) return null
+    const merged = [...localCustomers, ...additions]
+    await bulkPut('customers', merged)
+    return merged
+  } catch (e) {
+    console.error('customer cloud sync failed (using local)', e)
+    return null
+  }
+}
+
 export function AppProvider({ children }) {
   const [settings, setSettings] = useState(loadSettings)
   // Set of customer ids awaiting their one-time "NEW CUSTOMER" block.
@@ -104,6 +148,13 @@ export function AppProvider({ children }) {
         // this just refreshes it when signal is available.
         syncProductsFromCloud(p).then((fresh) => {
           if (!cancelled && fresh) setProducts(fresh)
+        })
+
+        // Also pull the shared customer list so shops created by ANY rep are
+        // visible to everyone. Merge: keep local records (which hold full PII)
+        // and add any cloud shops this device doesn't have yet.
+        syncCustomersFromCloud(cFixed).then((merged) => {
+          if (!cancelled && merged) setCustomers(merged)
         })
       } catch (e) {
         console.error('Init failed', e)
@@ -158,13 +209,19 @@ export function AppProvider({ children }) {
       // Register this genuinely new shop in the cloud right away, flagged as
       // rep-created, so it counts as a "new shop" even before its first order.
       // PII (phone/GST/email) stays local — only shop name + route + category go up.
+      let cloudSaved = false
       try {
         const { currentUserId, ensureCloudCustomer } = await import('../utils/cloudSync.js')
         const uid = await currentUserId()
-        if (uid) await ensureCloudCustomer(rec, uid, true)
+        if (uid) {
+          const cloudId = await ensureCloudCustomer(rec, uid, true)
+          cloudSaved = !!cloudId
+        }
       } catch (e) {
         console.error('cloud new-customer register failed', e)
+        cloudSaved = false
       }
+      rec._cloudSaved = cloudSaved
 
       // Queue this customer's details to ride along with their first order.
       setPendingIntro((prev) => {

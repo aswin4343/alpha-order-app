@@ -42,8 +42,25 @@ export async function ensureCloudCustomer(customer, userId, repCreated = false) 
     .select('id')
     .single()
   if (error) {
+    // If the is_rep_created column doesn't exist yet (older DB), retry without it
+    // so the customer still saves to the cloud (name + route are what matter).
+    if (String(error.message || '').toLowerCase().includes('is_rep_created')) {
+      const retry = await supabase
+        .from('customers')
+        .insert({
+          shop_name: customer.name,
+          route: customer.route || '',
+          category: customer.category || '',
+          created_by: userId
+        })
+        .select('id')
+        .single()
+      if (!retry.error) return retry.data.id
+      console.error('cloud customer insert failed (retry)', retry.error)
+      throw retry.error
+    }
     console.error('cloud customer insert failed', error)
-    return null
+    throw error
   }
   return data.id
 }
@@ -657,4 +674,29 @@ export async function startDelivery(deliveryId) {
     .update({ status: 'in_progress', updated_at: new Date().toISOString() })
     .eq('id', deliveryId)
     .eq('status', 'assigned') // only bump from assigned
+}
+
+/**
+ * Fetch all shared customers from the cloud (shop name + route + category).
+ * Reps download these so new shops created by any rep are visible to everyone.
+ * PII (phone/GST/address) is NOT in the cloud, so downloaded shops have only
+ * the shared fields; locally-created ones keep their full details on-device.
+ */
+export async function fetchAllCloudCustomers() {
+  const pageSize = 1000
+  let from = 0
+  let all = []
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    const { data, error } = await supabase
+      .from('customers')
+      .select('id, shop_name, route, category, created_at')
+      .order('created_at', { ascending: false })
+      .range(from, from + pageSize - 1)
+    if (error) throw error
+    all = all.concat(data || [])
+    if (!data || data.length < pageSize) break
+    from += pageSize
+  }
+  return all
 }

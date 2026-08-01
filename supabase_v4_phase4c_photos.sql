@@ -1,20 +1,15 @@
 -- ============================================================================
 -- Alpha Trade Links V4 — Phase 4C (part 1): Proof-of-delivery photos
---
--- PRE-REQUISITE: In Supabase → Storage, create a PUBLIC bucket named
---   delivery-photos
--- Then run this SQL.
---
--- Run in Supabase → SQL Editor → New query → paste → Run.
+-- PRE-REQUISITE: create a PUBLIC Storage bucket named  delivery-photos
+-- Safe to re-run.
 -- ============================================================================
 
--- 1. Record photo references on each delivery.
 create table if not exists public.delivery_photos (
   id uuid primary key default gen_random_uuid(),
   delivery_id uuid references public.deliveries(id) on delete cascade,
   kind text not null default 'product' check (kind in ('bill','product')),
-  path text not null,              -- storage path within the bucket
-  url text not null,               -- public URL
+  path text not null,
+  url text not null,
   created_at timestamptz not null default now()
 );
 create index if not exists delivery_photos_delivery_idx on public.delivery_photos(delivery_id);
@@ -43,8 +38,7 @@ create policy dphotos_rep_insert on public.delivery_photos
             where d.id = delivery_id and d.assigned_to = auth.uid())
   );
 
--- 2. Storage bucket access policies (on storage.objects).
--- Any logged-in delivery user may upload to / read the delivery-photos bucket.
+-- Storage bucket access policies (on storage.objects).
 drop policy if exists "delivery photos upload" on storage.objects;
 create policy "delivery photos upload" on storage.objects
   for insert to authenticated
@@ -55,13 +49,9 @@ create policy "delivery photos read" on storage.objects
   for select to authenticated
   using ( bucket_id = 'delivery-photos' );
 
--- (Public bucket also allows anonymous read of the public URL, which is what
---  makes the WhatsApp links work.)
-
--- 3. Auto-delete photos older than 40 days.
--- Removes both the DB rows and the storage objects.
+-- Auto-delete photos older than 40 days (function only; scheduling is separate).
 create or replace function public.cleanup_old_delivery_photos()
-returns void language plpgsql security definer set search_path = public, storage as $$
+returns void language plpgsql security definer set search_path = public, storage as $func$
 declare
   old_path text;
 begin
@@ -73,22 +63,7 @@ begin
   end loop;
   delete from public.delivery_photos where created_at < now() - interval '40 days';
 end;
-$$;
+$func$;
 
--- Schedule it daily if pg_cron is available (safe if it isn't — just skip).
-do $$
-begin
-  if exists (select 1 from pg_extension where extname = 'pg_cron') then
-    perform cron.schedule(
-      'cleanup-delivery-photos',
-      '0 2 * * *',                       -- 2 AM daily
-      $$select public.cleanup_old_delivery_photos();$$
-    );
-  end if;
-exception when others then
-  -- ignore if cron not permitted
-  null;
-end $$;
-
--- Done. (If pg_cron isn't enabled, you can enable it under Database →
---  Extensions, or run select public.cleanup_old_delivery_photos(); manually.)
+-- Done. Photos work now.
+-- (Optional auto-schedule is in a SEPARATE script: supabase_v4_photos_schedule.sql)

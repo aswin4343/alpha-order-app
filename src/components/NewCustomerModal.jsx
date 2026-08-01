@@ -89,6 +89,15 @@ export default function NewCustomerModal({ initialName = '', onClose, onCreated 
     setSaving(true)
     try {
       const rec = await addCustomer(f)
+      // Warn if the shop couldn't be saved to the shared cloud (e.g. no signal).
+      // It's saved on this phone, but other reps won't see it until it syncs.
+      if (rec && rec._cloudSaved === false) {
+        window.alert(
+          'Customer saved on this phone, but could NOT be saved to the shared cloud ' +
+            '(check internet). Other reps won\'t see it yet. It will need to sync when ' +
+            'you are back online.'
+        )
+      }
       onCreated(rec)
     } finally {
       setSaving(false)
