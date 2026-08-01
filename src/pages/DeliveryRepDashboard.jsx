@@ -13,7 +13,27 @@ export default function DeliveryRepDashboard() {
   const { profile, signOut } = useAuth()
   const [list, setList] = useState(null)
   const [error, setError] = useState(false)
+  // Persist which delivery is open, so returning from the camera (which can
+  // reload the page in the background) restores the delivery detail screen
+  // instead of dropping the rep back to the list and losing their photo.
   const [selected, setSelected] = useState(null)
+
+  const openDelivery = (d) => {
+    setSelected(d)
+    try {
+      localStorage.setItem('atl_open_delivery', JSON.stringify(d))
+    } catch {
+      /* ignore */
+    }
+  }
+  const closeDelivery = () => {
+    setSelected(null)
+    try {
+      localStorage.removeItem('atl_open_delivery')
+    } catch {
+      /* ignore */
+    }
+  }
 
   const load = async () => {
     try {
@@ -30,6 +50,13 @@ export default function DeliveryRepDashboard() {
 
   useEffect(() => {
     load()
+    // Restore an open delivery if we were mid-delivery before a reload.
+    try {
+      const raw = localStorage.getItem('atl_open_delivery')
+      if (raw) setSelected(JSON.parse(raw))
+    } catch {
+      /* ignore */
+    }
   }, [])
 
   // Show the detail screen when a delivery is opened.
@@ -37,9 +64,9 @@ export default function DeliveryRepDashboard() {
     return (
       <DeliveryDetailPage
         delivery={selected}
-        onBack={() => setSelected(null)}
+        onBack={closeDelivery}
         onCompleted={() => {
-          setSelected(null)
+          closeDelivery()
           load()
         }}
       />
@@ -80,7 +107,7 @@ export default function DeliveryRepDashboard() {
             list.map((d) => (
               <button
                 key={d.id}
-                onClick={() => setSelected(d)}
+                onClick={() => openDelivery(d)}
                 className="w-full text-left rounded-2xl bg-white shadow-card border border-slate-100 p-3 active:bg-slate-50"
               >
                 <div className="flex items-center justify-between">

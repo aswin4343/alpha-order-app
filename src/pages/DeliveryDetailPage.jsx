@@ -43,6 +43,20 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted }) {
         if (!active) return
         setItems(rows)
         startDelivery(delivery.id) // mark in-progress
+        // Reload any photos already uploaded for this delivery, so returning
+        // from the camera (which can reload the page) doesn't lose them.
+        try {
+          const { loadDeliveryPhotos } = await import('../utils/photoUpload.js')
+          const photos = await loadDeliveryPhotos(delivery.id)
+          if (active && photos) {
+            const bill = photos.find((p) => p.kind === 'bill')
+            const prod = photos.find((p) => p.kind === 'product')
+            if (bill) setBillPhoto({ url: bill.url, kind: 'bill' })
+            if (prod) setProductPhoto({ url: prod.url, kind: 'product' })
+          }
+        } catch (e) {
+          console.error('reload photos failed', e)
+        }
       } catch (e) {
         console.error(e)
         if (active) setError(true)
