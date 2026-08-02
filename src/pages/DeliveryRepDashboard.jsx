@@ -42,7 +42,24 @@ export default function DeliveryRepDashboard() {
         .select('id, order_id, shop_name, route, sales_rep_name, status, created_at')
         .order('created_at', { ascending: false })
       if (error) throw error
-      setList(data || [])
+      const deliveries = data || []
+
+      // Fetch each shop's verified location, attach it, and sort nearest-to-hub
+      // first. Shops without a location yet fall to the end.
+      try {
+        const { fetchShopLocations } = await import('../utils/cloudSync.js')
+        const { sortByHubDistance } = await import('../utils/geo.js')
+        const names = [...new Set(deliveries.map((d) => d.shop_name))]
+        const locs = await fetchShopLocations(names)
+        const withLoc = deliveries.map((d) => {
+          const l = locs[(d.shop_name || '').toUpperCase()]
+          return { ...d, latitude: l?.latitude ?? null, longitude: l?.longitude ?? null }
+        })
+        setList(sortByHubDistance(withLoc))
+      } catch (e) {
+        console.error('distance sort failed, showing unsorted', e)
+        setList(deliveries)
+      }
     } catch {
       setError(true)
     }
@@ -105,17 +122,26 @@ export default function DeliveryRepDashboard() {
         <div className="space-y-2">
           {list &&
             list.map((d) => (
-              <button
+              <div
                 key={d.id}
                 onClick={() => openDelivery(d)}
-                className="w-full text-left rounded-2xl bg-white shadow-card border border-slate-100 p-3 active:bg-slate-50"
+                className="w-full text-left rounded-2xl bg-white shadow-card border border-slate-100 p-3 active:bg-slate-50 cursor-pointer"
               >
-                <div className="flex items-center justify-between">
+                <div className="flex items-center justify-between gap-2">
                   <div className="min-w-0">
                     <p className="font-semibold text-slate-800 truncate">{d.shop_name}</p>
                     <p className="text-[11px] text-slate-400 truncate">
                       {d.route || 'No route'} · Sales: {d.sales_rep_name || '—'}
                     </p>
+                    {d._distanceKm != null ? (
+                      <p className="text-[11px] text-brand-600 font-medium mt-0.5">
+                        📍 {d._distanceKm.toFixed(1)} km from hub
+                      </p>
+                    ) : (
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        📍 Location not captured yet
+                      </p>
+                    )}
                     <span className={`inline-block mt-1.5 text-[10px] font-semibold px-2 py-0.5 rounded-full ${
                       d.status === 'delivered' ? 'bg-green-50 text-green-700'
                         : d.status === 'partial' ? 'bg-orange-50 text-orange-700'
@@ -126,9 +152,22 @@ export default function DeliveryRepDashboard() {
                       {d.status}
                     </span>
                   </div>
-                  <span className="text-slate-300 text-xl shrink-0">›</span>
+                  <div className="flex items-center gap-2 shrink-0">
+                    {d.latitude != null && d.longitude != null && (
+                      <a
+                        href={`https://www.google.com/maps/dir/?api=1&destination=${d.latitude},${d.longitude}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={(e) => e.stopPropagation()}
+                        className="flex items-center gap-1 rounded-lg bg-brand-50 text-brand-700 text-[11px] font-semibold px-2.5 py-1.5 active:bg-brand-100"
+                      >
+                        🧭 Navigate
+                      </a>
+                    )}
+                    <span className="text-slate-300 text-xl">›</span>
+                  </div>
                 </div>
-              </button>
+              </div>
             ))}
         </div>
         <p className="text-center text-[11px] text-slate-400 mt-6">

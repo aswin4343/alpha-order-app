@@ -532,12 +532,18 @@ export async function markAnnouncementRead(recipientId) {
 // ===========================================================================
 
 /** Delivery Admin: dashboard counts + all deliveries (optionally by route). */
-export async function loadDeliveryAdmin(routeFilter) {
+export async function loadDeliveryAdmin(routeFilter, dateFilter) {
   let q = supabase
     .from('deliveries')
     .select('id, order_id, shop_name, route, sales_rep_name, assigned_to, assigned_at, status, created_at')
     .order('created_at', { ascending: false })
   if (routeFilter) q = q.eq('route', routeFilter)
+  if (dateFilter) {
+    // dateFilter is a 'YYYY-MM-DD' string — show only that day's deliveries.
+    const start = new Date(`${dateFilter}T00:00:00`)
+    const end = new Date(`${dateFilter}T23:59:59.999`)
+    q = q.gte('created_at', start.toISOString()).lte('created_at', end.toISOString())
+  }
   const { data, error } = await q
   if (error) throw error
   const deliveries = data || []
@@ -555,7 +561,20 @@ export async function loadDeliveryAdmin(routeFilter) {
   // Distinct routes for the filter dropdown.
   const routes = Array.from(new Set(deliveries.map((d) => d.route).filter(Boolean))).sort()
 
-  return { deliveries, counts, routes }
+  // Attach each shop's verified location and sort nearest-to-hub first.
+  try {
+    const names = [...new Set(deliveries.map((d) => d.shop_name))]
+    const locs = await fetchShopLocations(names)
+    const { sortByHubDistance } = await import('./geo.js')
+    const withLoc = deliveries.map((d) => {
+      const l = locs[(d.shop_name || '').toUpperCase()]
+      return { ...d, latitude: l?.latitude ?? null, longitude: l?.longitude ?? null }
+    })
+    return { deliveries: sortByHubDistance(withLoc), counts, routes }
+  } catch (e) {
+    console.error('admin distance sort failed', e)
+    return { deliveries, counts, routes }
+  }
 }
 
 /** List delivery staff (reps). */
@@ -720,4 +739,57 @@ export async function bulkAssignRoute(route, staffId) {
     .select('id')
   if (error) throw error
   return data ? data.length : 0
+}
+
+// ===========================================================================
+// V4 DELIVERY — Phase 4C part 2: shop location (verified via delivery)
+// ===========================================================================
+
+/**
+ * Save the delivered GPS location to the shop's customer master record.
+ * ALWAYS overwrites with the latest (one location per shop). Matches the
+ * customer by the delivery's shop_name + route (that's what the cloud stores).
+ */
+export async function saveShopLocation({ shopName, route, latitude, longitude }) {
+  if (latitude == null || longitude == null) return
+  // Find the customer row by shop name (+ route if available).
+  let q = supabase.from('customers').select('id, first_verified_date').ilike('shop_name', shopName)
+  if (route) q = q.eq('route', route)
+  const { data: matches, error } = await q.limit(1)
+  if (error) {
+    console.error('shop location lookup failed', error)
+    return
+  }
+  const now = new Date().toISOString()
+  if (matches && matches.length) {
+    const c = matches[0]
+    const patch = {
+      shop_latitude: latitude,
+      shop_longitude: longitude,
+      location_verified: true,
+      last_delivery_date: now
+    }
+    if (!c.first_verified_date) patch.first_verified_date = now
+    const { error: upErr } = await supabase.from('customers').update(patch).eq('id', c.id)
+    if (upErr) console.error('shop location update failed', upErr)
+  }
+}
+
+/** Fetch verified locations for a set of shop names (for admin distance view). */
+export async function fetchShopLocations(shopNames) {
+  if (!shopNames || !shopNames.length) return {}
+  const { data, error } = await supabase
+    .from('customers')
+    .select('shop_name, route, shop_latitude, shop_longitude, location_verified')
+    .in('shop_name', shopNames)
+  if (error) return {}
+  const map = {}
+  ;(data || []).forEach((c) => {
+    map[(c.shop_name || '').toUpperCase()] = {
+      latitude: c.shop_latitude,
+      longitude: c.shop_longitude,
+      verified: c.location_verified
+    }
+  })
+  return map
 }

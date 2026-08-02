@@ -54,6 +54,7 @@ export default function DeliveryAdminDashboard() {
   const [data, setData] = useState(null)
   const [staff, setStaff] = useState([])
   const [routeFilter, setRouteFilter] = useState('')
+  const [dateFilter, setDateFilter] = useState('') // 'YYYY-MM-DD' or ''
   const [tab, setTab] = useState('orders') // 'orders' | 'staff'
   const [error, setError] = useState(false)
   const [busyId, setBusyId] = useState(null)
@@ -65,7 +66,7 @@ export default function DeliveryAdminDashboard() {
   const refresh = async () => {
     setError(false)
     try {
-      const [d, s] = await Promise.all([loadDeliveryAdmin(routeFilter || undefined), listDeliveryStaff()])
+      const [d, s] = await Promise.all([loadDeliveryAdmin(routeFilter || undefined, dateFilter || undefined), listDeliveryStaff()])
       setData(d)
       setStaff(s)
     } catch (e) {
@@ -77,7 +78,7 @@ export default function DeliveryAdminDashboard() {
   useEffect(() => {
     refresh()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [routeFilter])
+  }, [routeFilter, dateFilter])
 
   const doAssign = async (deliveryId, staffId) => {
     if (!staffId) return
@@ -178,6 +179,35 @@ export default function DeliveryAdminDashboard() {
 
             {tab === 'orders' && (
               <>
+                {/* Date filter */}
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <input
+                    type="date"
+                    value={dateFilter}
+                    onChange={(e) => setDateFilter(e.target.value)}
+                    className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-brand-500 bg-white"
+                  />
+                  <button
+                    onClick={() => setDateFilter(new Date().toISOString().slice(0, 10))}
+                    className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-600 active:bg-slate-50"
+                  >
+                    Today
+                  </button>
+                  {dateFilter && (
+                    <button
+                      onClick={() => setDateFilter('')}
+                      className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-red-600 active:bg-red-50"
+                    >
+                      Clear date
+                    </button>
+                  )}
+                  {dateFilter && (
+                    <span className="text-[12px] text-slate-500">
+                      Showing {new Date(dateFilter).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}
+                    </span>
+                  )}
+                </div>
+
                 {/* Route filter + bulk assign */}
                 <div className="mb-3 flex flex-col sm:flex-row gap-2 sm:items-center">
                   <select
@@ -214,6 +244,11 @@ export default function DeliveryAdminDashboard() {
                             <p className="text-[11px] text-slate-400 truncate">
                               {d.route || 'No route'} · Sales: {d.sales_rep_name || '—'}
                             </p>
+                            {d._distanceKm != null && (
+                              <p className="text-[10px] text-brand-600 font-medium mt-0.5">
+                                📍 {d._distanceKm.toFixed(1)} km from hub
+                              </p>
+                            )}
                             <p className="text-[10px] text-slate-400 mt-0.5">{fmt(d.created_at)}</p>
                           </div>
                           <span className={`text-[10px] font-semibold px-2 py-1 rounded-full shrink-0 ${STATUS_STYLE[d.status]}`}>
