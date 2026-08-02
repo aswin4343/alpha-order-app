@@ -73,6 +73,9 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   const [query, setQuery] = useState('')
   const [quantities, setQuantities] = useState(saved?.quantities ?? {}) // { id: qty }
   const [units, setUnits] = useState(saved?.units ?? {}) // { id: 'Piece'|'Box' }
+  // One-time price overrides for THIS order only: { id: { retail?, wholesale? } }
+  // Cleared on reset / new order / customer switch — never touches the DB.
+  const [priceOverrides, setPriceOverrides] = useState(saved?.priceOverrides ?? {})
   const [toast, setToast] = useState('')
   const [visitStatus, setVisitStatus] = useState(saved?.visitStatus ?? '')
   const [visitRemark, setVisitRemark] = useState(saved?.visitRemark ?? '')
@@ -95,9 +98,10 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
       units,
       visitStatus,
       visitRemark,
-      originalIds: originalIds ? Array.from(originalIds) : null
+      originalIds: originalIds ? Array.from(originalIds) : null,
+      priceOverrides
     })
-  }, [customer, quantities, units, visitStatus, visitRemark, originalIds])
+  }, [customer, quantities, units, visitStatus, visitRemark, originalIds, priceOverrides])
 
   const debounced = useDebounce(query, 120)
   const searching = debounced.trim().length > 0
@@ -165,6 +169,10 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   }, [])
 
 
+  const onOverride = useCallback((id, patch) => {
+    setPriceOverrides((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }))
+  }, [])
+
   const onUnit = useCallback((id, val) => {
     setUnits((prev) => ({ ...prev, [id]: val }))
   }, [])
@@ -182,11 +190,14 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
             unit: units[id] || 'Piece',
             slabs: p.slabs,
             // Add-on = added after loading a previous order.
-            isAddon: originalIds ? !originalIds.has(id) : false
+            isAddon: originalIds ? !originalIds.has(id) : false,
+            retail: priceOverrides[id]?.retail != null ? priceOverrides[id].retail : p.retail,
+            wholesale: priceOverrides[id]?.wholesale != null ? priceOverrides[id].wholesale : p.wholesale,
+            priceOverridden: priceOverrides[id]?.retail != null || priceOverrides[id]?.wholesale != null
           }
         })
         .filter(Boolean),
-    [quantities, units, productMap, originalIds]
+    [quantities, units, productMap, originalIds, priceOverrides]
   )
 
   // Only treat as an add-on order if a previous order was loaded AND at least
@@ -212,6 +223,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
     }
     setQuantities({})
     setUnits({})
+    setPriceOverrides({})
     setOriginalIds(null)
     setVisitStatus('')
     setVisitRemark('')
@@ -477,6 +489,8 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
               key={p.id}
               product={p}
               qty={quantities[p.id] || 0}
+              override={priceOverrides[p.id]}
+              onOverride={onOverride}
               unit={units[p.id] || 'Piece'}
               onQty={onQty}
               onUnit={onUnit}

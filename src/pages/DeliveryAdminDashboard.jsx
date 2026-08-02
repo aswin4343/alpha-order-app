@@ -4,7 +4,8 @@ import {
   loadDeliveryAdmin,
   listDeliveryStaff,
   assignDelivery,
-  updateDeliveryStaff
+  updateDeliveryStaff,
+  bulkAssignRoute
 } from '../utils/cloudSync.js'
 import appIcon from '../assets/app_icon.png'
 
@@ -56,6 +57,10 @@ export default function DeliveryAdminDashboard() {
   const [tab, setTab] = useState('orders') // 'orders' | 'staff'
   const [error, setError] = useState(false)
   const [busyId, setBusyId] = useState(null)
+  const [bulkOpen, setBulkOpen] = useState(false)
+  const [bulkStaff, setBulkStaff] = useState('')
+  const [bulkBusy, setBulkBusy] = useState(false)
+  const [bulkMsg, setBulkMsg] = useState('')
 
   const refresh = async () => {
     setError(false)
@@ -84,6 +89,28 @@ export default function DeliveryAdminDashboard() {
       console.error(e)
     } finally {
       setBusyId(null)
+    }
+  }
+
+  const doBulkAssign = async () => {
+    if (!bulkStaff || !routeFilter) return
+    setBulkBusy(true)
+    setBulkMsg('')
+    try {
+      const n = await bulkAssignRoute(routeFilter, bulkStaff)
+      const name = staff.find((s) => s.id === bulkStaff)?.full_name || 'staff'
+      setBulkMsg(`Assigned ${n} unassigned order(s) on ${routeFilter} to ${name}.`)
+      await refresh()
+      setTimeout(() => {
+        setBulkOpen(false)
+        setBulkMsg('')
+        setBulkStaff('')
+      }, 1400)
+    } catch (e) {
+      console.error(e)
+      setBulkMsg('Could not bulk-assign. Try again.')
+    } finally {
+      setBulkBusy(false)
     }
   }
 
@@ -151,8 +178,8 @@ export default function DeliveryAdminDashboard() {
 
             {tab === 'orders' && (
               <>
-                {/* Route filter */}
-                <div className="mb-3">
+                {/* Route filter + bulk assign */}
+                <div className="mb-3 flex flex-col sm:flex-row gap-2 sm:items-center">
                   <select
                     value={routeFilter}
                     onChange={(e) => setRouteFilter(e.target.value)}
@@ -165,6 +192,14 @@ export default function DeliveryAdminDashboard() {
                       </option>
                     ))}
                   </select>
+                  {routeFilter && activeStaff.length > 0 && (
+                    <button
+                      onClick={() => setBulkOpen(true)}
+                      className="rounded-xl bg-brand-600 text-white px-4 py-2.5 text-sm font-semibold active:bg-brand-700 whitespace-nowrap"
+                    >
+                      Assign Staff to Route
+                    </button>
+                  )}
                 </div>
 
                 {/* Orders list */}
@@ -222,6 +257,52 @@ export default function DeliveryAdminDashboard() {
           </>
         )}
       </main>
+
+      {/* Bulk assign modal */}
+      {bulkOpen && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center px-6">
+          <div className="bg-white w-full max-w-sm rounded-3xl p-5">
+            <h2 className="font-bold text-slate-800 text-lg mb-1">Assign staff to route</h2>
+            <p className="text-sm text-slate-600 mb-3">
+              Assign all <b>unassigned</b> orders on <b>{routeFilter}</b> to one driver.
+              Already-assigned orders are left unchanged.
+            </p>
+            <select
+              value={bulkStaff}
+              onChange={(e) => setBulkStaff(e.target.value)}
+              className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-brand-500 bg-white mb-3"
+            >
+              <option value="">Select driver…</option>
+              {activeStaff.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.full_name}
+                </option>
+              ))}
+            </select>
+            {bulkMsg && <p className="text-[13px] text-slate-700 mb-3">{bulkMsg}</p>}
+            <div className="flex gap-2">
+              <button
+                onClick={() => {
+                  setBulkOpen(false)
+                  setBulkStaff('')
+                  setBulkMsg('')
+                }}
+                disabled={bulkBusy}
+                className="flex-1 rounded-xl border border-slate-200 py-3 font-semibold text-slate-600"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={doBulkAssign}
+                disabled={bulkBusy || !bulkStaff}
+                className="flex-1 rounded-xl bg-brand-600 text-white py-3 font-bold active:bg-brand-700 disabled:bg-slate-300"
+              >
+                {bulkBusy ? 'Assigning…' : 'Assign All'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

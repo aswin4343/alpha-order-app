@@ -1,4 +1,4 @@
-import { memo } from 'react'
+import { memo, useState } from 'react'
 import QtyStepper from './QtyStepper.jsx'
 import { schemeBadge, calculateScheme, netRate } from '../utils/schemes.js'
 
@@ -22,14 +22,76 @@ function Tag({ label, value, accent }) {
 }
 
 /**
+ * Editable price pill: shows the value with a pencil. Tapping the pencil turns
+ * it into an input for a ONE-TIME override (this order only). An overridden
+ * value is shown in an accent colour with a small dot.
+ */
+function EditableTag({ label, value, overridden, onChange }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+  if (value == null || value === '') return null
+
+  const start = () => {
+    setDraft(String(value))
+    setEditing(true)
+  }
+  const commit = () => {
+    const n = parseFloat(String(draft).replace(/[^0-9.]/g, ''))
+    if (!isNaN(n) && n > 0) onChange(n)
+    setEditing(false)
+  }
+
+  if (editing) {
+    return (
+      <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md border bg-white border-brand-300">
+        <span className="opacity-70">{label}</span>
+        <input
+          autoFocus
+          type="number"
+          inputMode="decimal"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => e.key === 'Enter' && commit()}
+          className="w-12 text-[11px] outline-none border-b border-brand-300"
+        />
+      </span>
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={start}
+      className={`inline-flex items-baseline gap-0.5 text-[10px] leading-none font-semibold px-1.5 py-1 rounded-md border ${
+        overridden
+          ? 'bg-amber-50 border-amber-300 text-amber-800'
+          : 'bg-slate-50 border-slate-200 text-slate-600'
+      }`}
+    >
+      <span className="opacity-70">{label}</span>
+      <span>
+        ₹{value}
+        {overridden && <span className="ml-0.5">•</span>}
+      </span>
+      <span className="ml-0.5 opacity-60">✏️</span>
+    </button>
+  )
+}
+
+/**
  * Product row. Scheme products show BR/NR; all others show RP/WP.
  * Layout is tuned for one-hand use on a phone.
  */
-function ProductCard({ product, qty, unit, onQty, onUnit }) {
+function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride }) {
   const selected = qty > 0
   const badge = schemeBadge(product.slabs)
   const hasScheme = !!badge
   const result = selected ? calculateScheme(qty, product.slabs) : null
+
+  // Effective prices: use a one-time override if the rep set one for this order.
+  const effRetail = override?.retail != null ? override.retail : product.retail
+  const effWholesale = override?.wholesale != null ? override.wholesale : product.wholesale
 
   const currentNet =
     result?.slab && product.base
@@ -55,6 +117,9 @@ function ProductCard({ product, qty, unit, onQty, onUnit }) {
           </span>
         )}
 
+        {/* MRP — shown only when a value exists (no placeholder otherwise). */}
+        <Tag label="MRP" value={product.mrp} />
+
         {hasScheme ? (
           <>
             <Tag label="BR" value={product.base} />
@@ -62,8 +127,18 @@ function ProductCard({ product, qty, unit, onQty, onUnit }) {
           </>
         ) : (
           <>
-            <Tag label="RP" value={product.retail} />
-            <Tag label="WP" value={product.wholesale} />
+            <EditableTag
+              label="RP"
+              value={effRetail}
+              overridden={override?.retail != null}
+              onChange={(v) => onOverride(product.id, { retail: v })}
+            />
+            <EditableTag
+              label="WP"
+              value={effWholesale}
+              overridden={override?.wholesale != null}
+              onChange={(v) => onOverride(product.id, { wholesale: v })}
+            />
           </>
         )}
       </div>

@@ -107,8 +107,12 @@ export async function readJsonFile(file) {
 // Accepts flexible column names. Scheme via Buy/Free columns or a "6+1" text.
 export async function importFullProducts(file) {
   const rows = await readSheet(file, 'product')
-  const out = []
+  // Group by product name so a product with several scheme rows becomes ONE
+  // product with multiple slabs — not several duplicate product cards.
+  const byName = new Map() // upperName -> product
+  const order = [] // preserve first-seen order
   let id = 0
+
   for (const row of rows) {
     const name = pick(row, ['ItemName', 'Item Name', 'Product Name', 'Product', 'Name', 'Item'])
     if (!name) continue
@@ -126,17 +130,36 @@ export async function importFullProducts(file) {
     const free = numOrNull(['free', 'Free'])
     const net = numOrNull(['netAfterTax', 'Net', 'Net Rate', 'NR'])
 
-    const slabs = buy && free ? [[buy, free]] : []
-    out.push({
-      id: `p${id++}`,
-      name,
-      slabs,
-      base: base,
-      mrp,
-      retail,
-      wholesale,
-      net: base != null && net != null ? [net] : []
-    })
+    const key = name.trim().toUpperCase()
+    let prod = byName.get(key)
+    if (!prod) {
+      prod = {
+        id: `p${id++}`,
+        name: name.trim(),
+        slabs: [],
+        base: base ?? null,
+        mrp: mrp ?? null,
+        retail: retail ?? null,
+        wholesale: wholesale ?? null,
+        net: []
+      }
+      byName.set(key, prod)
+      order.push(prod)
+    } else {
+      // Fill any missing price fields from later rows (first non-null wins).
+      if (prod.mrp == null && mrp != null) prod.mrp = mrp
+      if (prod.retail == null && retail != null) prod.retail = retail
+      if (prod.wholesale == null && wholesale != null) prod.wholesale = wholesale
+      if (prod.base == null && base != null) prod.base = base
+    }
+
+    // Append this row's scheme (if it has one) to the product's slab list.
+    if (buy && free) {
+      prod.slabs.push([buy, free])
+      // Keep net aligned to slabs when a base+net is provided.
+      if (net != null) prod.net.push(net)
+    }
   }
-  return out
+
+  return order
 }

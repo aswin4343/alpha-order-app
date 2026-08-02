@@ -700,3 +700,24 @@ export async function fetchAllCloudCustomers() {
   }
   return all
 }
+
+/**
+ * Bulk-assign all UNASSIGNED deliveries on a given route to one staff member.
+ * Only affects pending/unassigned orders — already-assigned ones are left as-is
+ * so the admin's individual choices aren't overwritten.
+ */
+export async function bulkAssignRoute(route, staffId) {
+  const { data, error } = await supabase
+    .from('deliveries')
+    .update({
+      assigned_to: staffId,
+      assigned_at: new Date().toISOString(),
+      status: 'assigned',
+      updated_at: new Date().toISOString()
+    })
+    .eq('route', route)
+    .is('assigned_to', null)
+    .select('id')
+  if (error) throw error
+  return data ? data.length : 0
+}

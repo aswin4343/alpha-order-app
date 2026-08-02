@@ -28,9 +28,6 @@ function creditTerms(customer) {
 }
 
 export function buildOrderMessage({ brand, customer, salesperson, items, isNewCustomer = false, location = null }) {
-  const totalProducts = items.length
-  const totalQty = items.reduce((s, i) => s + i.qty, 0)
-
   const L = []
   L.push(TOP)
   L.push('\uD83D\uDED2  *NEW ORDER RECEIVED*')
@@ -68,6 +65,10 @@ export function buildOrderMessage({ brand, customer, salesperson, items, isNewCu
     L.push(`${itemNumber(idx)} ${i.name}`)
     const unit = i.unit && i.unit !== 'Piece' ? ` ${i.unit}` : ''
     L.push(`   \u279C Qty: *${i.qty}*${unit}`)
+    // Show the special price only when the rep overrode it for this order.
+    if (i.priceOverridden && i.retail != null) {
+      L.push(`   \uD83D\uDCB0 Special Price: *\u20B9${i.retail}*`)
+    }
     const res = calculateScheme(i.qty, i.slabs)
     if (res.free > 0 && res.slab) {
       L.push(
@@ -96,10 +97,8 @@ export function buildOrderMessage({ brand, customer, salesperson, items, isNewCu
   }
 
   L.push(RULE)
-  L.push('\uD83D\uDCCA *ORDER SUMMARY*')
+  L.push('*ORDER SUMMARY*')
   L.push(RULE)
-  L.push(`\uD83D\uDCE6 Total Products : *${totalProducts}*`)
-  L.push(`\uD83D\uDD22 Total Quantity : *${totalQty}*`)
   if (salesperson) L.push(`\uD83D\uDC68\u200D\uD83D\uDCBC *Salesperson:* ${salesperson}`)
   L.push(locationLine(location))
   L.push(EQ)
