@@ -105,28 +105,71 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
 
   const debounced = useDebounce(query, 120)
   const searching = debounced.trim().length > 0
-  const searchResults = useSearch(products, debounced, getProductText, 80)
+
+  // Merge any products that share the same name into a single entry, combining
+  // their scheme slabs. This guarantees a product appears only ONCE even if the
+  // catalogue stored its schemes as separate rows/products. Prices come from the
+  // first entry that has them; slabs are concatenated (de-duplicated).
+  const groupedProducts = useMemo(() => {
+    const byName = new Map()
+    const order = []
+    products.forEach((p) => {
+      const key = (p.name || '').trim().toUpperCase()
+      let g = byName.get(key)
+      if (!g) {
+        g = {
+          ...p,
+          slabs: Array.isArray(p.slabs) ? [...p.slabs] : [],
+          net: Array.isArray(p.net) ? [...p.net] : []
+        }
+        byName.set(key, g)
+        order.push(g)
+      } else {
+        // Merge schemes from this duplicate into the existing card.
+        if (Array.isArray(p.slabs)) {
+          p.slabs.forEach((slab, idx) => {
+            const dup = g.slabs.some((s) => s[0] === slab[0] && s[1] === slab[1])
+            if (!dup) {
+              g.slabs.push(slab)
+              if (Array.isArray(p.net) && p.net[idx] != null) g.net.push(p.net[idx])
+            }
+          })
+        }
+        // Fill any missing prices from the duplicate.
+        if (g.mrp == null && p.mrp != null) g.mrp = p.mrp
+        if (g.retail == null && p.retail != null) g.retail = p.retail
+        if (g.wholesale == null && p.wholesale != null) g.wholesale = p.wholesale
+        if (g.base == null && p.base != null) g.base = p.base
+      }
+    })
+    // Keep slabs sorted by buy quantity for a tidy badge.
+    order.forEach((g) => g.slabs.sort((a, b) => a[0] - b[0]))
+    return order
+  }, [products])
+
+  // Search over the GROUPED list so results also show one card per product.
+  const searchResults = useSearch(groupedProducts, debounced, getProductText, 80)
 
   // Lookup by exact product name (for reloading previous orders).
   const productByName = useMemo(() => {
     const m = new Map()
-    products.forEach((p) => m.set(p.name.toUpperCase(), p))
+    groupedProducts.forEach((p) => m.set(p.name.toUpperCase(), p))
     return m
-  }, [products])
+  }, [groupedProducts])
 
   const productMap = useMemo(() => {
     const m = new Map()
-    products.forEach((p) => m.set(p.id, p))
+    groupedProducts.forEach((p) => m.set(p.id, p))
     return m
-  }, [products])
+  }, [groupedProducts])
 
   const visibleProducts = useMemo(() => {
     if (searching) return searchResults
     const ids = Object.keys(quantities).filter((id) => quantities[id] > 0)
     const chosen = ids.map((id) => productMap.get(id)).filter(Boolean)
     const set = new Set(ids)
-    return [...chosen, ...products.filter((p) => !set.has(p.id)).slice(0, 50)]
-  }, [searching, searchResults, quantities, productMap, products])
+    return [...chosen, ...groupedProducts.filter((p) => !set.has(p.id)).slice(0, 50)]
+  }, [searching, searchResults, quantities, productMap, groupedProducts])
 
   // Load a previous cloud order into the current cart. Items whose products
   // still exist are added; missing ones are counted for a small notice.
