@@ -36,13 +36,13 @@ export default function ProductAdminPage({ onBack }) {
   const cloudVersion = meta?.version ?? 0
 
   // Stage a replace (from Excel or from the bundled catalogue) for confirmation.
-  const stage = (list, source) => {
+  const stage = (list, source, fileName) => {
     setMsg('')
     if (!list || !list.length) {
       setMsg('No products found in that file.')
       return
     }
-    setPending({ list, source })
+    setPending({ list, source, fileName })
   }
 
   const onExcel = async (e) => {
@@ -54,7 +54,7 @@ export default function ProductAdminPage({ onBack }) {
     try {
       const list = await importFullProducts(file)
       setMsg('')
-      stage(list, `Excel file "${file.name}"`)
+      stage(list, `Excel file "${file.name}"`, file.name)
     } catch (err) {
       console.error(err)
       setMsg('Could not read that file. Check it is a valid .xlsx.')
@@ -68,7 +68,7 @@ export default function ProductAdminPage({ onBack }) {
     setBusy(true)
     setMsg('Uploading to cloud… do not close this screen.')
     try {
-      const res = await replaceAllCloudProducts(pending.list)
+      const res = await replaceAllCloudProducts(pending.list, pending.fileName)
       setPending(null)
       await loadMeta()
       setMsg(`Done. ${res.count} products published (version ${res.version}). Reps will get them on next open.`)
@@ -110,6 +110,14 @@ export default function ProductAdminPage({ onBack }) {
               <div>
                 <p className="text-2xl font-bold text-brand-700">{cloudCount}</p>
                 <p className="text-xs text-slate-400">products live · version {cloudVersion}</p>
+                {meta?.file_name && (
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    Last upload: <b>{meta.file_name}</b>
+                    {meta.uploaded_at && (
+                      <> · {new Date(meta.uploaded_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })}</>
+                    )}
+                  </p>
+                )}
               </div>
               <div className="text-right text-[11px] text-slate-400">
                 On this device: {products.length}

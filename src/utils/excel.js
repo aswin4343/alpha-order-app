@@ -163,3 +163,16 @@ export async function importFullProducts(file) {
 
   return order
 }
+
+// Export multiple sheets: sheets = [{ name, rows: [{...}] }, ...]
+export async function exportMultiSheet(sheets, fileName) {
+  const XLSX = await getXLSX()
+  const wb = XLSX.utils.book_new()
+  sheets.forEach((s) => {
+    const ws = XLSX.utils.json_to_sheet(s.rows.length ? s.rows : [{ Note: 'No data' }])
+    // Sheet names max 31 chars, no special chars.
+    const safe = (s.name || 'Sheet').replace(/[\\/?*[\]:]/g, '').slice(0, 31) || 'Sheet'
+    XLSX.utils.book_append_sheet(wb, ws, safe)
+  })
+  XLSX.writeFile(wb, fileName)
+}

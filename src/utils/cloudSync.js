@@ -71,6 +71,16 @@ export async function saveCloudOrder({ customer, brand, userId, items, location 
 
   const totalProducts = items.length
   const totalQuantity = items.reduce((s, i) => s + i.qty, 0)
+  // Order value: sum of (effective price × qty). Uses the item's retail (or its
+  // override if set), then base, then net; 0 when no price is known.
+  const totalValue = items.reduce((s, i) => {
+    const price =
+      (i.retail != null ? i.retail : null) ??
+      (i.base != null ? i.base : null) ??
+      (i.netOverride != null ? i.netOverride : null) ??
+      0
+    return s + price * (i.qty || 0)
+  }, 0)
 
   const { data: order, error } = await supabase
     .from('orders')
@@ -82,6 +92,7 @@ export async function saveCloudOrder({ customer, brand, userId, items, location 
       sales_rep_id: userId,
       total_products: totalProducts,
       total_quantity: totalQuantity,
+      total_value: Math.round(totalValue),
       latitude: location?.latitude ?? null,
       longitude: location?.longitude ?? null
     })
@@ -359,7 +370,7 @@ export async function fetchAllCloudProducts() {
  * given list, then bumps the catalogue version so reps know to re-download.
  * Inserts in chunks to stay within request limits.
  */
-export async function replaceAllCloudProducts(products) {
+export async function replaceAllCloudProducts(products, fileName) {
   // 1. delete everything
   const { error: delErr } = await supabase.from('products').delete().neq('id', '')
   if (delErr) throw delErr
@@ -382,12 +393,18 @@ export async function replaceAllCloudProducts(products) {
     if (error) throw error
   }
 
-  // 3. bump version
+  // 3. bump version + record the uploaded file name and time
   const meta = await getCatalogueMeta()
   const nextVersion = (meta?.version || 0) + 1
   const { error: metaErr } = await supabase
     .from('catalogue_meta')
-    .update({ version: nextVersion, product_count: rows.length, updated_at: new Date().toISOString() })
+    .update({
+      version: nextVersion,
+      product_count: rows.length,
+      file_name: fileName || null,
+      uploaded_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    })
     .eq('id', 1)
   if (metaErr) throw metaErr
 
@@ -895,4 +912,177 @@ export async function assignGroup(group, staffId) {
     })
     .in('id', group.deliveryIds)
   if (error) throw error
+}
+
+// ===========================================================================
+// V4 DELIVERY — Part 2: Punch In / Out (attendance)
+// ===========================================================================
+
+/** Current open punch (punched in, not yet out) for this rep, if any. */
+export async function getOpenPunch() {
+  const uid = await currentUserId()
+  if (!uid) return null
+  const { data, error } = await supabase
+    .from('delivery_punches')
+    .select('*')
+    .eq('rep_id', uid)
+    .is('punch_out', null)
+    .order('punch_in', { ascending: false })
+    .limit(1)
+  if (error) return null
+  return data && data.length ? data[0] : null
+}
+
+/** Punch in with the person's name. Returns the new punch row. */
+export async function punchIn(personName) {
+  const uid = await currentUserId()
+  const { data, error } = await supabase
+    .from('delivery_punches')
+    .insert({ rep_id: uid, person_name: personName, punch_in: new Date().toISOString() })
+    .select('*')
+    .single()
+  if (error) throw error
+  return data
+}
+
+/** Punch out an open punch. */
+export async function punchOut(punchId) {
+  const { error } = await supabase
+    .from('delivery_punches')
+    .update({ punch_out: new Date().toISOString() })
+    .eq('id', punchId)
+  if (error) throw error
+}
+
+/** Admin: list punches (optionally for a specific date YYYY-MM-DD). */
+export async function listPunches(dateFilter) {
+  let q = supabase
+    .from('delivery_punches')
+    .select('id, rep_id, person_name, punch_in, punch_out')
+    .order('punch_in', { ascending: false })
+    .limit(200)
+  if (dateFilter) {
+    const start = new Date(`${dateFilter}T00:00:00`).toISOString()
+    const end = new Date(`${dateFilter}T23:59:59.999`).toISOString()
+    q = q.gte('punch_in', start).lte('punch_in', end)
+  }
+  const { data, error } = await q
+  if (error) throw error
+  // Attach the vehicle/login name.
+  const repIds = [...new Set((data || []).map((p) => p.rep_id).filter(Boolean))]
+  let repNames = {}
+  if (repIds.length) {
+    const { data: profs } = await supabase
+      .from('profiles')
+      .select('id, full_name')
+      .in('id', repIds)
+    ;(profs || []).forEach((p) => (repNames[p.id] = p.full_name))
+  }
+  return (data || []).map((p) => ({
+    ...p,
+    vehicle: repNames[p.rep_id] || '—'
+  }))
+}
+
+// ===========================================================================
+// V4 — Performance reports (Excel export data)
+// ===========================================================================
+
+function rangeBounds(from, to) {
+  const start = from ? new Date(`${from}T00:00:00`).toISOString() : null
+  const end = to ? new Date(`${to}T23:59:59.999`).toISOString() : null
+  return { start, end }
+}
+
+/**
+ * Sales performance per rep for a date range. Returns
+ * { reps: [{ name, orders, quantity, value, newShops, visits }] }.
+ * Order value is computed from stored order totals when available.
+ */
+export async function buildSalesReport(from, to) {
+  const { start, end } = rangeBounds(from, to)
+  const withRange = (q, col = 'created_at') => {
+    if (start) q = q.gte(col, start)
+    if (end) q = q.lte(col, end)
+    return q
+  }
+
+  const [profilesRes, ordersRes, visitsRes, custRes] = await Promise.all([
+    supabase.from('profiles').select('id, full_name').eq('role', 'salesperson'),
+    withRange(supabase.from('orders').select('id, sales_rep_id, total_quantity, total_value, shop_name, created_at')),
+    withRange(supabase.from('visits').select('id, sales_rep_id, created_at')),
+    withRange(supabase.from('customers').select('id, created_by, is_rep_created, created_at'))
+  ])
+
+  const profiles = profilesRes.data || []
+  const orders = ordersRes.data || []
+  const visits = visitsRes.data || []
+  const customers = custRes.data || []
+
+  const reps = profiles.map((p) => {
+    const o = orders.filter((x) => x.sales_rep_id === p.id)
+    const v = visits.filter((x) => x.sales_rep_id === p.id)
+    const ns = customers.filter((c) => c.created_by === p.id && c.is_rep_created)
+    return {
+      Salesperson: p.full_name || 'Unnamed',
+      Orders: o.length,
+      Quantity: o.reduce((s, x) => s + (x.total_quantity || 0), 0),
+      'Order Value (Rs)': o.reduce((s, x) => s + (x.total_value || 0), 0),
+      'New Shops': ns.length,
+      Visits: v.length
+    }
+  })
+  return reps
+}
+
+/**
+ * Delivery performance per staff for a date range. Returns rows with
+ * deliveries done / partial / failed and working hours (from punches).
+ */
+export async function buildDeliveryReport(from, to) {
+  const { start, end } = rangeBounds(from, to)
+  const withRange = (q, col) => {
+    if (start) q = q.gte(col, start)
+    if (end) q = q.lte(col, end)
+    return q
+  }
+
+  const [staffRes, delRes, punchRes] = await Promise.all([
+    supabase.from('profiles').select('id, full_name').eq('role', 'delivery_rep'),
+    withRange(
+      supabase.from('deliveries').select('id, assigned_to, status, completed_at'),
+      'completed_at'
+    ),
+    withRange(
+      supabase.from('delivery_punches').select('rep_id, person_name, punch_in, punch_out'),
+      'punch_in'
+    )
+  ])
+
+  const staff = staffRes.data || []
+  const dels = (delRes.data || []).filter((d) => d.completed_at) // only completed in range
+  const punches = punchRes.data || []
+
+  const rows = staff.map((s) => {
+    const mine = dels.filter((d) => d.assigned_to === s.id)
+    const done = mine.filter((d) => d.status === 'delivered').length
+    const partial = mine.filter((d) => d.status === 'partial').length
+    const failed = mine.filter((d) => d.status === 'failed').length
+    // Sum working minutes from completed punches.
+    const myPunches = punches.filter((p) => p.rep_id === s.id && p.punch_out)
+    const mins = myPunches.reduce(
+      (sum, p) => sum + Math.max(0, Math.round((new Date(p.punch_out) - new Date(p.punch_in)) / 60000)),
+      0
+    )
+    const hours = Math.floor(mins / 60)
+    const rem = mins % 60
+    return {
+      'Delivery Staff': s.full_name || 'Unnamed',
+      'Deliveries Done': done,
+      Partial: partial,
+      Failed: failed,
+      'Working Hours': `${hours}h ${rem}m`
+    }
+  })
+  return rows
 }

@@ -17,6 +17,51 @@ export default function DeliveryRepDashboard() {
   // reload the page in the background) restores the delivery detail screen
   // instead of dropping the rep back to the list and losing their photo.
   const [selected, setSelected] = useState(null)
+  // Attendance: current open punch (null = punched out).
+  const [punch, setPunch] = useState(null)
+  const [punchLoaded, setPunchLoaded] = useState(false)
+  const [dateFilter, setDateFilter] = useState(() => new Date().toISOString().slice(0, 10))
+
+  // Load current punch state on mount.
+  useEffect(() => {
+    ;(async () => {
+      try {
+        const { getOpenPunch } = await import('../utils/cloudSync.js')
+        const p = await getOpenPunch()
+        setPunch(p)
+      } catch (e) {
+        console.error(e)
+      } finally {
+        setPunchLoaded(true)
+      }
+    })()
+  }, [])
+
+  const doPunchIn = async () => {
+    const name = window.prompt('Enter your name to punch in:')
+    if (!name || !name.trim()) return
+    try {
+      const { punchIn } = await import('../utils/cloudSync.js')
+      const p = await punchIn(name.trim())
+      setPunch(p)
+    } catch (e) {
+      console.error(e)
+      alert('Could not punch in. Check your connection.')
+    }
+  }
+
+  const doPunchOut = async () => {
+    if (!punch) return
+    if (!window.confirm('Punch out now? Your working session will be recorded.')) return
+    try {
+      const { punchOut } = await import('../utils/cloudSync.js')
+      await punchOut(punch.id)
+      setPunch(null)
+    } catch (e) {
+      console.error(e)
+      alert('Could not punch out. Check your connection.')
+    }
+  }
 
   const openDelivery = (d) => {
     setSelected(d)
@@ -85,6 +130,8 @@ export default function DeliveryRepDashboard() {
     return (
       <DeliveryDetailPage
         delivery={selected}
+        personName={punch?.person_name || null}
+        isPunchedIn={!!punch}
         onBack={closeDelivery}
         onCompleted={() => {
           closeDelivery()
@@ -110,6 +157,66 @@ export default function DeliveryRepDashboard() {
       </header>
 
       <main className="mx-auto max-w-md px-3 pt-3">
+        {/* Punch In / Out */}
+        {punchLoaded && (
+          <div className={`rounded-2xl border p-3 mb-3 ${punch ? 'bg-green-50 border-green-200' : 'bg-amber-50 border-amber-200'}`}>
+            {punch ? (
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-green-800 truncate">
+                    Punched in: {punch.person_name}
+                  </p>
+                  <p className="text-[11px] text-green-600">
+                    Since {new Date(punch.punch_in).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true })}
+                  </p>
+                </div>
+                <button
+                  onClick={doPunchOut}
+                  className="shrink-0 rounded-xl bg-red-600 text-white text-sm font-semibold px-4 py-2 active:bg-red-700"
+                >
+                  Punch Out
+                </button>
+              </div>
+            ) : (
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-sm font-medium text-amber-800">
+                  Punch in to start delivering
+                </p>
+                <button
+                  onClick={doPunchIn}
+                  className="shrink-0 rounded-xl bg-brand-600 text-white text-sm font-semibold px-4 py-2 active:bg-brand-700"
+                >
+                  Punch In
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Date filter */}
+        <div className="flex items-center gap-2 mb-3">
+          <input
+            type="date"
+            value={dateFilter}
+            onChange={(e) => setDateFilter(e.target.value)}
+            className="rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-brand-500 bg-white"
+          />
+          <button
+            onClick={() => setDateFilter(new Date().toISOString().slice(0, 10))}
+            className="rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-600 active:bg-slate-50"
+          >
+            Today
+          </button>
+          {dateFilter && (
+            <button
+              onClick={() => setDateFilter('')}
+              className="rounded-xl border border-slate-200 px-3 py-2 text-sm font-semibold text-red-600 active:bg-red-50"
+            >
+              All
+            </button>
+          )}
+        </div>
+
         {error && (
           <p className="text-center text-sm text-red-500 py-6">Could not load deliveries.</p>
         )}
@@ -125,7 +232,9 @@ export default function DeliveryRepDashboard() {
         )}
         <div className="space-y-2">
           {list &&
-            list.map((d) => (
+            list
+              .filter((d) => !dateFilter || d.day === dateFilter)
+              .map((d) => (
               <div
                 key={d.id}
                 onClick={() => openDelivery(d)}

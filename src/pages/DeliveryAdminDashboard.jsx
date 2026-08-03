@@ -6,9 +6,11 @@ import {
   assignGroup,
   updateDeliveryStaff,
   bulkAssignRoute,
-  loadGroupDetail
+  loadGroupDetail,
+  listPunches
 } from '../utils/cloudSync.js'
 import appIcon from '../assets/app_icon.png'
+import ReportPanel from '../components/ReportPanel.jsx'
 
 const STATUS_LABEL = {
   pending: 'Pending',
@@ -183,7 +185,8 @@ export default function DeliveryAdminDashboard() {
             <div className="flex gap-1.5 mb-3">
               {[
                 ['orders', 'Orders'],
-                ['staff', 'Delivery Staff']
+                ['staff', 'Delivery Staff'],
+                ['attendance', 'Attendance']
               ].map(([k, l]) => (
                 <button
                   key={k}
@@ -199,6 +202,9 @@ export default function DeliveryAdminDashboard() {
 
             {tab === 'orders' && (
               <>
+                {/* Download performance report */}
+                <ReportPanel kind="delivery" />
+
                 {/* Date filter */}
                 <div className="mb-3 flex flex-wrap items-center gap-2">
                   <input
@@ -357,6 +363,8 @@ export default function DeliveryAdminDashboard() {
             {tab === 'staff' && (
               <StaffManager staff={staff} onChanged={refresh} />
             )}
+
+            {tab === 'attendance' && <AttendanceView />}
           </>
         )}
       </main>
@@ -522,6 +530,104 @@ function StaffManager({ staff, onChanged }) {
           </p>
         )}
       </div>
+    </div>
+  )
+}
+
+
+// --- Delivery attendance view (punch in/out + hours) -------------------------
+function AttendanceView() {
+  const [rows, setRows] = useState(null)
+  const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10))
+  const [error, setError] = useState(false)
+
+  const load = async () => {
+    setError(false)
+    setRows(null)
+    try {
+      const data = await listPunches(date || undefined)
+      setRows(data)
+    } catch (e) {
+      console.error(e)
+      setError(true)
+    }
+  }
+  useEffect(() => {
+    load()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [date])
+
+  const fmtTime = (iso) =>
+    iso
+      ? new Date(iso).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true })
+      : '—'
+
+  const duration = (a, b) => {
+    if (!a || !b) return '—'
+    const mins = Math.round((new Date(b) - new Date(a)) / 60000)
+    const h = Math.floor(mins / 60)
+    const m = mins % 60
+    return h > 0 ? `${h}h ${m}m` : `${m}m`
+  }
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-3">
+        <input
+          type="date"
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+          className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-brand-500 bg-white"
+        />
+        <button
+          onClick={() => setDate(new Date().toISOString().slice(0, 10))}
+          className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-slate-600 active:bg-slate-50"
+        >
+          Today
+        </button>
+        {date && (
+          <button
+            onClick={() => setDate('')}
+            className="rounded-xl border border-slate-200 px-3 py-2.5 text-sm font-semibold text-red-600 active:bg-red-50"
+          >
+            All
+          </button>
+        )}
+      </div>
+
+      {error && <p className="text-center text-sm text-red-500 py-6">Could not load attendance.</p>}
+      {!rows && !error && (
+        <div className="py-10 flex justify-center">
+          <div className="h-7 w-7 rounded-full border-4 border-brand-100 border-t-brand-600 animate-spin" />
+        </div>
+      )}
+
+      {rows && (
+        <div className="space-y-2">
+          {rows.map((p) => (
+            <div key={p.id} className="rounded-2xl bg-white shadow-card border border-slate-100 p-3">
+              <div className="flex items-center justify-between">
+                <div className="min-w-0">
+                  <p className="font-semibold text-slate-800 truncate">{p.person_name}</p>
+                  <p className="text-[11px] text-slate-400">
+                    Vehicle: {p.vehicle} ·{' '}
+                    {new Date(p.punch_in).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}
+                  </p>
+                </div>
+                <div className="text-right">
+                  <p className="text-sm font-bold text-brand-700">{duration(p.punch_in, p.punch_out)}</p>
+                  <p className="text-[10px] text-slate-400">
+                    {fmtTime(p.punch_in)} → {p.punch_out ? fmtTime(p.punch_out) : 'working…'}
+                  </p>
+                </div>
+              </div>
+            </div>
+          ))}
+          {rows.length === 0 && (
+            <p className="text-center text-sm text-slate-400 py-8">No punch records for this date.</p>
+          )}
+        </div>
+      )}
     </div>
   )
 }

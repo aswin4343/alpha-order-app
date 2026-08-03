@@ -236,9 +236,17 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
             isAddon: originalIds ? !originalIds.has(id) : false,
             retail: priceOverrides[id]?.retail != null ? priceOverrides[id].retail : p.retail,
             wholesale: priceOverrides[id]?.wholesale != null ? priceOverrides[id].wholesale : p.wholesale,
+            base: priceOverrides[id]?.base != null ? priceOverrides[id].base : p.base,
+            netOverride: priceOverrides[id]?.net != null ? priceOverrides[id].net : null,
             retailOverridden: priceOverrides[id]?.retail != null,
             wholesaleOverridden: priceOverrides[id]?.wholesale != null,
-            priceOverridden: priceOverrides[id]?.retail != null || priceOverrides[id]?.wholesale != null
+            baseOverridden: priceOverrides[id]?.base != null,
+            netOverridden: priceOverrides[id]?.net != null,
+            priceOverridden:
+              priceOverrides[id]?.retail != null ||
+              priceOverrides[id]?.wholesale != null ||
+              priceOverrides[id]?.base != null ||
+              priceOverrides[id]?.net != null
           }
         })
         .filter(Boolean),

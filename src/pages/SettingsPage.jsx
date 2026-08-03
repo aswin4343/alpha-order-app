@@ -4,7 +4,6 @@ import { useAuth } from '../context/AuthContext.jsx'
 import { BackIcon } from '../components/Icons.jsx'
 import { BRANDS, ORDER_WHATSAPP_NUMBER } from '../utils/whatsapp.js'
 import {
-  importProducts,
   importCustomers,
   exportToExcel,
   downloadJson,
@@ -61,15 +60,6 @@ export default function SettingsPage({ onBack }) {
       salesperson: salesperson.trim()
     })
     flash('Saved')
-  }
-
-  const onImportProducts = async (file) => {
-    try {
-      const recs = await importProducts(file)
-      if (!recs.length) return flash('No products found in file')
-      await replaceProducts(recs.map((r) => ({ ...r, slabs: [], base: null, mrp: null })))
-      flash(`Imported ${recs.length} products`)
-    } catch { flash('Import failed — check file format') }
   }
 
   const onImportCustomers = async (file) => {
@@ -155,7 +145,6 @@ export default function SettingsPage({ onBack }) {
             <span className="font-semibold text-slate-800">{customers.length}</span>
           </div>
           <div className="divide-y divide-slate-100">
-            <FileButton label="Import Products (Excel)" accept=".xlsx,.xls,.csv" onFile={onImportProducts} />
             <FileButton label="Import Customers (Excel)" accept=".xlsx,.xls,.csv" onFile={onImportCustomers} />
             <button onClick={() => exportToExcel(
               products.map((p) => ({ ItemName: p.name, Brand: p.brand })), 'Products', 'ATL_products.xlsx')}

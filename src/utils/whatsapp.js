@@ -73,6 +73,12 @@ export function buildOrderMessage({ brand, customer, salesperson, items, isNewCu
     if (i.wholesaleOverridden && i.wholesale != null) {
       L.push(`   \uD83D\uDCB0 Special Wholesale: *\u20B9${i.wholesale}*`)
     }
+    if (i.baseOverridden && i.base != null) {
+      L.push(`   \uD83D\uDCB0 Special Base Rate: *\u20B9${i.base}*`)
+    }
+    if (i.netOverridden && i.netOverride != null) {
+      L.push(`   \uD83D\uDCB0 Special Net Rate: *\u20B9${i.netOverride}*`)
+    }
     const res = calculateScheme(i.qty, i.slabs)
     if (res.free > 0 && res.slab) {
       L.push(

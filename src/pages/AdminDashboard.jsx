@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
 import { loadAdminDashboard } from '../utils/cloudSync.js'
+import ReportPanel from '../components/ReportPanel.jsx'
 import appIcon from '../assets/app_icon.png'
 
 const PERIODS = [
@@ -141,6 +142,9 @@ export default function AdminDashboard({ onOpenProducts, onOpenSalespeople, onOp
                 <span className="text-slate-300">›</span>
               </button>
             </div>
+
+            {/* Download performance report */}
+            <ReportPanel kind="sales" />
 
             {/* Two-column layout on desktop: leaderboard | activity */}
             <div className="lg:grid lg:grid-cols-2 lg:gap-6">

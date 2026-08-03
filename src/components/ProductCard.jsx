@@ -26,7 +26,7 @@ function Tag({ label, value, accent }) {
  * it into an input for a ONE-TIME override (this order only). An overridden
  * value is shown in an accent colour with a small dot.
  */
-function EditableTag({ label, value, overridden, onChange }) {
+function EditableTag({ label, value, overridden, onChange, accent }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   if (value == null || value === '') return null
@@ -66,6 +66,8 @@ function EditableTag({ label, value, overridden, onChange }) {
       className={`inline-flex items-baseline gap-0.5 text-[10px] leading-none font-semibold px-1.5 py-1 rounded-md border ${
         overridden
           ? 'bg-amber-50 border-amber-300 text-amber-800'
+          : accent
+          ? 'bg-brand-50 border-brand-200 text-brand-700'
           : 'bg-slate-50 border-slate-200 text-slate-600'
       }`}
     >
@@ -122,8 +124,19 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride }
 
         {hasScheme ? (
           <>
-            <Tag label="BR" value={product.base} />
-            <Tag label="NR" value={currentNet} accent />
+            <EditableTag
+              label="BR"
+              value={override?.base != null ? override.base : product.base}
+              overridden={override?.base != null}
+              onChange={(v) => onOverride(product.id, { base: v })}
+            />
+            <EditableTag
+              label="NR"
+              value={override?.net != null ? override.net : currentNet}
+              overridden={override?.net != null}
+              accent
+              onChange={(v) => onOverride(product.id, { net: v })}
+            />
           </>
         ) : (
           <>

@@ -21,7 +21,7 @@ const REASONS = [
   'Other'
 ]
 
-export default function DeliveryDetailPage({ delivery, onBack, onCompleted }) {
+export default function DeliveryDetailPage({ delivery, onBack, onCompleted, personName, isPunchedIn }) {
   const { profile } = useAuth()
   // `delivery` is a shop-day GROUP. Photos attach to a real delivery row, so we
   // anchor them to the group's first delivery id.
@@ -147,6 +147,11 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted }) {
       setTimeout(() => setToast(''), 2600)
       return
     }
+    if (!isPunchedIn) {
+      setToast('Please Punch In first to complete a delivery.')
+      setTimeout(() => setToast(''), 2600)
+      return
+    }
     setBusy(true)
     try {
       const loc = await getLocation()
@@ -175,7 +180,7 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted }) {
         items,
         note: note.trim(),
         location: loc,
-        deliveredBy: profile?.full_name || 'Delivery',
+        deliveredBy: personName || profile?.full_name || 'Delivery',
         status,
         photos: [billPhoto, productPhoto]
           .filter(Boolean)
