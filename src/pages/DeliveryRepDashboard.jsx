@@ -44,6 +44,9 @@ export default function DeliveryRepDashboard() {
       if (error) throw error
       const deliveries = data || []
 
+      // Group into one card per shop per day (combined orders).
+      const { groupDeliveriesByShopDay } = await import('../utils/deliveryGroup.js')
+
       // Fetch each shop's verified location, attach it, and sort nearest-to-hub
       // first. Shops without a location yet fall to the end.
       try {
@@ -55,10 +58,11 @@ export default function DeliveryRepDashboard() {
           const l = locs[(d.shop_name || '').toUpperCase()]
           return { ...d, latitude: l?.latitude ?? null, longitude: l?.longitude ?? null }
         })
-        setList(sortByHubDistance(withLoc))
+        const grouped = groupDeliveriesByShopDay(withLoc)
+        setList(sortByHubDistance(grouped))
       } catch (e) {
-        console.error('distance sort failed, showing unsorted', e)
-        setList(deliveries)
+        console.error('distance sort failed, showing grouped unsorted', e)
+        setList(groupDeliveriesByShopDay(deliveries))
       }
     } catch {
       setError(true)
@@ -132,6 +136,11 @@ export default function DeliveryRepDashboard() {
                     <p className="font-semibold text-slate-800 truncate">{d.shop_name}</p>
                     <p className="text-[11px] text-slate-400 truncate">
                       {d.route || 'No route'} · Sales: {d.sales_rep_name || '—'}
+                      {d.count > 1 && (
+                        <span className="ml-1 text-brand-600 font-semibold">
+                          · {d.count} orders
+                        </span>
+                      )}
                     </p>
                     {d._distanceKm != null ? (
                       <p className="text-[11px] text-brand-600 font-medium mt-0.5">

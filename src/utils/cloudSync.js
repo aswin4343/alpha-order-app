@@ -561,19 +561,22 @@ export async function loadDeliveryAdmin(routeFilter, dateFilter) {
   // Distinct routes for the filter dropdown.
   const routes = Array.from(new Set(deliveries.map((d) => d.route).filter(Boolean))).sort()
 
-  // Attach each shop's verified location and sort nearest-to-hub first.
+  // Group into one entry per shop per day, attach location, sort nearest-first.
   try {
     const names = [...new Set(deliveries.map((d) => d.shop_name))]
     const locs = await fetchShopLocations(names)
     const { sortByHubDistance } = await import('./geo.js')
+    const { groupDeliveriesByShopDay } = await import('./deliveryGroup.js')
     const withLoc = deliveries.map((d) => {
       const l = locs[(d.shop_name || '').toUpperCase()]
       return { ...d, latitude: l?.latitude ?? null, longitude: l?.longitude ?? null }
     })
-    return { deliveries: sortByHubDistance(withLoc), counts, routes }
+    const grouped = groupDeliveriesByShopDay(withLoc)
+    return { deliveries: sortByHubDistance(grouped), counts, routes }
   } catch (e) {
-    console.error('admin distance sort failed', e)
-    return { deliveries, counts, routes }
+    console.error('admin grouping/sort failed', e)
+    const { groupDeliveriesByShopDay } = await import('./deliveryGroup.js')
+    return { deliveries: groupDeliveriesByShopDay(deliveries), counts, routes }
   }
 }
 
@@ -792,4 +795,104 @@ export async function fetchShopLocations(shopNames) {
     }
   })
   return map
+}
+
+// ===========================================================================
+// V4 DELIVERY — Shop+Day GROUP detail & completion (Approach 1)
+// A "group" bundles all deliveries for one shop on one day.
+// ===========================================================================
+
+/**
+ * Load combined items for a shop-day group. Seeds delivery_items for each
+ * underlying delivery from its order (if not already seeded), then merges items
+ * across all the group's deliveries. Same product across orders is combined by
+ * summing ordered_qty (keeps one checklist line per product).
+ */
+export async function loadGroupDetail(group) {
+  const allItems = []
+  for (const deliveryId of group.deliveryIds) {
+    // Seeded already?
+    const { data: existing } = await supabase
+      .from('delivery_items')
+      .select('*')
+      .eq('delivery_id', deliveryId)
+      .order('created_at', { ascending: true })
+    if (existing && existing.length) {
+      allItems.push(...existing)
+      continue
+    }
+    // Seed from the matching order. Find the order_id for this delivery.
+    const { data: delRow } = await supabase
+      .from('deliveries')
+      .select('order_id')
+      .eq('id', deliveryId)
+      .maybeSingle()
+    const orderId = delRow?.order_id
+    if (!orderId) continue
+    const { data: orderItems } = await supabase
+      .from('order_items')
+      .select('product_name, qty, unit')
+      .eq('order_id', orderId)
+    const rows = (orderItems || []).map((oi) => ({
+      delivery_id: deliveryId,
+      product_name: oi.product_name,
+      ordered_qty: oi.qty,
+      unit: oi.unit || 'Piece',
+      delivered: false,
+      delivered_qty: null,
+      reason: ''
+    }))
+    if (rows.length) {
+      const { data: inserted } = await supabase.from('delivery_items').insert(rows).select('*')
+      if (inserted) allItems.push(...inserted)
+    }
+  }
+  return allItems
+}
+
+/** Mark all deliveries in a group as in-progress. */
+export async function startGroup(group) {
+  await supabase
+    .from('deliveries')
+    .update({ status: 'in_progress', updated_at: new Date().toISOString() })
+    .in('id', group.deliveryIds)
+    .eq('status', 'assigned')
+}
+
+/**
+ * Complete a whole shop-day group: set the combined status on ALL its
+ * deliveries, stamp completion note + location. Returns the status.
+ */
+export async function completeGroup({ group, items, note, location }) {
+  const anyDelivered = items.some((i) => i.delivered)
+  const allDelivered = items.every((i) => i.delivered)
+  const status = allDelivered ? 'delivered' : anyDelivered ? 'partial' : 'failed'
+
+  const { error } = await supabase
+    .from('deliveries')
+    .update({
+      status,
+      completion_note: note || '',
+      completed_at: new Date().toISOString(),
+      latitude: location?.latitude ?? null,
+      longitude: location?.longitude ?? null,
+      updated_at: new Date().toISOString()
+    })
+    .in('id', group.deliveryIds)
+  if (error) throw error
+  return status
+}
+
+/** Assign all deliveries in a group to a staff member. */
+export async function assignGroup(group, staffId) {
+  const { error } = await supabase
+    .from('deliveries')
+    .update({
+      assigned_to: staffId,
+      assigned_at: new Date().toISOString(),
+      status: 'assigned',
+      updated_at: new Date().toISOString()
+    })
+    .in('id', group.deliveryIds)
+  if (error) throw error
 }

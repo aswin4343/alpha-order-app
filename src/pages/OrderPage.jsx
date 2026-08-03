@@ -236,6 +236,8 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
             isAddon: originalIds ? !originalIds.has(id) : false,
             retail: priceOverrides[id]?.retail != null ? priceOverrides[id].retail : p.retail,
             wholesale: priceOverrides[id]?.wholesale != null ? priceOverrides[id].wholesale : p.wholesale,
+            retailOverridden: priceOverrides[id]?.retail != null,
+            wholesaleOverridden: priceOverrides[id]?.wholesale != null,
             priceOverridden: priceOverrides[id]?.retail != null || priceOverrides[id]?.wholesale != null
           }
         })

@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
 import {
-  loadDeliveryDetail,
+  loadGroupDetail,
   saveDeliveryItem,
-  completeDelivery,
-  startDelivery
+  completeGroup,
+  startGroup
 } from '../utils/cloudSync.js'
 import { buildDeliveryReport } from '../utils/whatsapp.js'
 import { uploadDeliveryPhoto } from '../utils/photoUpload.js'
@@ -23,6 +23,10 @@ const REASONS = [
 
 export default function DeliveryDetailPage({ delivery, onBack, onCompleted }) {
   const { profile } = useAuth()
+  // `delivery` is a shop-day GROUP. Photos attach to a real delivery row, so we
+  // anchor them to the group's first delivery id.
+  const group = delivery
+  const photoDeliveryId = group.deliveryIds ? group.deliveryIds[0] : group.id
   const [items, setItems] = useState(null)
   const [error, setError] = useState(false)
   const [note, setNote] = useState('')
@@ -39,15 +43,15 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted }) {
     let active = true
     ;(async () => {
       try {
-        const rows = await loadDeliveryDetail(delivery)
+        const rows = await loadGroupDetail(group)
         if (!active) return
         setItems(rows)
-        startDelivery(delivery.id) // mark in-progress
-        // Reload any photos already uploaded for this delivery, so returning
-        // from the camera (which can reload the page) doesn't lose them.
+        startGroup(group) // mark all in the group in-progress
+        // Reload any photos already uploaded, so returning from the camera
+        // (which can reload the page) doesn't lose them.
         try {
           const { loadDeliveryPhotos } = await import('../utils/photoUpload.js')
-          const photos = await loadDeliveryPhotos(delivery.id)
+          const photos = await loadDeliveryPhotos(photoDeliveryId)
           if (active && photos) {
             const bill = photos.find((p) => p.kind === 'bill')
             const prod = photos.find((p) => p.kind === 'product')
@@ -65,7 +69,7 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted }) {
     return () => {
       active = false
     }
-  }, [delivery])
+  }, [group])
 
   const patchItem = (id, patch) => {
     setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)))
@@ -106,7 +110,7 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted }) {
     setUploading(kind)
     setPhotoError('')
     try {
-      const res = await uploadDeliveryPhoto(delivery.id, file, kind)
+      const res = await uploadDeliveryPhoto(photoDeliveryId, file, kind)
       // Add a cache-buster so the freshly-uploaded image shows immediately as a
       // thumbnail (no manual refresh needed), even if the CDN is still warming.
       const shown = { ...res, url: `${res.url}?t=${Date.now()}` }
@@ -146,8 +150,8 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted }) {
     setBusy(true)
     try {
       const loc = await getLocation()
-      const status = await completeDelivery({
-        deliveryId: delivery.id,
+      const status = await completeGroup({
+        group,
         items,
         note: note.trim(),
         location: loc
@@ -157,8 +161,8 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted }) {
         try {
           const { saveShopLocation } = await import('../utils/cloudSync.js')
           await saveShopLocation({
-            shopName: delivery.shop_name,
-            route: delivery.route,
+            shopName: group.shop_name,
+            route: group.route,
             latitude: loc.latitude,
             longitude: loc.longitude
           })
@@ -167,7 +171,7 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted }) {
         }
       }
       const text = buildDeliveryReport({
-        delivery,
+        delivery: group,
         items,
         note: note.trim(),
         location: loc,
@@ -211,12 +215,12 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted }) {
             <BackIcon className="h-6 w-6" />
           </button>
           <div className="min-w-0 flex-1">
-            <h1 className="text-base font-bold text-slate-800 truncate">{delivery.shop_name}</h1>
-            <p className="text-[11px] text-slate-400 truncate">{delivery.route || 'No route'}</p>
+            <h1 className="text-base font-bold text-slate-800 truncate">{group.shop_name}</h1>
+            <p className="text-[11px] text-slate-400 truncate">{group.route || 'No route'}{group.count > 1 ? ` · ${group.count} orders` : ''}</p>
           </div>
-          {delivery.latitude != null && delivery.longitude != null ? (
+          {group.latitude != null && group.longitude != null ? (
             <a
-              href={`https://www.google.com/maps/dir/?api=1&destination=${delivery.latitude},${delivery.longitude}`}
+              href={`https://www.google.com/maps/dir/?api=1&destination=${group.latitude},${group.longitude}`}
               target="_blank"
               rel="noreferrer"
               className="shrink-0 flex items-center gap-1 rounded-xl bg-brand-600 text-white text-xs font-semibold px-3 py-2 active:bg-brand-700"

@@ -3,9 +3,10 @@ import { useAuth } from '../context/AuthContext.jsx'
 import {
   loadDeliveryAdmin,
   listDeliveryStaff,
-  assignDelivery,
+  assignGroup,
   updateDeliveryStaff,
-  bulkAssignRoute
+  bulkAssignRoute,
+  loadGroupDetail
 } from '../utils/cloudSync.js'
 import appIcon from '../assets/app_icon.png'
 
@@ -62,6 +63,8 @@ export default function DeliveryAdminDashboard() {
   const [bulkStaff, setBulkStaff] = useState('')
   const [bulkBusy, setBulkBusy] = useState(false)
   const [bulkMsg, setBulkMsg] = useState('')
+  const [expandedId, setExpandedId] = useState(null)
+  const [groupItems, setGroupItems] = useState({})
 
   const refresh = async () => {
     setError(false)
@@ -80,16 +83,33 @@ export default function DeliveryAdminDashboard() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [routeFilter, dateFilter])
 
-  const doAssign = async (deliveryId, staffId) => {
+  const doAssign = async (group, staffId) => {
     if (!staffId) return
-    setBusyId(deliveryId)
+    setBusyId(group.id)
     try {
-      await assignDelivery(deliveryId, staffId)
+      await assignGroup(group, staffId)
       await refresh()
     } catch (e) {
       console.error(e)
     } finally {
       setBusyId(null)
+    }
+  }
+
+  const toggleExpand = async (group) => {
+    if (expandedId === group.id) {
+      setExpandedId(null)
+      return
+    }
+    setExpandedId(group.id)
+    if (groupItems[group.id] == null) {
+      try {
+        const items = await loadGroupDetail(group)
+        setGroupItems((prev) => ({ ...prev, [group.id]: items }))
+      } catch (e) {
+        console.error('load group items failed', e)
+        setGroupItems((prev) => ({ ...prev, [group.id]: [] }))
+      }
     }
   }
 
@@ -236,11 +256,19 @@ export default function DeliveryAdminDashboard() {
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-2">
                   {data.deliveries.map((d) => {
                     const staffName = staff.find((s) => s.id === d.assigned_to)?.full_name
+                    const isExpanded = expandedId === d.id
                     return (
                       <div key={d.id} className="rounded-2xl bg-white shadow-card border border-slate-100 p-3">
                         <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0">
-                            <p className="font-semibold text-slate-800 truncate">{d.shop_name}</p>
+                            <p className="font-semibold text-slate-800 truncate">
+                              {d.shop_name}
+                              {d.count > 1 && (
+                                <span className="ml-1.5 text-[11px] text-brand-600 font-semibold">
+                                  {d.count} orders
+                                </span>
+                              )}
+                            </p>
                             <p className="text-[11px] text-slate-400 truncate">
                               {d.route || 'No route'} · Sales: {d.sales_rep_name || '—'}
                             </p>
@@ -258,8 +286,8 @@ export default function DeliveryAdminDashboard() {
 
                         <div className="mt-2.5 flex items-center gap-2">
                           <select
-                            defaultValue={d.assigned_to || ''}
-                            onChange={(e) => doAssign(d.id, e.target.value)}
+                            value={d.assigned_to || ''}
+                            onChange={(e) => doAssign(d, e.target.value)}
                             disabled={busyId === d.id || activeStaff.length === 0}
                             className="flex-1 rounded-lg border border-slate-200 px-2.5 py-2 text-sm outline-none focus:border-brand-500 bg-white"
                           >
@@ -272,8 +300,48 @@ export default function DeliveryAdminDashboard() {
                               </option>
                             ))}
                           </select>
+                          <button
+                            onClick={() => toggleExpand(d)}
+                            className="rounded-lg border border-slate-200 px-3 py-2 text-xs font-semibold text-slate-600 active:bg-slate-50 whitespace-nowrap"
+                          >
+                            {isExpanded ? 'Hide' : 'View order'}
+                          </button>
                           {busyId === d.id && <span className="text-xs text-slate-400">…</span>}
                         </div>
+
+                        {/* Expanded order details */}
+                        {isExpanded && (
+                          <div className="mt-3 pt-3 border-t border-slate-100">
+                            {groupItems[d.id] == null ? (
+                              <p className="text-xs text-slate-400 py-2">Loading order…</p>
+                            ) : groupItems[d.id].length === 0 ? (
+                              <p className="text-xs text-slate-400 py-2">No items found.</p>
+                            ) : (
+                              <>
+                                <p className="text-[11px] font-semibold text-slate-500 uppercase mb-1.5">
+                                  Order items ({groupItems[d.id].length})
+                                </p>
+                                <div className="space-y-1">
+                                  {groupItems[d.id].map((it) => (
+                                    <div key={it.id} className="flex items-center justify-between text-[13px]">
+                                      <span className="text-slate-700 truncate mr-2">{it.product_name}</span>
+                                      <span className="text-slate-500 shrink-0">
+                                        {it.ordered_qty} {it.unit}
+                                      </span>
+                                    </div>
+                                  ))}
+                                </div>
+                                <div className="mt-2 pt-2 border-t border-slate-50 flex justify-between text-[11px] text-slate-400">
+                                  <span>{groupItems[d.id].length} products</span>
+                                  <span>
+                                    Total qty:{' '}
+                                    {groupItems[d.id].reduce((s, it) => s + (it.ordered_qty || 0), 0)}
+                                  </span>
+                                </div>
+                              </>
+                            )}
+                          </div>
+                        )}
                       </div>
                     )
                   })}

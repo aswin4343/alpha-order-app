@@ -66,8 +66,12 @@ export function buildOrderMessage({ brand, customer, salesperson, items, isNewCu
     const unit = i.unit && i.unit !== 'Piece' ? ` ${i.unit}` : ''
     L.push(`   \u279C Qty: *${i.qty}*${unit}`)
     // Show the special price only when the rep overrode it for this order.
-    if (i.priceOverridden && i.retail != null) {
-      L.push(`   \uD83D\uDCB0 Special Price: *\u20B9${i.retail}*`)
+    // Show the special price(s) the rep set for this order, labelled correctly.
+    if (i.retailOverridden && i.retail != null) {
+      L.push(`   \uD83D\uDCB0 Special Retail: *\u20B9${i.retail}*`)
+    }
+    if (i.wholesaleOverridden && i.wholesale != null) {
+      L.push(`   \uD83D\uDCB0 Special Wholesale: *\u20B9${i.wholesale}*`)
     }
     const res = calculateScheme(i.qty, i.slabs)
     if (res.free > 0 && res.slab) {
