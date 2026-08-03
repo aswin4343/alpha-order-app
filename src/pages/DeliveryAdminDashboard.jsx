@@ -7,7 +7,8 @@ import {
   updateDeliveryStaff,
   bulkAssignRoute,
   loadGroupDetail,
-  listPunches
+  listPunches,
+  loadDriverTracking
 } from '../utils/cloudSync.js'
 import appIcon from '../assets/app_icon.png'
 import ReportPanel from '../components/ReportPanel.jsx'
@@ -186,6 +187,7 @@ export default function DeliveryAdminDashboard() {
               {[
                 ['orders', 'Orders'],
                 ['staff', 'Delivery Staff'],
+                ['drivers', 'Drivers'],
                 ['attendance', 'Attendance']
               ].map(([k, l]) => (
                 <button
@@ -365,6 +367,8 @@ export default function DeliveryAdminDashboard() {
             )}
 
             {tab === 'attendance' && <AttendanceView />}
+
+            {tab === 'drivers' && <DriversView />}
           </>
         )}
       </main>
@@ -625,6 +629,100 @@ function AttendanceView() {
           ))}
           {rows.length === 0 && (
             <p className="text-center text-sm text-slate-400 py-8">No punch records for this date.</p>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+
+// --- Driver tracking view (last-known location + today's progress) ----------
+function DriversView() {
+  const [rows, setRows] = useState(null)
+  const [error, setError] = useState(false)
+
+  const load = async () => {
+    setError(false)
+    try {
+      setRows(await loadDriverTracking())
+    } catch (e) {
+      console.error(e)
+      setError(true)
+    }
+  }
+  useEffect(() => {
+    load()
+  }, [])
+
+  const ago = (iso) => {
+    if (!iso) return 'never'
+    const mins = Math.round((Date.now() - new Date(iso)) / 60000)
+    if (mins < 1) return 'just now'
+    if (mins < 60) return `${mins} min ago`
+    const h = Math.floor(mins / 60)
+    if (h < 24) return `${h}h ago`
+    return new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })
+  }
+  const seenTime = (iso) =>
+    iso ? new Date(iso).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true }) : '—'
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-3">
+        <p className="text-xs text-slate-400">Last-known location · today\'s progress</p>
+        <button
+          onClick={load}
+          className="rounded-lg border border-slate-200 px-3 py-1.5 text-xs font-semibold text-slate-600 active:bg-slate-50"
+        >
+          Refresh
+        </button>
+      </div>
+
+      {error && <p className="text-center text-sm text-red-500 py-6">Could not load drivers.</p>}
+      {!rows && !error && (
+        <div className="py-10 flex justify-center">
+          <div className="h-7 w-7 rounded-full border-4 border-brand-100 border-t-brand-600 animate-spin" />
+        </div>
+      )}
+
+      {rows && (
+        <div className="space-y-2">
+          {rows.map((d) => (
+            <div key={d.id} className="rounded-2xl bg-white shadow-card border border-slate-100 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="font-semibold text-slate-800 truncate">{d.name}</p>
+                  <p className="text-[11px] text-slate-400">
+                    📍 Last seen {ago(d.lastSeen)}{d.lastSeen ? ` · ${seenTime(d.lastSeen)}` : ''}
+                  </p>
+                  <p className="text-[12px] text-brand-600 font-medium mt-0.5">
+                    {d.total > 0 ? `${d.done} of ${d.total} delivered today` : 'No deliveries today'}
+                  </p>
+                </div>
+                {d.latitude != null && d.longitude != null && (
+                  <a
+                    href={`https://www.google.com/maps/search/?api=1&query=${d.latitude},${d.longitude}`}
+                    target="_blank"
+                    rel="noreferrer"
+                    className="shrink-0 rounded-lg bg-brand-50 text-brand-700 text-[11px] font-semibold px-2.5 py-1.5 active:bg-brand-100"
+                  >
+                    📍 View
+                  </a>
+                )}
+              </div>
+              {d.total > 0 && (
+                <div className="mt-2 h-1.5 bg-slate-100 rounded-full overflow-hidden">
+                  <div
+                    className="h-full bg-brand-500"
+                    style={{ width: `${Math.round((d.done / d.total) * 100)}%` }}
+                  />
+                </div>
+              )}
+            </div>
+          ))}
+          {rows.length === 0 && (
+            <p className="text-center text-sm text-slate-400 py-8">No delivery staff found.</p>
           )}
         </div>
       )}

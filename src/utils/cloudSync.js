@@ -1086,3 +1086,62 @@ export async function buildDeliveryReport(from, to) {
   })
   return rows
 }
+
+// ===========================================================================
+// V4 DELIVERY — Part 5: lightweight driver tracking (last-known location)
+// ===========================================================================
+
+/**
+ * Update the current delivery rep's last-known location. Called on delivery
+ * completion and app open. Silent no-op if not logged in or no coords.
+ */
+export async function pingDriverLocation(latitude, longitude) {
+  if (latitude == null || longitude == null) return
+  const uid = await currentUserId()
+  if (!uid) return
+  const { error } = await supabase
+    .from('profiles')
+    .update({
+      last_latitude: latitude,
+      last_longitude: longitude,
+      last_seen_at: new Date().toISOString()
+    })
+    .eq('id', uid)
+  if (error) console.error('driver location ping failed', error)
+}
+
+/**
+ * Admin: driver tracking overview. For each delivery rep, returns their
+ * last-known location/time and today's progress (delivered / total assigned).
+ */
+export async function loadDriverTracking() {
+  const staffRes = await supabase
+    .from('profiles')
+    .select('id, full_name, active, last_latitude, last_longitude, last_seen_at')
+    .eq('role', 'delivery_rep')
+  const staff = staffRes.data || []
+
+  // Today's deliveries per driver.
+  const start = new Date()
+  start.setHours(0, 0, 0, 0)
+  const delRes = await supabase
+    .from('deliveries')
+    .select('assigned_to, status, created_at')
+    .gte('created_at', start.toISOString())
+  const dels = delRes.data || []
+
+  return staff.map((s) => {
+    const mine = dels.filter((d) => d.assigned_to === s.id)
+    const done = mine.filter((d) => d.status === 'delivered' || d.status === 'partial' || d.status === 'failed').length
+    return {
+      id: s.id,
+      name: s.full_name || 'Unnamed',
+      active: s.active,
+      latitude: s.last_latitude,
+      longitude: s.last_longitude,
+      lastSeen: s.last_seen_at,
+      total: mine.length,
+      done
+    }
+  })
+}

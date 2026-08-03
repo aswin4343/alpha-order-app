@@ -164,13 +164,15 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted, pers
       // Save this GPS as the shop's verified location (always overwrite latest).
       if (loc?.latitude != null) {
         try {
-          const { saveShopLocation } = await import('../utils/cloudSync.js')
+          const { saveShopLocation, pingDriverLocation } = await import('../utils/cloudSync.js')
           await saveShopLocation({
             shopName: group.shop_name,
             route: group.route,
             latitude: loc.latitude,
             longitude: loc.longitude
           })
+          // Also update the driver's own last-known location.
+          await pingDriverLocation(loc.latitude, loc.longitude)
         } catch (e) {
           console.error('save shop location failed', e)
         }

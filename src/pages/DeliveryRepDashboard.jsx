@@ -35,6 +35,22 @@ export default function DeliveryRepDashboard() {
         setPunchLoaded(true)
       }
     })()
+
+    // Ping last-known location on app open (best-effort, silent if denied).
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        async (pos) => {
+          try {
+            const { pingDriverLocation } = await import('../utils/cloudSync.js')
+            await pingDriverLocation(pos.coords.latitude, pos.coords.longitude)
+          } catch (e) {
+            console.error('ping failed', e)
+          }
+        },
+        () => {}, // ignore denial
+        { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 }
+      )
+    }
   }, [])
 
   const doPunchIn = async () => {
