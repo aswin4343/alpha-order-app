@@ -240,9 +240,21 @@ export async function loadAdminDashboard() {
 
   const [profilesRes, ordersRes, visitsRes, custRes] = await Promise.all([
     supabase.from('profiles').select('id, full_name, role, route').eq('role', 'salesperson'),
-    supabase.from('orders').select('id, sales_rep_id, shop_name, total_quantity, created_at'),
-    supabase.from('visits').select('id, sales_rep_id, created_at'),
-    supabase.from('customers').select('id, created_by, created_at, is_rep_created')
+    supabase
+      .from('orders')
+      .select('id, sales_rep_id, shop_name, total_quantity, created_at')
+      .order('created_at', { ascending: false })
+      .limit(2000),
+    supabase
+      .from('visits')
+      .select('id, sales_rep_id, created_at')
+      .order('created_at', { ascending: false })
+      .limit(2000),
+    supabase
+      .from('customers')
+      .select('id, created_by, created_at, is_rep_created')
+      .order('created_at', { ascending: false })
+      .limit(2000)
   ])
 
   const profiles = profilesRes.data || []
