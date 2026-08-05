@@ -577,20 +577,11 @@ export async function loadDeliveryAdmin(routeFilter, dateFilter) {
   if (error) throw error
   const deliveries = data || []
 
-  const counts = {
-    total: deliveries.length,
-    pending: deliveries.filter((d) => d.status === 'pending').length,
-    assigned: deliveries.filter((d) => d.status === 'assigned').length,
-    in_progress: deliveries.filter((d) => d.status === 'in_progress').length,
-    delivered: deliveries.filter((d) => d.status === 'delivered').length,
-    partial: deliveries.filter((d) => d.status === 'partial').length,
-    failed: deliveries.filter((d) => d.status === 'failed').length
-  }
-
   // Distinct routes for the filter dropdown.
   const routes = Array.from(new Set(deliveries.map((d) => d.route).filter(Boolean))).sort()
 
   // Group into one entry per shop per day, attach location, sort nearest-first.
+  // Counts are computed from the GROUPED list so they match the cards shown.
   try {
     const names = [...new Set(deliveries.map((d) => d.shop_name))]
     const locs = await fetchShopLocations(names)
@@ -601,11 +592,26 @@ export async function loadDeliveryAdmin(routeFilter, dateFilter) {
       return { ...d, latitude: l?.latitude ?? null, longitude: l?.longitude ?? null }
     })
     const grouped = groupDeliveriesByShopDay(withLoc)
+    const counts = countByGroupStatus(grouped)
     return { deliveries: sortByHubDistance(grouped), counts, routes }
   } catch (e) {
     console.error('admin grouping/sort failed', e)
     const { groupDeliveriesByShopDay } = await import('./deliveryGroup.js')
-    return { deliveries: groupDeliveriesByShopDay(deliveries), counts, routes }
+    const grouped = groupDeliveriesByShopDay(deliveries)
+    return { deliveries: grouped, counts: countByGroupStatus(grouped), routes }
+  }
+}
+
+// Count grouped deliveries by their combined status (matches the cards shown).
+function countByGroupStatus(groups) {
+  return {
+    total: groups.length,
+    pending: groups.filter((d) => d.status === 'pending').length,
+    assigned: groups.filter((d) => d.status === 'assigned').length,
+    in_progress: groups.filter((d) => d.status === 'in_progress').length,
+    delivered: groups.filter((d) => d.status === 'delivered').length,
+    partial: groups.filter((d) => d.status === 'partial').length,
+    failed: groups.filter((d) => d.status === 'failed').length
   }
 }
 
