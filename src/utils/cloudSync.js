@@ -566,6 +566,7 @@ export async function loadDeliveryAdmin(routeFilter, dateFilter) {
     .from('deliveries')
     .select('id, order_id, shop_name, route, sales_rep_name, assigned_to, assigned_at, status, created_at')
     .order('created_at', { ascending: false })
+    .limit(1500) // safety cap so the dashboard never tries to load everything
   if (routeFilter) q = q.eq('route', routeFilter)
   if (dateFilter) {
     // dateFilter is a 'YYYY-MM-DD' string — show only that day's deliveries.

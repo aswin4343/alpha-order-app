@@ -59,7 +59,7 @@ export default function DeliveryAdminDashboard() {
   const [data, setData] = useState(null)
   const [staff, setStaff] = useState([])
   const [routeFilter, setRouteFilter] = useState('')
-  const [dateFilter, setDateFilter] = useState('') // 'YYYY-MM-DD' or ''
+  const [dateFilter, setDateFilter] = useState(() => new Date().toISOString().slice(0, 10)) // default: today
   const [tab, setTab] = useState('orders') // 'orders' | 'staff'
   const [error, setError] = useState(false)
   const [busyId, setBusyId] = useState(null)
