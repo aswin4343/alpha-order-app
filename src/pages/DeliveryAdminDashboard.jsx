@@ -8,7 +8,8 @@ import {
   bulkAssignRoute,
   loadGroupDetail,
   listPunches,
-  loadDriverTracking
+  loadDriverTracking,
+  unassignGroup
 } from '../utils/cloudSync.js'
 import appIcon from '../assets/app_icon.png'
 import ReportPanel from '../components/ReportPanel.jsx'
@@ -90,7 +91,11 @@ export default function DeliveryAdminDashboard() {
     if (!staffId) return
     setBusyId(group.id)
     try {
-      await assignGroup(group, staffId)
+      if (staffId === '__none__') {
+        await unassignGroup(group)
+      } else {
+        await assignGroup(group, staffId)
+      }
       await refresh()
     } catch (e) {
       console.error(e)
@@ -307,6 +312,7 @@ export default function DeliveryAdminDashboard() {
                                 {s.full_name}
                               </option>
                             ))}
+                            {d.assigned_to && <option value="__none__">— None (unassign) —</option>}
                           </select>
                           <button
                             onClick={() => toggleExpand(d)}

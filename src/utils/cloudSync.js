@@ -876,7 +876,33 @@ export async function loadGroupDetail(group) {
       if (inserted) allItems.push(...inserted)
     }
   }
-  return allItems
+
+  // Merge duplicate products (same name) into ONE line with summed quantity.
+  // Keep the list of underlying item ids so ticking the merged line updates all.
+  const merged = new Map()
+  const order = []
+  for (const it of allItems) {
+    const key = (it.product_name || '').trim().toUpperCase()
+    let m = merged.get(key)
+    if (!m) {
+      m = {
+        ...it,
+        ordered_qty: it.ordered_qty || 0,
+        itemIds: [it.id],
+        // 'delivered' is true only if ALL underlying rows are delivered.
+        delivered: !!it.delivered
+      }
+      merged.set(key, m)
+      order.push(m)
+    } else {
+      m.ordered_qty += it.ordered_qty || 0
+      m.itemIds.push(it.id)
+      m.delivered = m.delivered && !!it.delivered
+      // Keep a reason if any underlying row has one.
+      if (!m.reason && it.reason) m.reason = it.reason
+    }
+  }
+  return order
 }
 
 /** Mark all deliveries in a group as in-progress. */
@@ -1156,4 +1182,18 @@ export async function loadDriverTracking() {
       done
     }
   })
+}
+
+/** Unassign all deliveries in a group (set back to pending, no driver). */
+export async function unassignGroup(group) {
+  const { error } = await supabase
+    .from('deliveries')
+    .update({
+      assigned_to: null,
+      assigned_at: null,
+      status: 'pending',
+      updated_at: new Date().toISOString()
+    })
+    .in('id', group.deliveryIds)
+  if (error) throw error
 }

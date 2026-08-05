@@ -46,6 +46,7 @@ export function buildOrderMessage({ brand, customer, salesperson, items, isNewCu
     if (customer?.area) L.push(`*Address:* ${customer.area}`)
     if (customer?.route) L.push(`*Route:* ${customer.route}`)
     if (customer?.category) L.push(`*Category:* ${customer.category}`)
+    if (salesperson) L.push(`*BDE:* ${salesperson}`)
     L.push(`*Credit Terms:* ${creditTerms(customer)}`)
     L.push('')
   }
@@ -57,6 +58,7 @@ export function buildOrderMessage({ brand, customer, salesperson, items, isNewCu
     L.push(`*Customer:* ${customer?.name || '-'}`)
     if (customer?.category) L.push(`*Category:* ${customer.category}`)
     if (customer?.route) L.push(`*Route:* ${customer.route}`)
+    if (salesperson) L.push(`*BDE:* ${salesperson}`)
     L.push(`*Credit Terms:* ${creditTerms(customer)}`)
   }
 
@@ -109,7 +111,6 @@ export function buildOrderMessage({ brand, customer, salesperson, items, isNewCu
   L.push(RULE)
   L.push('*ORDER SUMMARY*')
   L.push(RULE)
-  if (salesperson) L.push(`\uD83D\uDC68\u200D\uD83D\uDCBC *Salesperson:* ${salesperson}`)
   L.push(locationLine(location))
   L.push(EQ)
   L.push('\u2705 Please process this order.')

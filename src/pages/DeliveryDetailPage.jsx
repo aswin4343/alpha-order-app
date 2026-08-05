@@ -17,6 +17,7 @@ const REASONS = [
   'Payment Issue',
   'Refused / Cancelled',
   'Damaged Stock',
+  'Out of Stock',
   'Wrong Address',
   'Other'
 ]
@@ -72,14 +73,28 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted, pers
   }, [group])
 
   const patchItem = (id, patch) => {
-    setItems((prev) => prev.map((it) => (it.id === id ? { ...it, ...patch } : it)))
+    let targetIds = [id]
+    setItems((prev) =>
+      prev.map((it) => {
+        if (it.id === id) {
+          // If this is a merged line, remember all underlying rows to persist to.
+          if (it.itemIds && it.itemIds.length) targetIds = it.itemIds
+          return { ...it, ...patch }
+        }
+        return it
+      })
+    )
     // Persist only real columns (drop UI-only keys like _reasonChoice).
     const clean = {}
     Object.keys(patch).forEach((k) => {
       if (!k.startsWith('_')) clean[k] = patch[k]
     })
     if (Object.keys(clean).length) {
-      saveDeliveryItem(id, clean).catch((e) => console.error('save item failed', e))
+      // For a merged product, update every underlying delivery_items row so all
+      // the original order-lines carry the same delivered/reason state.
+      targetIds.forEach((tid) =>
+        saveDeliveryItem(tid, clean).catch((e) => console.error('save item failed', e))
+      )
     }
   }
 
