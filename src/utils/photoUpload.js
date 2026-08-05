@@ -7,7 +7,7 @@ const BUCKET = 'delivery-photos'
  * quality. Keeps proof-of-delivery photos small (~200-400KB) so uploads are
  * fast and storage lasts. Runs entirely on-device via canvas.
  */
-export function compressImage(file, maxWidth = 1280, quality = 0.7) {
+export function compressImage(file, maxWidth = 1000, quality = 0.55) {
   return new Promise((resolve, reject) => {
     const img = new Image()
     const url = URL.createObjectURL(file)

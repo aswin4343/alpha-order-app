@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
 import {
   loadGroupDetail,
@@ -38,6 +38,13 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted, pers
   const [billPhoto, setBillPhoto] = useState(null)   // {url}
   const [productPhoto, setProductPhoto] = useState(null)
   const [uploading, setUploading] = useState('')
+  // Refs mirror the latest values so the completion wait-loop reads fresh state.
+  const uploadingRef = useRef('')
+  const billRef = useRef(null)
+  const productRef = useRef(null)
+  useEffect(() => { uploadingRef.current = uploading }, [uploading])
+  useEffect(() => { billRef.current = billPhoto }, [billPhoto])
+  useEffect(() => { productRef.current = productPhoto }, [productPhoto])
   const [photoError, setPhotoError] = useState('')
 
   useEffect(() => {
@@ -117,27 +124,36 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted, pers
       )
     })
 
-  // Capture + upload a photo (camera preferred). kind: 'bill' | 'product'
+  // Capture a photo: show it INSTANTLY from the local file, then upload in the
+  // background and swap to the cloud URL when done. kind: 'bill' | 'product'
   const onPhoto = async (kind, e) => {
     const file = e.target.files?.[0]
     e.target.value = ''
     if (!file) return
-    setUploading(kind)
     setPhotoError('')
+
+    // 1. Instant local preview — no waiting for compression or upload.
+    const localUrl = URL.createObjectURL(file)
+    const localShown = { url: localUrl, kind, _local: true }
+    if (kind === 'bill') setBillPhoto(localShown)
+    else setProductPhoto(localShown)
+    setToast(kind === 'bill' ? 'Bill photo added ✓' : 'Product photo added ✓')
+    setTimeout(() => setToast(''), 2000)
+
+    // 2. Upload in the background; swap to the cloud URL when ready.
+    setUploading(kind)
     try {
       const res = await uploadDeliveryPhoto(photoDeliveryId, file, kind)
-      // Add a cache-buster so the freshly-uploaded image shows immediately as a
-      // thumbnail (no manual refresh needed), even if the CDN is still warming.
       const shown = { ...res, url: `${res.url}?t=${Date.now()}` }
       if (kind === 'bill') setBillPhoto(shown)
       else setProductPhoto(shown)
-      setToast(kind === 'bill' ? 'Bill photo added ✓' : 'Product photo added ✓')
-      setTimeout(() => setToast(''), 2600)
+      // Free the local blob now that the cloud image is in place.
+      URL.revokeObjectURL(localUrl)
     } catch (err) {
       console.error('photo upload error', err)
-      // Show the real reason so we can diagnose on the phone.
       const reason = err?.message || err?.error || 'Unknown error'
-      setPhotoError(`Upload failed: ${reason}`)
+      // Keep the local preview visible, but warn that upload failed.
+      setPhotoError(`Photo shown but upload failed (${reason}). It will need to re-upload.`)
     } finally {
       setUploading('')
     }
@@ -166,6 +182,18 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted, pers
       setToast('Please Punch In first to complete a delivery.')
       setTimeout(() => setToast(''), 2600)
       return
+    }
+    // If a photo is still uploading in the background, wait briefly so the
+    // report gets the real cloud URL (not the temporary local preview).
+    if (uploading || billPhoto?._local || productPhoto?._local) {
+      setToast('Finishing photo upload…')
+      let waited = 0
+      while ((uploadingRef.current || billRef.current?._local || productRef.current?._local) && waited < 15000) {
+        // eslint-disable-next-line no-await-in-loop
+        await new Promise((r) => setTimeout(r, 400))
+        waited += 400
+      }
+      setToast('')
     }
     setBusy(true)
     try {
@@ -201,6 +229,7 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted, pers
         status,
         photos: [billPhoto, productPhoto]
           .filter(Boolean)
+          .filter((p) => !p._local) // only include uploaded (cloud) photos
           .map((p) => ({ ...p, url: p.url.split('?')[0] }))
       })
       setReportText(text)

@@ -1197,3 +1197,76 @@ export async function unassignGroup(group) {
     .in('id', group.deliveryIds)
   if (error) throw error
 }
+
+// ===========================================================================
+// V4 BILLING MODULE — Phase 1
+// ===========================================================================
+
+/**
+ * Billing dashboard: sales reps with their pending-order counts (+ verified
+ * today). Reps with zero pending are still shown if they have any orders today.
+ */
+export async function loadBillingReps() {
+  const startToday = new Date()
+  startToday.setHours(0, 0, 0, 0)
+
+  const [repsRes, pendingRes, verifiedRes] = await Promise.all([
+    supabase.from('profiles').select('id, full_name').eq('role', 'salesperson'),
+    supabase.from('orders').select('sales_rep_id').eq('billing_status', 'pending'),
+    supabase
+      .from('orders')
+      .select('sales_rep_id')
+      .eq('billing_status', 'verified')
+      .gte('billing_verified_at', startToday.toISOString())
+  ])
+
+  const reps = repsRes.data || []
+  const pending = pendingRes.data || []
+  const verified = verifiedRes.data || []
+
+  const countBy = (rows, id) => rows.filter((r) => r.sales_rep_id === id).length
+
+  return reps
+    .map((r) => ({
+      id: r.id,
+      name: r.full_name || 'Unnamed',
+      pending: countBy(pending, r.id),
+      verifiedToday: countBy(verified, r.id)
+    }))
+    .filter((r) => r.pending > 0 || r.verifiedToday > 0)
+    .sort((a, b) => b.pending - a.pending)
+}
+
+/** Pending orders for one rep (optionally filtered by delivery type EXP/STD). */
+export async function loadBillingOrders(repId, deliveryType) {
+  const { data, error } = await supabase
+    .from('orders')
+    .select('id, shop_name, route, total_quantity, created_at, sales_rep_id')
+    .eq('sales_rep_id', repId)
+    .eq('billing_status', 'pending')
+    .order('created_at', { ascending: false })
+  if (error) throw error
+  let rows = data || []
+  if (deliveryType === 'EXP') rows = rows.filter((o) => (o.route || '').toUpperCase().startsWith('EXP'))
+  if (deliveryType === 'STD') rows = rows.filter((o) => (o.route || '').toUpperCase().startsWith('STD'))
+  return rows
+}
+
+/** Full item list for one order (for the billing detail view). */
+export async function loadBillingOrderItems(orderId) {
+  const { data, error } = await supabase
+    .from('order_items')
+    .select('id, product_name, qty, unit')
+    .eq('order_id', orderId)
+  if (error) throw error
+  return data || []
+}
+
+/** Verify an order → creates its delivery and forwards to Delivery Admin. */
+export async function verifyOrder(orderId, notes) {
+  const { error } = await supabase.rpc('verify_order_to_delivery', {
+    p_order_id: orderId,
+    p_notes: notes || null
+  })
+  if (error) throw error
+}

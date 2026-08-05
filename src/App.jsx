@@ -12,6 +12,7 @@ import SalespeopleAdminPage from './pages/SalespeopleAdminPage.jsx'
 import AnnouncementsAdminPage from './pages/AnnouncementsAdminPage.jsx'
 import AnnouncementsPage from './pages/AnnouncementsPage.jsx'
 import DeliveryAdminDashboard from './pages/DeliveryAdminDashboard.jsx'
+import BillingDashboard from './pages/BillingDashboard.jsx'
 import DeliveryRepDashboard from './pages/DeliveryRepDashboard.jsx'
 
 function Splash() {
@@ -55,6 +56,7 @@ export default function App() {
   // here, so the existing Sales experience is unchanged (backward compatible).
   if (profile.role === 'delivery_admin') return <DeliveryAdminDashboard />
   if (profile.role === 'delivery_rep') return <DeliveryRepDashboard />
+  if (profile.role === 'billing_team') return <BillingDashboard />
 
   if (route === 'settings') return <SettingsPage onBack={() => setRoute('order')} />
   if (route === 'returns') return <ReturnsPage onBack={() => setRoute('order')} />
