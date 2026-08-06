@@ -71,6 +71,35 @@ export async function saveCloudOrder({ customer, brand, userId, items, location 
 
   const totalProducts = items.length
   const totalQuantity = items.reduce((s, i) => s + i.qty, 0)
+
+  // ---- Duplicate guard --------------------------------------------------
+  // If an identical order already exists TODAY for this shop (same products &
+  // quantities), skip saving — this order is a double-submit. Any difference
+  // (product added/removed or qty changed) makes it a legitimate new order.
+  try {
+    const startToday = new Date(); startToday.setHours(0, 0, 0, 0)
+    const { data: todays } = await supabase
+      .from('orders')
+      .select('id, shop_name, created_at, order_items(product_name, qty)')
+      .eq('sales_rep_id', userId)
+      .eq('shop_name', customer.name)
+      .gte('created_at', startToday.toISOString())
+    const fingerprint = (list) =>
+      (list || [])
+        .map((r) => `${(r.product_name || r.name || '').trim().toUpperCase()}::${r.qty}`)
+        .sort()
+        .join('|')
+    const mine = fingerprint(items)
+    const isDup = (todays || []).some((o) => fingerprint(o.order_items) === mine)
+    if (isDup) {
+      console.log('Duplicate order detected — skipping save.')
+      return null
+    }
+  } catch (e) {
+    // If the check fails, fall through and save normally (never block a sale).
+    console.error('duplicate check failed', e)
+  }
+
   // Order value: sum of (effective price × qty). Uses the item's retail (or its
   // override if set), then base, then net; 0 when no price is known.
   const totalValue = items.reduce((s, i) => {
@@ -141,12 +170,29 @@ export async function loadPreviousOrders(shopName, route) {
     .eq('shop_name', shopName)
     .eq('route', route || '')
     .order('created_at', { ascending: false })
-    .limit(10)
+    .limit(20)
   if (error) {
     console.error('load previous orders failed', error)
     return []
   }
-  return data || []
+  // Hide same-day identical duplicates: same day + same products & quantities
+  // = a double-submit, show only the first (latest). Any difference is kept.
+  const seen = new Set()
+  const out = []
+  for (const o of data || []) {
+    const day = (o.created_at || '').slice(0, 10)
+    const fp =
+      day +
+      '::' +
+      (o.order_items || [])
+        .map((r) => `${(r.product_name || '').trim().toUpperCase()}::${r.qty}`)
+        .sort()
+        .join('|')
+    if (seen.has(fp)) continue
+    seen.add(fp)
+    out.push(o)
+  }
+  return out.slice(0, 10)
 }
 
 /**

@@ -80,6 +80,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   const [visitStatus, setVisitStatus] = useState(saved?.visitStatus ?? '')
   const [visitRemark, setVisitRemark] = useState(saved?.visitRemark ?? '')
   const [gpsBusy, setGpsBusy] = useState(false)
+  const [sending, setSending] = useState(false) // blocks double-submit
   const [gpsFailed, setGpsFailed] = useState(false)
   const [unread, setUnread] = useState(0)
   const [showPrevOrders, setShowPrevOrders] = useState(false)
@@ -391,43 +392,49 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   // stamped 'Not captured' in the message for accountability.
   const dispatchOrder = async (viaCopy) => {
     if (!canSend) return
-    setGpsBusy(true)
-    setToast('Getting location…')
-    const loc = await getLocation()
-    setGpsBusy(false)
-    setToast('')
-    const ok = loc && loc.latitude != null
-    setGpsFailed(!ok)
-    const text = message(ok ? loc : null)
-
-    // Persist the order to Supabase (rep-attributed; PII stays local).
-    // Use the FRESH authenticated id at save time to avoid stale attribution.
+    if (sending) return // already sending — ignore double-tap
+    setSending(true)
     try {
-      const uid = (await currentUserId()) || user.id
-      await saveCloudOrder({
-        customer,
-        brand: settings.brand,
-        userId: uid,
-        items,
-        location: ok ? loc : null
-      })
-    } catch (e) {
-      console.error('cloud order save failed', e)
-    }
-    if (viaCopy) {
+      setGpsBusy(true)
+      setToast('Getting location…')
+      const loc = await getLocation()
+      setGpsBusy(false)
+      setToast('')
+      const ok = loc && loc.latitude != null
+      setGpsFailed(!ok)
+      const text = message(ok ? loc : null)
+
+      // Persist the order to Supabase (rep-attributed; PII stays local).
+      // Use the FRESH authenticated id at save time to avoid stale attribution.
       try {
-        await navigator.clipboard.writeText(text)
-        setToast(ok ? 'Order copied' : 'Copied — location not captured')
-      } catch {
-        setToast('Copy failed')
+        const uid = (await currentUserId()) || user.id
+        await saveCloudOrder({
+          customer,
+          brand: settings.brand,
+          userId: uid,
+          items,
+          location: ok ? loc : null
+        })
+      } catch (e) {
+        console.error('cloud order save failed', e)
       }
-      setTimeout(() => setToast(''), 2600)
-    } else {
-      window.open(buildWhatsappUrl(text), '_blank')
+      if (viaCopy) {
+        try {
+          await navigator.clipboard.writeText(text)
+          setToast(ok ? 'Order copied' : 'Copied — location not captured')
+        } catch {
+          setToast('Copy failed')
+        }
+        setTimeout(() => setToast(''), 2600)
+      } else {
+        window.open(buildWhatsappUrl(text), '_blank')
+      }
+      if (showIntro) clearIntro(customer.id)
+      // Order has been dispatched — the working session is no longer "unsaved".
+      clearSession()
+    } finally {
+      setSending(false)
     }
-    if (showIntro) clearIntro(customer.id)
-    // Order has been dispatched — the working session is no longer "unsaved".
-    clearSession()
   }
 
   const handleSend = () => dispatchOrder(false)
