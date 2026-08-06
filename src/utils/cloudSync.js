@@ -169,6 +169,7 @@ export async function loadPreviousOrders(shopName, route) {
     .select('id, created_at, total_products, total_quantity, order_items(product_name, qty, unit)')
     .eq('shop_name', shopName)
     .eq('route', route || '')
+    .eq('hidden', false)
     .order('created_at', { ascending: false })
     .limit(20)
   if (error) {
@@ -212,7 +213,8 @@ export async function loadMyPerformance(userId) {
     supabase
       .from('orders')
       .select('id, total_quantity, shop_name, created_at')
-      .eq('sales_rep_id', userId),
+      .eq('sales_rep_id', userId)
+      .eq('hidden', false),
     supabase
       .from('visits')
       .select('id, created_at')
@@ -289,18 +291,22 @@ export async function loadAdminDashboard() {
     supabase
       .from('orders')
       .select('id, sales_rep_id, shop_name, total_quantity, created_at')
+      .eq('hidden', false)
+      .gte('created_at', startOfMonth.toISOString())
       .order('created_at', { ascending: false })
-      .limit(2000),
+      .limit(5000),
     supabase
       .from('visits')
       .select('id, sales_rep_id, created_at')
+      .gte('created_at', startOfMonth.toISOString())
       .order('created_at', { ascending: false })
-      .limit(2000),
+      .limit(5000),
     supabase
       .from('customers')
       .select('id, created_by, created_at, is_rep_created')
+      .gte('created_at', startOfMonth.toISOString())
       .order('created_at', { ascending: false })
-      .limit(2000)
+      .limit(5000)
   ])
 
   const profiles = profilesRes.data || []
@@ -611,6 +617,7 @@ export async function loadDeliveryAdmin(routeFilter, dateFilter) {
   let q = supabase
     .from('deliveries')
     .select('id, order_id, shop_name, route, sales_rep_name, assigned_to, assigned_at, status, created_at')
+    .neq('status', 'cancelled') // hide soft-deleted duplicate deliveries
     .order('created_at', { ascending: false })
     .limit(1500) // safety cap so the dashboard never tries to load everything
   if (routeFilter) q = q.eq('route', routeFilter)
@@ -1112,7 +1119,7 @@ export async function buildSalesReport(from, to) {
 
   const [profilesRes, ordersRes, visitsRes, custRes] = await Promise.all([
     supabase.from('profiles').select('id, full_name').eq('role', 'salesperson'),
-    withRange(supabase.from('orders').select('id, sales_rep_id, total_quantity, total_value, shop_name, created_at')),
+    withRange(supabase.from('orders').select('id, sales_rep_id, total_quantity, total_value, shop_name, created_at').eq('hidden', false)),
     withRange(supabase.from('visits').select('id, sales_rep_id, created_at')),
     withRange(supabase.from('customers').select('id, created_by, is_rep_created, created_at'))
   ])
@@ -1153,7 +1160,7 @@ export async function buildDeliveryReport(from, to) {
   const [staffRes, delRes, punchRes] = await Promise.all([
     supabase.from('profiles').select('id, full_name').eq('role', 'delivery_rep'),
     withRange(
-      supabase.from('deliveries').select('id, assigned_to, status, completed_at'),
+      supabase.from('deliveries').select('id, assigned_to, status, completed_at').neq('status', 'cancelled'),
       'completed_at'
     ),
     withRange(
@@ -1277,11 +1284,12 @@ export async function loadBillingReps() {
 
   const [repsRes, pendingRes, verifiedRes] = await Promise.all([
     supabase.from('profiles').select('id, full_name').eq('role', 'salesperson'),
-    supabase.from('orders').select('sales_rep_id').eq('billing_status', 'pending'),
+    supabase.from('orders').select('sales_rep_id').eq('billing_status', 'pending').eq('hidden', false),
     supabase
       .from('orders')
       .select('sales_rep_id')
       .eq('billing_status', 'verified')
+      .eq('hidden', false)
       .gte('billing_verified_at', startToday.toISOString())
   ])
 
@@ -1303,13 +1311,20 @@ export async function loadBillingReps() {
 }
 
 /** Pending orders for one rep (optionally filtered by delivery type EXP/STD). */
-export async function loadBillingOrders(repId, deliveryType) {
-  const { data, error } = await supabase
+export async function loadBillingOrders(repId, deliveryType, status = 'pending') {
+  let q = supabase
     .from('orders')
     .select('id, shop_name, route, total_quantity, created_at, sales_rep_id')
     .eq('sales_rep_id', repId)
-    .eq('billing_status', 'pending')
+    .eq('billing_status', status)
+    .eq('hidden', false)
     .order('created_at', { ascending: false })
+  // For verified, limit to today's verifications to keep the list focused.
+  if (status === 'verified') {
+    const startToday = new Date(); startToday.setHours(0, 0, 0, 0)
+    q = q.gte('billing_verified_at', startToday.toISOString())
+  }
+  const { data, error } = await q
   if (error) throw error
   let rows = data || []
   if (deliveryType === 'EXP') rows = rows.filter((o) => (o.route || '').toUpperCase().startsWith('EXP'))
@@ -1524,4 +1539,33 @@ export async function markNotificationRead(id) {
     .update({ read: true })
     .eq('id', id)
   if (error) console.error('notif mark read failed', error)
+}
+
+/** Admin: recent billing-verified orders with rep name + products (for the
+ *  Admin "Verified Orders" tab). Shows shop, rep, and product list. */
+export async function loadVerifiedOrdersForAdmin(limit = 100) {
+  const { data, error } = await supabase
+    .from('orders')
+    .select('id, shop_name, route, sales_rep_id, billing_verified_at, order_items(product_name, qty, unit, removed)')
+    .eq('billing_status', 'verified')
+    .eq('hidden', false)
+    .order('billing_verified_at', { ascending: false })
+    .limit(limit)
+  if (error) throw error
+  const orders = data || []
+  // Attach rep names.
+  const repIds = [...new Set(orders.map((o) => o.sales_rep_id).filter(Boolean))]
+  let names = {}
+  if (repIds.length) {
+    const { data: profs } = await supabase.from('profiles').select('id, full_name').in('id', repIds)
+    ;(profs || []).forEach((p) => { names[p.id] = p.full_name })
+  }
+  return orders.map((o) => ({
+    id: o.id,
+    shop_name: o.shop_name,
+    route: o.route,
+    rep_name: names[o.sales_rep_id] || 'Unknown',
+    verified_at: o.billing_verified_at,
+    items: (o.order_items || []).filter((it) => !it.removed)
+  }))
 }

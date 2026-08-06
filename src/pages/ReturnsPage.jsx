@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react'
+import { useState, useMemo, useEffect } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { useSearch } from '../hooks/useSearch.js'
 import { useDebounce } from '../hooks/useDebounce.js'
@@ -117,11 +117,27 @@ function ReturnLine({ line, index, onChange, onRemove, products }) {
 
 export default function ReturnsPage({ onBack }) {
   const { settings, products } = useApp()
-  const [customer, setCustomer] = useState(null)
-  const [lines, setLines] = useState([
-    { key: 1, name: '', mrp: '', qty: '', reason: '', customReason: '' }
-  ])
+  // Restore in-progress return (customer, products, quantities, reasons) if the
+  // tab reloaded — so switching apps/tabs never loses the work.
+  const [customer, setCustomer] = useState(() => {
+    try { return JSON.parse(sessionStorage.getItem('returns_customer') || 'null') } catch { return null }
+  })
+  const [lines, setLines] = useState(() => {
+    try {
+      const saved = JSON.parse(sessionStorage.getItem('returns_lines') || 'null')
+      if (Array.isArray(saved) && saved.length) return saved
+    } catch {}
+    return [{ key: 1, name: '', mrp: '', qty: '', reason: '', customReason: '' }]
+  })
   const [toast, setToast] = useState('')
+
+  // Save progress whenever it changes.
+  useEffect(() => {
+    try { sessionStorage.setItem('returns_customer', JSON.stringify(customer)) } catch {}
+  }, [customer])
+  useEffect(() => {
+    try { sessionStorage.setItem('returns_lines', JSON.stringify(lines)) } catch {}
+  }, [lines])
 
   const update = (key, patch) =>
     setLines((prev) => prev.map((l) => (l.key === key ? { ...l, ...patch } : l)))
@@ -163,6 +179,11 @@ export default function ReturnsPage({ onBack }) {
     if (!valid) return
     const loc = await getLocation()
     window.open(buildWhatsappUrl(message(loc)), '_blank')
+    // Return submitted — clear the saved in-progress state.
+    try {
+      sessionStorage.removeItem('returns_customer')
+      sessionStorage.removeItem('returns_lines')
+    } catch {}
   }
 
   // Copy lets the rep paste into WhatsApp Business manually.

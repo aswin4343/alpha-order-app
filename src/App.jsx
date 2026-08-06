@@ -14,6 +14,7 @@ import AnnouncementsAdminPage from './pages/AnnouncementsAdminPage.jsx'
 import AnnouncementsPage from './pages/AnnouncementsPage.jsx'
 import DeliveryAdminDashboard from './pages/DeliveryAdminDashboard.jsx'
 import BillingDashboard from './pages/BillingDashboard.jsx'
+import VerifiedOrdersPage from './pages/VerifiedOrdersPage.jsx'
 import DeliveryRepDashboard from './pages/DeliveryRepDashboard.jsx'
 
 function Splash() {
@@ -44,11 +45,13 @@ export default function App() {
     if (route === 'products') return <ProductAdminPage onBack={() => setRoute('order')} />
     if (route === 'salespeople') return <SalespeopleAdminPage onBack={() => setRoute('order')} />
     if (route === 'announce') return <AnnouncementsAdminPage onBack={() => setRoute('order')} />
+    if (route === 'verified') return <VerifiedOrdersPage onBack={() => setRoute('order')} />
     return (
       <AdminDashboard
         onOpenProducts={() => setRoute('products')}
         onOpenSalespeople={() => setRoute('salespeople')}
         onOpenAnnounce={() => setRoute('announce')}
+        onOpenVerified={() => setRoute('verified')}
       />
     )
   }

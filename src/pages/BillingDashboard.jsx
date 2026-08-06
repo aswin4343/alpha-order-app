@@ -149,6 +149,7 @@ export default function BillingDashboard() {
 function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobileWhenDetail }) {
   const [orders, setOrders] = useState(null)
   const [type, setType] = useState('All')
+  const [status, setStatus] = useState('pending') // 'pending' | 'verified'
   const [error, setError] = useState(false)
 
   // showSpinner=true only for the first load / filter change; quiet refreshes
@@ -156,7 +157,7 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
   const load = async (showSpinner = true) => {
     setError(false)
     if (showSpinner) setOrders(null)
-    try { setOrders(await loadBillingOrders(rep.id, type === 'All' ? undefined : type)) }
+    try { setOrders(await loadBillingOrders(rep.id, type === 'All' ? undefined : type, status)) }
     catch (e) { console.error(e); if (showSpinner) setError(true) }
   }
   useEffect(() => {
@@ -169,7 +170,7 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
       window.removeEventListener('focus', onFocus)
     }
     // eslint-disable-next-line
-  }, [type, rep.id])
+  }, [type, status, rep.id])
 
   const fmt = (iso) => new Date(iso).toLocaleString('en-IN', { day:'numeric', month:'short', hour:'numeric', minute:'2-digit', hour12:true })
 
@@ -179,8 +180,17 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
         <button onClick={onBackToReps} className="lg:hidden h-8 w-8 rounded-full flex items-center justify-center text-slate-600 hover:bg-slate-100 text-lg">‹</button>
         <div className="min-w-0 flex-1">
           <p className="font-bold text-slate-800 truncate">{rep.name}</p>
-          <p className="text-[11px] text-slate-400">Pending orders</p>
+          <p className="text-[11px] text-slate-400">{status === 'verified' ? 'Verified today' : 'Pending orders'}</p>
         </div>
+      </div>
+      {/* Pending / Verified toggle */}
+      <div className="flex gap-1.5 px-3 pt-3">
+        {[['pending','Pending'],['verified','Verified']].map(([val,label]) => (
+          <button key={val} onClick={() => setStatus(val)}
+            className={`flex-1 px-3 py-1.5 rounded-lg text-xs font-bold ${status===val ? (val==='verified' ? 'bg-green-600 text-white' : 'bg-amber-500 text-white') : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}>
+            {label}
+          </button>
+        ))}
       </div>
       <div className="flex gap-1.5 p-3 border-b border-slate-50">
         {['All','EXP','STD'].map((t) => (
@@ -192,9 +202,9 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
       </div>
       {error && <p className="text-center text-sm text-red-500 py-6">Could not load orders.</p>}
       {!orders && !error && (<div className="py-10 flex justify-center"><div className="h-6 w-6 rounded-full border-4 border-brand-100 border-t-brand-600 animate-spin" /></div>)}
-      {orders && orders.length === 0 && (<p className="text-center text-sm text-slate-400 py-10 px-4">No pending orders here.</p>)}
+      {orders && orders.length === 0 && (<p className="text-center text-sm text-slate-400 py-10 px-4">{status === 'verified' ? 'No verified orders today.' : 'No pending orders here.'}</p>)}
       {orders && orders.map((o) => (
-        <button key={o.id} onClick={() => onOpenOrder(o)}
+        <button key={o.id} onClick={() => onOpenOrder({ ...o, _status: status })}
           className={`text-left px-4 py-3 border-b border-slate-50 hover:bg-slate-50 ${openOrderId===o.id ? 'bg-brand-50/60 border-l-4 border-l-brand-600' : ''}`}>
           <p className="font-semibold text-slate-800 truncate">{o.shop_name}</p>
           <p className="text-[11px] text-slate-400 truncate">{o.route || 'No route'}</p>
@@ -202,6 +212,9 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
             {fmt(o.created_at)}
             {o.orderCount > 1 && (
               <span className="ml-1.5 text-brand-600 font-semibold">· {o.orderCount} orders merged</span>
+            )}
+            {status === 'verified' && (
+              <span className="ml-1.5 text-green-600 font-semibold">✓ verified</span>
             )}
           </p>
         </button>
@@ -309,8 +322,8 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified }) {
                     </button>
                   </div>
 
-                  {/* Edit actions */}
-                  {!it.removed && (
+                  {/* Edit actions (only for pending orders) */}
+                  {!it.removed && order._status !== 'verified' && (
                     <div className="flex gap-2 mt-2.5 ml-6">
                       <button onClick={() => setEditItem(it)}
                         className="text-xs font-semibold text-brand-700 border border-brand-200 rounded-lg px-2.5 py-1 hover:bg-brand-50">Edit Qty</button>
@@ -329,10 +342,16 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified }) {
 
       <div className="sticky bottom-0 bg-white border-t border-slate-200 p-3">
         <div className="max-w-3xl mx-auto flex lg:justify-center">
-          <button onClick={doVerify} disabled={busy || !items}
-            className="w-full lg:w-auto lg:px-12 rounded-xl bg-brand-600 text-white py-3 font-bold hover:bg-brand-700 disabled:bg-slate-300">
-            {busy ? 'Verifying…' : '✓ Verify Order'}
-          </button>
+          {order._status === 'verified' ? (
+            <div className="w-full lg:w-auto lg:px-12 rounded-xl bg-green-50 border border-green-200 text-green-700 py-3 font-bold text-center">
+              ✓ Verified — sent to Delivery
+            </div>
+          ) : (
+            <button onClick={doVerify} disabled={busy || !items}
+              className="w-full lg:w-auto lg:px-12 rounded-xl bg-brand-600 text-white py-3 font-bold hover:bg-brand-700 disabled:bg-slate-300">
+              {busy ? 'Verifying…' : '✓ Verify Order'}
+            </button>
+          )}
         </div>
       </div>
 
