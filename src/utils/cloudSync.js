@@ -1268,7 +1268,32 @@ export async function loadBillingOrders(repId, deliveryType) {
   let rows = data || []
   if (deliveryType === 'EXP') rows = rows.filter((o) => (o.route || '').toUpperCase().startsWith('EXP'))
   if (deliveryType === 'STD') rows = rows.filter((o) => (o.route || '').toUpperCase().startsWith('STD'))
-  return rows
+
+  // Group into ONE card per shop per day. Multiple orders (incl. add-ons) for
+  // the same shop on the same day merge — keep all order ids for the detail view.
+  const groups = new Map()
+  const order = []
+  for (const o of rows) {
+    const day = (o.created_at || '').slice(0, 10) // YYYY-MM-DD
+    const key = `${(o.shop_name || '').toUpperCase()}__${day}`
+    let g = groups.get(key)
+    if (!g) {
+      g = {
+        id: o.id,               // primary id (most recent, since sorted desc)
+        orderIds: [o.id],
+        shop_name: o.shop_name,
+        route: o.route,
+        created_at: o.created_at, // latest order time (first seen = newest)
+        orderCount: 1
+      }
+      groups.set(key, g)
+      order.push(g)
+    } else {
+      g.orderIds.push(o.id)
+      g.orderCount += 1
+    }
+  }
+  return order
 }
 
 /** Full item list for one order (for the billing detail view). */
@@ -1281,25 +1306,31 @@ export async function loadBillingOrderItems(orderId) {
   return data || []
 }
 
-/** Verify an order → creates its delivery and forwards to Delivery Admin. */
-export async function verifyOrder(orderId, notes) {
-  const { error } = await supabase.rpc('verify_order_to_delivery', {
-    p_order_id: orderId,
-    p_notes: notes || null
-  })
-  if (error) throw error
+/** Verify an order (or all orders in a shop-day group) → creates deliveries. */
+export async function verifyOrder(orderIdOrIds, notes) {
+  const ids = Array.isArray(orderIdOrIds) ? orderIdOrIds : [orderIdOrIds]
+  for (const id of ids) {
+    // eslint-disable-next-line no-await-in-loop
+    const { error } = await supabase.rpc('verify_order_to_delivery', {
+      p_order_id: id,
+      p_notes: notes || null
+    })
+    if (error) throw error
+  }
 }
 
 // ===========================================================================
 // V4 BILLING MODULE — Phase 2 (product verification & editing)
 // ===========================================================================
 
-/** Load order items with the Phase 2 edit fields for the billing detail view. */
-export async function loadBillingOrderItemsFull(orderId) {
+/** Load order items with the Phase 2 edit fields for the billing detail view.
+ *  Accepts a single order id OR an array of ids (a shop-day group). */
+export async function loadBillingOrderItemsFull(orderIdOrIds) {
+  const ids = Array.isArray(orderIdOrIds) ? orderIdOrIds : [orderIdOrIds]
   const { data, error } = await supabase
     .from('order_items')
-    .select('id, product_name, qty, unit, available, original_qty, change_type, change_reason, original_product_name, removed')
-    .eq('order_id', orderId)
+    .select('id, order_id, product_name, qty, unit, available, original_qty, change_type, change_reason, original_product_name, removed')
+    .in('order_id', ids)
     .order('removed', { ascending: true })
   if (error) throw error
   return data || []

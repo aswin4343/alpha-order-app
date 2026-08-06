@@ -27,8 +27,21 @@ export default function BillingDashboard() {
   const { profile, signOut } = useAuth()
   const [reps, setReps] = useState(null)
   const [error, setError] = useState(false)
-  const [selectedRep, setSelectedRep] = useState(null)
-  const [openOrder, setOpenOrder] = useState(null)
+  // Restore selection from a previous session/tab-reload so progress isn't lost.
+  const [selectedRep, setSelectedRep] = useState(() => {
+    try { return JSON.parse(sessionStorage.getItem('billing_rep') || 'null') } catch { return null }
+  })
+  const [openOrder, setOpenOrder] = useState(() => {
+    try { return JSON.parse(sessionStorage.getItem('billing_order') || 'null') } catch { return null }
+  })
+
+  // Save selection whenever it changes.
+  useEffect(() => {
+    try { sessionStorage.setItem('billing_rep', JSON.stringify(selectedRep)) } catch {}
+  }, [selectedRep])
+  useEffect(() => {
+    try { sessionStorage.setItem('billing_order', JSON.stringify(openOrder)) } catch {}
+  }, [openOrder])
 
   const loadReps = async () => {
     setError(false)
@@ -185,7 +198,12 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
           className={`text-left px-4 py-3 border-b border-slate-50 hover:bg-slate-50 ${openOrderId===o.id ? 'bg-brand-50/60 border-l-4 border-l-brand-600' : ''}`}>
           <p className="font-semibold text-slate-800 truncate">{o.shop_name}</p>
           <p className="text-[11px] text-slate-400 truncate">{o.route || 'No route'}</p>
-          <p className="text-[11px] text-slate-400 mt-0.5">{fmt(o.created_at)}</p>
+          <p className="text-[11px] text-slate-400 mt-0.5">
+            {fmt(o.created_at)}
+            {o.orderCount > 1 && (
+              <span className="ml-1.5 text-brand-600 font-semibold">· {o.orderCount} orders merged</span>
+            )}
+          </p>
         </button>
       ))}
     </section>
@@ -203,7 +221,7 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified }) {
   const [replaceItemTarget, setReplaceItemTarget] = useState(null) // item being replaced
 
   const reload = async () => {
-    try { setItems(await loadBillingOrderItemsFull(order.id)) }
+    try { setItems(await loadBillingOrderItemsFull(order.orderIds || order.id)) }
     catch (e) { console.error(e); setError(true) }
   }
   useEffect(() => { setItems(null); setError(false); reload() /* eslint-disable-next-line */ }, [order.id])
@@ -216,7 +234,7 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified }) {
   const doVerify = async () => {
     if (!window.confirm('Are you sure you want to verify this order? It will be sent to Delivery.')) return
     setBusy(true)
-    try { await verifyOrder(order.id); onVerified() }
+    try { await verifyOrder(order.orderIds || order.id); onVerified() }
     catch (e) { console.error(e); alert('Could not verify. Try again.'); setBusy(false) }
   }
 
