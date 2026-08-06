@@ -39,8 +39,28 @@ export default function BillingDashboard() {
       setError(true)
     }
   }
+
+  // Quiet background refresh: updates the rep list (pending counts) without
+  // disturbing the staff's current view — no spinner, no closing the open order,
+  // no scroll reset. Runs on an interval and when the tab regains focus.
+  const quietRefreshReps = async () => {
+    try {
+      const fresh = await loadBillingReps()
+      setReps(fresh) // just swap the data; React keeps everything else in place
+    } catch (e) {
+      // ignore quiet-refresh errors; the manual Refresh button still works
+    }
+  }
+
   useEffect(() => {
     loadReps()
+    const interval = setInterval(quietRefreshReps, 20000) // every 20s
+    const onFocus = () => quietRefreshReps()
+    window.addEventListener('focus', onFocus)
+    return () => {
+      clearInterval(interval)
+      window.removeEventListener('focus', onFocus)
+    }
   }, [])
 
   const pickRep = (r) => {
@@ -118,12 +138,25 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
   const [type, setType] = useState('All')
   const [error, setError] = useState(false)
 
-  const load = async () => {
-    setError(false); setOrders(null)
+  // showSpinner=true only for the first load / filter change; quiet refreshes
+  // swap data silently so the staff's scroll and open order stay put.
+  const load = async (showSpinner = true) => {
+    setError(false)
+    if (showSpinner) setOrders(null)
     try { setOrders(await loadBillingOrders(rep.id, type === 'All' ? undefined : type)) }
-    catch (e) { console.error(e); setError(true) }
+    catch (e) { console.error(e); if (showSpinner) setError(true) }
   }
-  useEffect(() => { load() /* eslint-disable-next-line */ }, [type, rep.id])
+  useEffect(() => {
+    load(true)
+    const interval = setInterval(() => load(false), 20000) // quiet refresh
+    const onFocus = () => load(false)
+    window.addEventListener('focus', onFocus)
+    return () => {
+      clearInterval(interval)
+      window.removeEventListener('focus', onFocus)
+    }
+    // eslint-disable-next-line
+  }, [type, rep.id])
 
   const fmt = (iso) => new Date(iso).toLocaleString('en-IN', { day:'numeric', month:'short', hour:'numeric', minute:'2-digit', hour12:true })
 
