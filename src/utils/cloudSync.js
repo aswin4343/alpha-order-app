@@ -581,25 +581,33 @@ export async function loadDeliveryAdmin(routeFilter, dateFilter) {
   // Distinct routes for the filter dropdown.
   const routes = Array.from(new Set(deliveries.map((d) => d.route).filter(Boolean))).sort()
 
-  // Group into one entry per shop per day, attach location, sort nearest-first.
-  // Counts are computed from the GROUPED list so they match the cards shown.
+  // Group by shop+day and return IMMEDIATELY (no location fetch here, so the
+  // dashboard shows fast). Distances are added separately via enrichWithDistance.
+  const { groupDeliveriesByShopDay } = await import('./deliveryGroup.js')
+  const grouped = groupDeliveriesByShopDay(deliveries)
+  const counts = countByGroupStatus(grouped)
+  return { deliveries: grouped, counts, routes }
+}
+
+/**
+ * Enrich already-loaded grouped deliveries with shop locations + distance
+ * sorting. Called AFTER the dashboard is shown, so the heavy location lookup
+ * never blocks the initial render. Returns a new sorted array (or the input
+ * unchanged on failure).
+ */
+export async function enrichWithDistance(grouped) {
   try {
-    const names = [...new Set(deliveries.map((d) => d.shop_name))]
+    const names = [...new Set(grouped.map((d) => d.shop_name))]
     const locs = await fetchShopLocations(names)
     const { sortByHubDistance } = await import('./geo.js')
-    const { groupDeliveriesByShopDay } = await import('./deliveryGroup.js')
-    const withLoc = deliveries.map((d) => {
+    const withLoc = grouped.map((d) => {
       const l = locs[(d.shop_name || '').toUpperCase()]
       return { ...d, latitude: l?.latitude ?? null, longitude: l?.longitude ?? null }
     })
-    const grouped = groupDeliveriesByShopDay(withLoc)
-    const counts = countByGroupStatus(grouped)
-    return { deliveries: sortByHubDistance(grouped), counts, routes }
+    return sortByHubDistance(withLoc)
   } catch (e) {
-    console.error('admin grouping/sort failed', e)
-    const { groupDeliveriesByShopDay } = await import('./deliveryGroup.js')
-    const grouped = groupDeliveriesByShopDay(deliveries)
-    return { deliveries: grouped, counts: countByGroupStatus(grouped), routes }
+    console.error('distance enrich failed', e)
+    return grouped
   }
 }
 
@@ -666,22 +674,24 @@ export async function loadDeliveryDetail(delivery) {
 
   if (existing && existing.length) return existing
 
-  // Seed from the order's items.
+  // Seed from the order's items (exclude products billing removed).
   const { data: orderItems, error: oiErr } = await supabase
     .from('order_items')
-    .select('product_name, qty, unit')
+    .select('product_name, qty, unit, removed')
     .eq('order_id', delivery.order_id)
   if (oiErr) throw oiErr
 
-  const rows = (orderItems || []).map((oi) => ({
-    delivery_id: delivery.id,
-    product_name: oi.product_name,
-    ordered_qty: oi.qty,
-    unit: oi.unit || 'Piece',
-    delivered: false,
-    delivered_qty: null,
-    reason: ''
-  }))
+  const rows = (orderItems || [])
+    .filter((oi) => !oi.removed)
+    .map((oi) => ({
+      delivery_id: delivery.id,
+      product_name: oi.product_name,
+      ordered_qty: oi.qty,
+      unit: oi.unit || 'Piece',
+      delivered: false,
+      delivered_qty: null,
+      reason: ''
+    }))
   if (rows.length) {
     const { data: inserted, error: insErr } = await supabase
       .from('delivery_items')
@@ -867,17 +877,19 @@ export async function loadGroupDetail(group) {
     if (!orderId) continue
     const { data: orderItems } = await supabase
       .from('order_items')
-      .select('product_name, qty, unit')
+      .select('product_name, qty, unit, removed')
       .eq('order_id', orderId)
-    const rows = (orderItems || []).map((oi) => ({
-      delivery_id: deliveryId,
-      product_name: oi.product_name,
-      ordered_qty: oi.qty,
-      unit: oi.unit || 'Piece',
-      delivered: false,
-      delivered_qty: null,
-      reason: ''
-    }))
+    const rows = (orderItems || [])
+      .filter((oi) => !oi.removed)
+      .map((oi) => ({
+        delivery_id: deliveryId,
+        product_name: oi.product_name,
+        ordered_qty: oi.qty,
+        unit: oi.unit || 'Piece',
+        delivered: false,
+        delivered_qty: null,
+        reason: ''
+      }))
     if (rows.length) {
       const { data: inserted } = await supabase.from('delivery_items').insert(rows).select('*')
       if (inserted) allItems.push(...inserted)
@@ -1275,5 +1287,71 @@ export async function verifyOrder(orderId, notes) {
     p_order_id: orderId,
     p_notes: notes || null
   })
+  if (error) throw error
+}
+
+// ===========================================================================
+// V4 BILLING MODULE — Phase 2 (product verification & editing)
+// ===========================================================================
+
+/** Load order items with the Phase 2 edit fields for the billing detail view. */
+export async function loadBillingOrderItemsFull(orderId) {
+  const { data, error } = await supabase
+    .from('order_items')
+    .select('id, product_name, qty, unit, available, original_qty, change_type, change_reason, original_product_name, removed')
+    .eq('order_id', orderId)
+    .order('removed', { ascending: true })
+  if (error) throw error
+  return data || []
+}
+
+/** Toggle a product's Available (verified) state. */
+export async function setItemAvailable(itemId, available) {
+  const { error } = await supabase
+    .from('order_items')
+    .update({ available, edited_at: new Date().toISOString() })
+    .eq('id', itemId)
+  if (error) throw error
+}
+
+/** Edit a product's quantity (keeps original_qty the first time it changes). */
+export async function editItemQty(item, newQty, reason) {
+  const patch = {
+    qty: newQty,
+    change_type: 'qty',
+    change_reason: reason || null,
+    edited_at: new Date().toISOString()
+  }
+  // Record the original qty once (first edit only).
+  if (item.original_qty == null) patch.original_qty = item.qty
+  const { error } = await supabase.from('order_items').update(patch).eq('id', item.id)
+  if (error) throw error
+}
+
+/** Remove a product from the order (mandatory reason). Keeps the row for audit. */
+export async function removeItem(item, reason) {
+  const patch = {
+    removed: true,
+    available: false,
+    change_type: 'removed',
+    change_reason: reason,
+    edited_at: new Date().toISOString()
+  }
+  if (item.original_qty == null) patch.original_qty = item.qty
+  const { error } = await supabase.from('order_items').update(patch).eq('id', item.id)
+  if (error) throw error
+}
+
+/** Replace a product with another (mandatory reason). Keeps original name for audit. */
+export async function replaceItem(item, newProductName, reason) {
+  const patch = {
+    product_name: newProductName,
+    original_product_name: item.original_product_name || item.product_name,
+    change_type: 'replaced',
+    change_reason: reason,
+    available: true,
+    edited_at: new Date().toISOString()
+  }
+  const { error } = await supabase.from('order_items').update(patch).eq('id', item.id)
   if (error) throw error
 }

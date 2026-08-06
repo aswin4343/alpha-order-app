@@ -1,12 +1,27 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useMemo } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
+import { useApp } from '../context/AppContext.jsx'
 import {
   loadBillingReps,
   loadBillingOrders,
-  loadBillingOrderItems,
+  loadBillingOrderItemsFull,
+  setItemAvailable,
+  editItemQty,
+  removeItem,
+  replaceItem,
   verifyOrder
 } from '../utils/cloudSync.js'
 import appIcon from '../assets/app_icon.png'
+
+const CHANGE_REASONS = [
+  'Stock Out',
+  'Product Discontinued',
+  'Wrong Product Selected',
+  'Alternate Brand',
+  'Customer Requested Change',
+  'Damaged Stock',
+  'Others'
+]
 
 export default function BillingDashboard() {
   const { profile, signOut } = useAuth()
@@ -145,30 +160,43 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
 }
 
 function OrderDetailPanel({ order, onBackToOrders, onVerified }) {
+  const { products } = useApp()
   const [items, setItems] = useState(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(false)
   const [copied, setCopied] = useState('')
+  const [editItem, setEditItem] = useState(null)   // item being qty-edited
+  const [reasonModal, setReasonModal] = useState(null) // {mode:'remove'|'replace', item, newProduct?}
+  const [replaceItemTarget, setReplaceItemTarget] = useState(null) // item being replaced
 
-  useEffect(() => {
-    setItems(null)
-    ;(async () => {
-      try { setItems(await loadBillingOrderItems(order.id)) }
-      catch (e) { console.error(e); setError(true) }
-    })()
-  }, [order.id])
+  const reload = async () => {
+    try { setItems(await loadBillingOrderItemsFull(order.id)) }
+    catch (e) { console.error(e); setError(true) }
+  }
+  useEffect(() => { setItems(null); setError(false); reload() /* eslint-disable-next-line */ }, [order.id])
 
   const copyProduct = (name) => {
     navigator.clipboard?.writeText(name)
     setCopied(name); setTimeout(() => setCopied(''), 1200)
   }
+
   const doVerify = async () => {
     if (!window.confirm('Are you sure you want to verify this order? It will be sent to Delivery.')) return
     setBusy(true)
     try { await verifyOrder(order.id); onVerified() }
     catch (e) { console.error(e); alert('Could not verify. Try again.'); setBusy(false) }
   }
+
+  const toggleAvailable = async (it) => {
+    // optimistic
+    setItems((prev) => prev.map((x) => x.id === it.id ? { ...x, available: !x.available } : x))
+    try { await setItemAvailable(it.id, !it.available) }
+    catch (e) { console.error(e); reload() }
+  }
+
   const fmt = (iso) => new Date(iso).toLocaleString('en-IN', { day:'numeric', month:'short', year:'numeric', hour:'numeric', minute:'2-digit', hour12:true })
+
+  const activeCount = items ? items.filter((i) => !i.removed).length : 0
 
   return (
     <section className="flex flex-col w-full flex-1 bg-slate-50 overflow-y-auto">
@@ -179,29 +207,75 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified }) {
           <p className="text-xs text-slate-500 mt-0.5">{order.route || 'No route'} · {fmt(order.created_at)}</p>
         </div>
       </div>
+
       <div className="p-4 lg:p-6 max-w-3xl w-full mx-auto flex-1 pb-28">
         {error && <p className="text-center text-sm text-red-500 py-6">Could not load items.</p>}
         {!items && !error && (<div className="py-10 flex justify-center"><div className="h-6 w-6 rounded-full border-4 border-brand-100 border-t-brand-600 animate-spin" /></div>)}
         {items && (
           <>
-            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">Order items ({items.length})</p>
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">
+              Order items ({activeCount}{items.length !== activeCount ? ` · ${items.length - activeCount} removed` : ''})
+            </p>
             <div className="space-y-2">
               {items.map((it) => (
-                <div key={it.id} className="rounded-xl bg-white shadow-card border border-slate-100 p-3 flex items-center justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="font-medium text-slate-800 text-sm">{it.product_name}</p>
-                    <p className="text-[11px] text-slate-400 mt-0.5">Qty: {it.qty} {it.unit}</p>
+                <div key={it.id}
+                  className={`rounded-xl bg-white shadow-card border p-3 ${it.removed ? 'border-red-100 opacity-60' : it.available ? 'border-green-200' : 'border-slate-100'}`}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2">
+                        {!it.removed && (
+                          <input type="checkbox" checked={!!it.available} onChange={() => toggleAvailable(it)}
+                            className="h-4 w-4 accent-green-600 shrink-0" title="Available" />
+                        )}
+                        <p className={`font-medium text-sm ${it.removed ? 'line-through text-slate-400' : 'text-slate-800'}`}>
+                          {it.product_name}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2 mt-1 ml-6 flex-wrap">
+                        <span className="text-[11px] text-slate-500">
+                          Qty: <b>{it.qty}</b> {it.unit}
+                          {it.original_qty != null && it.original_qty !== it.qty && (
+                            <span className="text-amber-600"> (was {it.original_qty})</span>
+                          )}
+                        </span>
+                        {it.change_type === 'replaced' && (
+                          <span className="text-[10px] bg-blue-50 text-blue-600 px-1.5 py-0.5 rounded">replaced</span>
+                        )}
+                        {it.change_type === 'qty' && (
+                          <span className="text-[10px] bg-amber-50 text-amber-600 px-1.5 py-0.5 rounded">qty edited</span>
+                        )}
+                        {it.removed && (
+                          <span className="text-[10px] bg-red-50 text-red-600 px-1.5 py-0.5 rounded">removed</span>
+                        )}
+                      </div>
+                      {it.change_reason && (
+                        <p className="text-[10px] text-slate-400 ml-6 mt-0.5">Reason: {it.change_reason}</p>
+                      )}
+                    </div>
+                    <button onClick={() => copyProduct(it.product_name)}
+                      className="shrink-0 rounded-lg bg-slate-50 border border-slate-200 text-slate-500 px-2.5 py-1.5 text-xs hover:bg-slate-100" title="Copy product name">
+                      {copied === it.product_name ? '✓' : '📋'}
+                    </button>
                   </div>
-                  <button onClick={() => copyProduct(it.product_name)}
-                    className="shrink-0 rounded-lg bg-slate-50 border border-slate-200 text-slate-500 px-3 py-1.5 text-xs hover:bg-slate-100" title="Copy product name">
-                    {copied === it.product_name ? '✓ Copied' : '📋 Copy'}
-                  </button>
+
+                  {/* Edit actions */}
+                  {!it.removed && (
+                    <div className="flex gap-2 mt-2.5 ml-6">
+                      <button onClick={() => setEditItem(it)}
+                        className="text-xs font-semibold text-brand-700 border border-brand-200 rounded-lg px-2.5 py-1 hover:bg-brand-50">Edit Qty</button>
+                      <button onClick={() => setReplaceItemTarget(it)}
+                        className="text-xs font-semibold text-blue-600 border border-blue-200 rounded-lg px-2.5 py-1 hover:bg-blue-50">Replace</button>
+                      <button onClick={() => setReasonModal({ mode: 'remove', item: it })}
+                        className="text-xs font-semibold text-red-600 border border-red-200 rounded-lg px-2.5 py-1 hover:bg-red-50">Remove</button>
+                    </div>
+                  )}
                 </div>
               ))}
             </div>
           </>
         )}
       </div>
+
       <div className="sticky bottom-0 bg-white border-t border-slate-200 p-3">
         <div className="max-w-3xl mx-auto flex lg:justify-center">
           <button onClick={doVerify} disabled={busy || !items}
@@ -210,6 +284,141 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified }) {
           </button>
         </div>
       </div>
+
+      {/* Qty edit modal */}
+      {editItem && (
+        <QtyModal item={editItem} onClose={() => setEditItem(null)}
+          onSaved={() => { setEditItem(null); reload() }} />
+      )}
+
+      {/* Replace search modal */}
+      {replaceItemTarget && (
+        <ReplaceModal item={replaceItemTarget} products={products}
+          onClose={() => setReplaceItemTarget(null)}
+          onPicked={(prodName) => { setReplaceItemTarget(null); setReasonModal({ mode: 'replace', item: replaceItemTarget, newProduct: prodName }) }} />
+      )}
+
+      {/* Reason modal (remove / replace) */}
+      {reasonModal && (
+        <ReasonModal info={reasonModal} onClose={() => setReasonModal(null)}
+          onDone={() => { setReasonModal(null); reload() }} />
+      )}
     </section>
+  )
+}
+
+// --- Qty edit modal ---------------------------------------------------------
+function QtyModal({ item, onClose, onSaved }) {
+  const [qty, setQty] = useState(String(item.qty))
+  const [busy, setBusy] = useState(false)
+  const save = async () => {
+    const n = Number(qty)
+    if (!Number.isFinite(n) || n <= 0) { alert('Enter a valid quantity.'); return }
+    setBusy(true)
+    try { await editItemQty(item, n, `Quantity ${item.qty} → ${n}`); onSaved() }
+    catch (e) { console.error(e); alert('Could not save.'); setBusy(false) }
+  }
+  return (
+    <Modal onClose={onClose} title="Edit Quantity">
+      <p className="text-sm text-slate-600 mb-1">{item.product_name}</p>
+      <p className="text-[11px] text-slate-400 mb-3">Ordered: {item.qty} {item.unit}</p>
+      <input type="number" inputMode="numeric" value={qty} onChange={(e) => setQty(e.target.value)}
+        className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-lg font-semibold outline-none focus:border-brand-500" autoFocus />
+      <div className="flex gap-2 mt-4">
+        <button onClick={onClose} className="flex-1 rounded-xl border border-slate-200 py-2.5 font-semibold text-slate-600">Cancel</button>
+        <button onClick={save} disabled={busy} className="flex-1 rounded-xl bg-brand-600 text-white py-2.5 font-bold disabled:bg-slate-300">
+          {busy ? 'Saving…' : 'Save'}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+// --- Replace search modal ---------------------------------------------------
+function ReplaceModal({ item, products, onClose, onPicked }) {
+  const [q, setQ] = useState('')
+  const results = useMemo(() => {
+    const term = q.trim().toUpperCase()
+    if (term.length < 2) return []
+    return (products || [])
+      .filter((p) => (p.name || '').toUpperCase().includes(term))
+      .slice(0, 40)
+  }, [q, products])
+  return (
+    <Modal onClose={onClose} title="Replace Product">
+      <p className="text-sm text-slate-600 mb-1">Replacing: <b>{item.product_name}</b></p>
+      <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search catalogue…"
+        className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-brand-500 mt-2" autoFocus />
+      <div className="mt-2 max-h-72 overflow-y-auto divide-y divide-slate-50">
+        {q.trim().length < 2 && <p className="text-xs text-slate-400 py-4 text-center">Type at least 2 letters.</p>}
+        {q.trim().length >= 2 && results.length === 0 && <p className="text-xs text-slate-400 py-4 text-center">No products found.</p>}
+        {results.map((p) => (
+          <button key={p.id} onClick={() => onPicked(p.name)}
+            className="w-full text-left px-2 py-2.5 text-sm text-slate-700 hover:bg-slate-50">
+            {p.name}
+          </button>
+        ))}
+      </div>
+    </Modal>
+  )
+}
+
+// --- Reason modal (remove / replace) ---------------------------------------
+function ReasonModal({ info, onClose, onDone }) {
+  const [reason, setReason] = useState('')
+  const [otherText, setOtherText] = useState('')
+  const [busy, setBusy] = useState(false)
+  const isReplace = info.mode === 'replace'
+
+  const save = async () => {
+    const finalReason = reason === 'Others' ? (otherText.trim() || 'Others') : reason
+    if (!finalReason) { alert('Please choose a reason.'); return }
+    setBusy(true)
+    try {
+      if (isReplace) await replaceItem(info.item, info.newProduct, finalReason)
+      else await removeItem(info.item, finalReason)
+      onDone()
+    } catch (e) { console.error(e); alert('Could not save.'); setBusy(false) }
+  }
+
+  return (
+    <Modal onClose={onClose} title={isReplace ? 'Replacement Reason' : 'Removal Reason'}>
+      <p className="text-sm text-slate-600 mb-1">
+        {isReplace ? <>Replace <b>{info.item.product_name}</b> with <b>{info.newProduct}</b></> : <>Remove <b>{info.item.product_name}</b></>}
+      </p>
+      <div className="space-y-1.5 mt-3">
+        {CHANGE_REASONS.map((r) => (
+          <button key={r} onClick={() => setReason(r)}
+            className={`w-full text-left px-3 py-2 rounded-lg text-sm border ${reason === r ? 'border-brand-500 bg-brand-50 text-brand-700 font-semibold' : 'border-slate-200 text-slate-600'}`}>
+            {r}
+          </button>
+        ))}
+      </div>
+      {reason === 'Others' && (
+        <input value={otherText} onChange={(e) => setOtherText(e.target.value)} placeholder="Enter reason…"
+          className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-brand-500 mt-2" autoFocus />
+      )}
+      <div className="flex gap-2 mt-4">
+        <button onClick={onClose} className="flex-1 rounded-xl border border-slate-200 py-2.5 font-semibold text-slate-600">Cancel</button>
+        <button onClick={save} disabled={busy || !reason} className={`flex-1 rounded-xl py-2.5 font-bold text-white disabled:bg-slate-300 ${isReplace ? 'bg-blue-600' : 'bg-red-600'}`}>
+          {busy ? 'Saving…' : isReplace ? 'Replace' : 'Remove'}
+        </button>
+      </div>
+    </Modal>
+  )
+}
+
+// --- Generic modal shell ----------------------------------------------------
+function Modal({ title, children, onClose }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-end lg:items-center justify-center bg-black/40 p-0 lg:p-4" onClick={onClose}>
+      <div className="bg-white w-full lg:max-w-md rounded-t-2xl lg:rounded-2xl p-4 lg:p-5 max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="font-bold text-slate-800">{title}</h3>
+          <button onClick={onClose} className="h-8 w-8 rounded-full hover:bg-slate-100 text-slate-500 text-lg">×</button>
+        </div>
+        {children}
+      </div>
+    </div>
   )
 }

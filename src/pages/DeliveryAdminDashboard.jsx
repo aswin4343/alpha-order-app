@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
 import {
   loadDeliveryAdmin,
+  enrichWithDistance,
   listDeliveryStaff,
   assignGroup,
   updateDeliveryStaff,
@@ -73,9 +74,17 @@ export default function DeliveryAdminDashboard() {
   const refresh = async () => {
     setError(false)
     try {
-      const [d, s] = await Promise.all([loadDeliveryAdmin(routeFilter || undefined, dateFilter || undefined), listDeliveryStaff()])
+      const [d, s] = await Promise.all([
+        loadDeliveryAdmin(routeFilter || undefined, dateFilter || undefined),
+        listDeliveryStaff()
+      ])
+      // Show the dashboard immediately (fast — no location lookup yet).
       setData(d)
       setStaff(s)
+      // Then add shop distances in the background and update once ready.
+      enrichWithDistance(d.deliveries)
+        .then((sorted) => setData((cur) => (cur ? { ...cur, deliveries: sorted } : cur)))
+        .catch((e) => console.error('enrich failed', e))
     } catch (e) {
       console.error(e)
       setError(true)
