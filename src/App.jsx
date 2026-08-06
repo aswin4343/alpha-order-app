@@ -3,6 +3,7 @@ import { useAuth } from './context/AuthContext.jsx'
 import { useApp } from './context/AppContext.jsx'
 import LoginScreen from './pages/LoginScreen.jsx'
 import OrderPage from './pages/OrderPage.jsx'
+import OrderChangeNotifier from './components/OrderChangeNotifier.jsx'
 import SettingsPage from './pages/SettingsPage.jsx'
 import ReturnsPage from './pages/ReturnsPage.jsx'
 import PerformancePage from './pages/PerformancePage.jsx'
@@ -58,6 +59,8 @@ export default function App() {
   if (profile.role === 'delivery_rep') return <DeliveryRepDashboard />
   if (profile.role === 'billing_team') return <BillingDashboard />
 
+  const isRep = profile.role === 'salesperson'
+
   if (route === 'settings') return <SettingsPage onBack={() => setRoute('order')} />
   if (route === 'returns') return <ReturnsPage onBack={() => setRoute('order')} />
   if (route === 'performance') return <PerformancePage onBack={() => setRoute('order')} />
@@ -65,12 +68,15 @@ export default function App() {
     return <AnnouncementsPage onBack={() => setRoute('order')} onChanged={() => setUnreadTick((t) => t + 1)} />
 
   return (
-    <OrderPage
-      onOpenSettings={() => setRoute('settings')}
-      onOpenReturns={() => setRoute('returns')}
-      onOpenPerformance={() => setRoute('performance')}
-      onOpenAnnouncements={() => setRoute('announcements')}
-      unreadTick={unreadTick}
-    />
+    <>
+      {isRep && <OrderChangeNotifier />}
+      <OrderPage
+        onOpenSettings={() => setRoute('settings')}
+        onOpenReturns={() => setRoute('returns')}
+        onOpenPerformance={() => setRoute('performance')}
+        onOpenAnnouncements={() => setRoute('announcements')}
+        unreadTick={unreadTick}
+      />
+    </>
   )
 }

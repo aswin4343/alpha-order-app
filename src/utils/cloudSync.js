@@ -1355,3 +1355,31 @@ export async function replaceItem(item, newProductName, reason) {
   const { error } = await supabase.from('order_items').update(patch).eq('id', item.id)
   if (error) throw error
 }
+
+// ===========================================================================
+// V4 BILLING MODULE — Phase 3 (rep notifications)
+// ===========================================================================
+
+/** Unread order-edit notifications for the logged-in sales rep. */
+export async function loadMyNotifications() {
+  const { data: auth } = await supabase.auth.getUser()
+  const uid = auth?.user?.id
+  if (!uid) return []
+  const { data, error } = await supabase
+    .from('order_notifications')
+    .select('id, order_id, shop_name, changes, changed_by, created_at, read')
+    .eq('sales_rep_id', uid)
+    .eq('read', false)
+    .order('created_at', { ascending: false })
+  if (error) { console.error('notif load failed', error); return [] }
+  return data || []
+}
+
+/** Mark a notification read (after the rep views/dismisses it). */
+export async function markNotificationRead(id) {
+  const { error } = await supabase
+    .from('order_notifications')
+    .update({ read: true })
+    .eq('id', id)
+  if (error) console.error('notif mark read failed', error)
+}
