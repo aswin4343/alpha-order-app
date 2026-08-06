@@ -1375,38 +1375,95 @@ export async function loadBillingOrderItemsFull(orderIdOrIds) {
   const ids = Array.isArray(orderIdOrIds) ? orderIdOrIds : [orderIdOrIds]
   const { data, error } = await supabase
     .from('order_items')
-    .select('id, order_id, product_name, qty, unit, available, original_qty, change_type, change_reason, original_product_name, removed')
+    .select('id, order_id, product_name, qty, unit, is_addon, available, original_qty, change_type, change_reason, original_product_name, removed')
     .in('order_id', ids)
     .order('removed', { ascending: true })
   if (error) throw error
-  return data || []
+  const items = data || []
+
+  // Merge the same product across merged orders:
+  //   • Duplicate (non-add-on) copies collapse into ONE, keeping the original
+  //     quantity (3 duplicate orders of ×1 → ×1, not ×3).
+  //   • Genuine ADD-ON quantities are SUMMED on top (base ×1 + add-on ×2 → ×3).
+  // Removed/edited items are kept as-is (not merged) so their state is visible.
+  const merged = new Map()
+  const passthrough = []
+  const order = []
+
+  for (const it of items) {
+    // Don't merge items billing has already edited/removed — keep them distinct.
+    if (it.removed || it.change_type) {
+      passthrough.push(it)
+      continue
+    }
+    const key = `${(it.product_name || '').trim().toUpperCase()}__${it.unit || ''}`
+    let m = merged.get(key)
+    if (!m) {
+      m = { ...it, itemIds: [it.id], _baseQty: it.is_addon ? 0 : it.qty, _addonQty: it.is_addon ? it.qty : 0 }
+      merged.set(key, m)
+      order.push(m)
+    } else {
+      m.itemIds.push(it.id)
+      if (it.is_addon) {
+        m._addonQty += it.qty            // add-ons accumulate
+      } else {
+        // another duplicate base copy — keep original qty (take the max, they're equal)
+        m._baseQty = Math.max(m._baseQty, it.qty)
+      }
+    }
+  }
+
+  // Finalize merged rows: qty = one base qty + summed add-ons.
+  const mergedRows = order.map((m) => ({
+    ...m,
+    qty: (m._baseQty || 0) + (m._addonQty || 0)
+  }))
+
+  return [...mergedRows, ...passthrough]
 }
 
 /** Toggle a product's Available (verified) state. */
-export async function setItemAvailable(itemId, available) {
+export async function setItemAvailable(itemOrId, available) {
+  const ids = idsOf(itemOrId)
   const { error } = await supabase
     .from('order_items')
     .update({ available, edited_at: new Date().toISOString() })
-    .eq('id', itemId)
+    .in('id', ids)
   if (error) throw error
+}
+
+// Resolve the underlying order_item id(s) — a merged product carries itemIds.
+function idsOf(itemOrId) {
+  if (typeof itemOrId === 'string') return [itemOrId]
+  if (itemOrId?.itemIds?.length) return itemOrId.itemIds
+  return [itemOrId.id]
 }
 
 /** Edit a product's quantity (keeps original_qty the first time it changes). */
 export async function editItemQty(item, newQty, reason) {
+  const ids = idsOf(item)
   const patch = {
     qty: newQty,
     change_type: 'qty',
     change_reason: reason || null,
     edited_at: new Date().toISOString()
   }
-  // Record the original qty once (first edit only).
   if (item.original_qty == null) patch.original_qty = item.qty
-  const { error } = await supabase.from('order_items').update(patch).eq('id', item.id)
+  // Apply to the first underlying row; collapse the rest to 0 so the merged
+  // total equals exactly the edited quantity (no leftover duplicate qty).
+  const [first, ...rest] = ids
+  const { error } = await supabase.from('order_items').update(patch).eq('id', first)
   if (error) throw error
+  if (rest.length) {
+    await supabase.from('order_items')
+      .update({ qty: 0, change_type: 'qty', edited_at: new Date().toISOString() })
+      .in('id', rest)
+  }
 }
 
 /** Remove a product from the order (mandatory reason). Keeps the row for audit. */
 export async function removeItem(item, reason) {
+  const ids = idsOf(item)
   const patch = {
     removed: true,
     available: false,
@@ -1415,12 +1472,13 @@ export async function removeItem(item, reason) {
     edited_at: new Date().toISOString()
   }
   if (item.original_qty == null) patch.original_qty = item.qty
-  const { error } = await supabase.from('order_items').update(patch).eq('id', item.id)
+  const { error } = await supabase.from('order_items').update(patch).in('id', ids)
   if (error) throw error
 }
 
 /** Replace a product with another (mandatory reason). Keeps original name for audit. */
 export async function replaceItem(item, newProductName, reason) {
+  const ids = idsOf(item)
   const patch = {
     product_name: newProductName,
     original_product_name: item.original_product_name || item.product_name,
@@ -1429,8 +1487,15 @@ export async function replaceItem(item, newProductName, reason) {
     available: true,
     edited_at: new Date().toISOString()
   }
-  const { error } = await supabase.from('order_items').update(patch).eq('id', item.id)
+  // Replace the first row; remove the duplicate copies so it shows once.
+  const [first, ...rest] = ids
+  const { error } = await supabase.from('order_items').update(patch).eq('id', first)
   if (error) throw error
+  if (rest.length) {
+    await supabase.from('order_items')
+      .update({ removed: true, available: false, change_type: 'removed', change_reason: 'Merged duplicate', edited_at: new Date().toISOString() })
+      .in('id', rest)
+  }
 }
 
 // ===========================================================================

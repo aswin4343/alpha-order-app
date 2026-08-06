@@ -241,7 +241,7 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified }) {
   const toggleAvailable = async (it) => {
     // optimistic
     setItems((prev) => prev.map((x) => x.id === it.id ? { ...x, available: !x.available } : x))
-    try { await setItemAvailable(it.id, !it.available) }
+    try { await setItemAvailable(it, !it.available) }
     catch (e) { console.error(e); reload() }
   }
 
