@@ -150,14 +150,26 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
   const [orders, setOrders] = useState(null)
   const [type, setType] = useState('All')
   const [status, setStatus] = useState('pending') // 'pending' | 'verified'
+  const [dateStr, setDateStr] = useState(() => new Date().toISOString().slice(0, 10)) // default today
+  const [expressRoute, setExpressRoute] = useState('') // '' = all express
   const [error, setError] = useState(false)
+
+  const EXPRESS_ROUTES = ['EXP : VARKALA', 'EXP : ATTINGAL', 'EXP : KAZHAKUTTAM']
 
   // showSpinner=true only for the first load / filter change; quiet refreshes
   // swap data silently so the staff's scroll and open order stay put.
   const load = async (showSpinner = true) => {
     setError(false)
     if (showSpinner) setOrders(null)
-    try { setOrders(await loadBillingOrders(rep.id, type === 'All' ? undefined : type, status)) }
+    try {
+      setOrders(await loadBillingOrders(
+        rep.id,
+        type === 'All' ? undefined : type,
+        status,
+        dateStr || null,
+        type === 'EXP' && expressRoute ? expressRoute : null
+      ))
+    }
     catch (e) { console.error(e); if (showSpinner) setError(true) }
   }
   useEffect(() => {
@@ -170,7 +182,7 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
       window.removeEventListener('focus', onFocus)
     }
     // eslint-disable-next-line
-  }, [type, status, rep.id])
+  }, [type, status, dateStr, expressRoute, rep.id])
 
   const fmt = (iso) => new Date(iso).toLocaleString('en-IN', { day:'numeric', month:'short', hour:'numeric', minute:'2-digit', hour12:true })
 
@@ -192,14 +204,31 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
           </button>
         ))}
       </div>
-      <div className="flex gap-1.5 p-3 border-b border-slate-50">
+      {/* Order date filter (default today) */}
+      <div className="px-3 pt-3 flex items-center gap-2">
+        <input type="date" value={dateStr} onChange={(e) => setDateStr(e.target.value)}
+          className="flex-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs outline-none focus:border-brand-500" />
+        <button onClick={() => setDateStr(new Date().toISOString().slice(0,10))}
+          className="text-xs font-semibold text-brand-700 px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50">Today</button>
+      </div>
+      <div className="flex gap-1.5 p-3 pb-2 border-b border-slate-50">
         {['All','EXP','STD'].map((t) => (
-          <button key={t} onClick={() => setType(t)}
+          <button key={t} onClick={() => { setType(t); if (t !== 'EXP') setExpressRoute('') }}
             className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${type===t ? 'bg-brand-600 text-white' : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}>
             {t==='EXP' ? 'Express' : t==='STD' ? 'Standard' : 'All'}
           </button>
         ))}
       </div>
+      {/* Express route dropdown — only when Express is selected */}
+      {type === 'EXP' && (
+        <div className="px-3 pb-3 border-b border-slate-50">
+          <select value={expressRoute} onChange={(e) => setExpressRoute(e.target.value)}
+            className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs outline-none focus:border-brand-500 bg-white">
+            <option value="">All Express Routes</option>
+            {EXPRESS_ROUTES.map((r) => <option key={r} value={r}>{r}</option>)}
+          </select>
+        </div>
+      )}
       {error && <p className="text-center text-sm text-red-500 py-6">Could not load orders.</p>}
       {!orders && !error && (<div className="py-10 flex justify-center"><div className="h-6 w-6 rounded-full border-4 border-brand-100 border-t-brand-600 animate-spin" /></div>)}
       {orders && orders.length === 0 && (<p className="text-center text-sm text-slate-400 py-10 px-4">{status === 'verified' ? 'No verified orders today.' : 'No pending orders here.'}</p>)}
@@ -272,7 +301,7 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified }) {
         </div>
       </div>
 
-      <div className="p-4 lg:p-6 max-w-3xl w-full mx-auto flex-1 pb-28">
+      <div className="p-4 lg:p-6 max-w-3xl w-full mx-auto flex-1 pb-6">
         {error && <p className="text-center text-sm text-red-500 py-6">Could not load items.</p>}
         {!items && !error && (<div className="py-10 flex justify-center"><div className="h-6 w-6 rounded-full border-4 border-brand-100 border-t-brand-600 animate-spin" /></div>)}
         {items && (
@@ -336,23 +365,22 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified }) {
                 </div>
               ))}
             </div>
+
+            {/* Verify button — immediately below the last product */}
+            <div className="mt-4">
+              {order._status === 'verified' ? (
+                <div className="w-full rounded-xl bg-green-50 border border-green-200 text-green-700 py-3 font-bold text-center">
+                  ✓ Verified — sent to Delivery
+                </div>
+              ) : (
+                <button onClick={doVerify} disabled={busy || !items}
+                  className="w-full rounded-xl bg-brand-600 text-white py-3.5 font-bold hover:bg-brand-700 disabled:bg-slate-300">
+                  {busy ? 'Verifying…' : '✓ Verify Order'}
+                </button>
+              )}
+            </div>
           </>
         )}
-      </div>
-
-      <div className="sticky bottom-0 bg-white border-t border-slate-200 p-3">
-        <div className="max-w-3xl mx-auto flex lg:justify-center">
-          {order._status === 'verified' ? (
-            <div className="w-full lg:w-auto lg:px-12 rounded-xl bg-green-50 border border-green-200 text-green-700 py-3 font-bold text-center">
-              ✓ Verified — sent to Delivery
-            </div>
-          ) : (
-            <button onClick={doVerify} disabled={busy || !items}
-              className="w-full lg:w-auto lg:px-12 rounded-xl bg-brand-600 text-white py-3 font-bold hover:bg-brand-700 disabled:bg-slate-300">
-              {busy ? 'Verifying…' : '✓ Verify Order'}
-            </button>
-          )}
-        </div>
       </div>
 
       {/* Qty edit modal */}

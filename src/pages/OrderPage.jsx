@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
-import { saveCloudOrder, currentUserId, countUnreadAnnouncements } from '../utils/cloudSync.js'
+import { saveCloudOrder, currentUserId, countUnreadAnnouncements, listAllRoutes } from '../utils/cloudSync.js'
 import PreviousOrdersModal from '../components/PreviousOrdersModal.jsx'
 import { useSearch } from '../hooks/useSearch.js'
 import { useDebounce } from '../hooks/useDebounce.js'
@@ -82,6 +82,11 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   const [gpsBusy, setGpsBusy] = useState(false)
   const [sending, setSending] = useState(false) // blocks double-submit
   const [gpsFailed, setGpsFailed] = useState(false)
+  // #1 Order date — default today; rep may change it (future dates allowed).
+  const [orderDate, setOrderDate] = useState(saved?.orderDate ?? new Date().toISOString().slice(0, 10))
+  // #2 Per-order route override — null means use the customer's default route.
+  const [routeOverride, setRouteOverride] = useState(saved?.routeOverride ?? null)
+  const [allRoutes, setAllRoutes] = useState([])
   const [unread, setUnread] = useState(0)
   const [showPrevOrders, setShowPrevOrders] = useState(false)
   // Product ids that came from a loaded previous order (the "original").
@@ -100,9 +105,11 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
       visitStatus,
       visitRemark,
       originalIds: originalIds ? Array.from(originalIds) : null,
-      priceOverrides
+      priceOverrides,
+      orderDate,
+      routeOverride
     })
-  }, [customer, quantities, units, visitStatus, visitRemark, originalIds, priceOverrides])
+  }, [customer, quantities, units, visitStatus, visitRemark, originalIds, priceOverrides, orderDate, routeOverride])
 
   const debounced = useDebounce(query, 120)
   const searching = debounced.trim().length > 0
@@ -282,6 +289,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
     setVisitStatus('')
     setVisitRemark('')
     setCustomer(c)
+    setRouteOverride(c?.route ?? null) // per-order route resets to the new customer's default
     // Offer to reload this shop's previous orders (cloud lookup).
     if (c) setShowPrevOrders(true)
   }
@@ -292,11 +300,12 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   const message = (location) =>
     buildOrderMessage({
       brand: settings.brand,
-      customer,
+      customer: { ...customer, route: (routeOverride ?? customer?.route) || '' },
       salesperson: profile?.full_name || settings.salesperson,
       items,
       isNewCustomer: showIntro,
-      location
+      location,
+      orderDate
     })
 
   useEffect(() => {
@@ -308,6 +317,11 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
       active = false
     }
   }, [unreadTick])
+
+  // Load all active routes once for the per-order route dropdown.
+  useEffect(() => {
+    listAllRoutes().then(setAllRoutes).catch(() => {})
+  }, [])
 
   const getLocation = () =>
     new Promise((resolve) => {
@@ -413,7 +427,9 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
           brand: settings.brand,
           userId: uid,
           items,
-          location: ok ? loc : null
+          location: ok ? loc : null,
+          orderDate,
+          route: routeOverride
         })
       } catch (e) {
         console.error('cloud order save failed', e)
@@ -487,6 +503,32 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
 
       <main className="mx-auto max-w-md px-3 pt-3 space-y-3">
         <CustomerPicker selected={customer} onSelect={handleSelectCustomer} />
+
+        {customer && (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+            {/* #1 Order date — default today, optional change, future allowed */}
+            <div className="rounded-xl bg-white border border-slate-200 px-3 py-2">
+              <label className="block text-[11px] font-semibold text-slate-400 mb-1">📅 Order Date</label>
+              <input type="date" value={orderDate} onChange={(e) => setOrderDate(e.target.value)}
+                className="w-full text-sm outline-none bg-transparent" />
+            </div>
+            {/* #2 Route — default customer's route, changeable for this order only */}
+            <div className="rounded-xl bg-white border border-slate-200 px-3 py-2">
+              <label className="block text-[11px] font-semibold text-slate-400 mb-1">🛣️ Route (this order)</label>
+              <select
+                value={routeOverride ?? customer.route ?? ''}
+                onChange={(e) => setRouteOverride(e.target.value)}
+                className="w-full text-sm outline-none bg-transparent"
+              >
+                {/* Keep the customer's default and current selection present */}
+                {customer.route && !allRoutes.includes(customer.route) && (
+                  <option value={customer.route}>{customer.route}</option>
+                )}
+                {allRoutes.map((r) => <option key={r} value={r}>{r}</option>)}
+              </select>
+            </div>
+          </div>
+        )}
 
         {showIntro && (
           <div className="rounded-xl bg-blue-50 border border-blue-200 px-3 py-2">

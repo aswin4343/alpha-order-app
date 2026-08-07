@@ -27,12 +27,17 @@ function creditTerms(customer) {
   return `${cd} Credit`
 }
 
-export function buildOrderMessage({ brand, customer, salesperson, items, isNewCustomer = false, location = null }) {
+export function buildOrderMessage({ brand, customer, salesperson, items, isNewCustomer = false, location = null, orderDate = null }) {
   const L = []
   L.push(TOP)
   L.push('\uD83D\uDED2  *NEW ORDER RECEIVED*')
   L.push(`\uD83C\uDFE2 *${brand || BRANDS[0]}*`)
   L.push(BOT)
+
+  // Format the order date nicely (e.g. 7 Aug 2026) when provided.
+  const prettyDate = orderDate
+    ? new Date(`${orderDate}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+    : null
 
   // One-time registration block for a newly created customer.
   // Empty optional fields are omitted entirely.
@@ -47,6 +52,7 @@ export function buildOrderMessage({ brand, customer, salesperson, items, isNewCu
     if (customer?.route) L.push(`*Route:* ${customer.route}`)
     if (customer?.category) L.push(`*Category:* ${customer.category}`)
     if (salesperson) L.push(`*BDE:* ${salesperson}`)
+    if (prettyDate) L.push(`*Order Date:* ${prettyDate}`)
     L.push(`*Credit Terms:* ${creditTerms(customer)}`)
     L.push('')
   }
@@ -59,6 +65,7 @@ export function buildOrderMessage({ brand, customer, salesperson, items, isNewCu
     if (customer?.category) L.push(`*Category:* ${customer.category}`)
     if (customer?.route) L.push(`*Route:* ${customer.route}`)
     if (salesperson) L.push(`*BDE:* ${salesperson}`)
+    if (prettyDate) L.push(`*Order Date:* ${prettyDate}`)
     L.push(`*Credit Terms:* ${creditTerms(customer)}`)
   }
 

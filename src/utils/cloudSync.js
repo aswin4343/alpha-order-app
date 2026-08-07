@@ -66,8 +66,11 @@ export async function ensureCloudCustomer(customer, userId, repCreated = false) 
 }
 
 /** Save an order + its items. Returns the new order id (or null on failure). */
-export async function saveCloudOrder({ customer, brand, userId, items, location }) {
+export async function saveCloudOrder({ customer, brand, userId, items, location, orderDate, route }) {
   const cloudCustomerId = await ensureCloudCustomer(customer, userId)
+  // Per-order route: use the chosen route if provided, else the customer default.
+  // NOTE: this never overwrites the customer's default route in the DB.
+  const orderRoute = (route != null && route !== '') ? route : (customer.route || '')
 
   const totalProducts = items.length
   const totalQuantity = items.reduce((s, i) => s + i.qty, 0)
@@ -116,12 +119,13 @@ export async function saveCloudOrder({ customer, brand, userId, items, location 
     .insert({
       customer_id: cloudCustomerId,
       shop_name: customer.name,
-      route: customer.route || '',
+      route: orderRoute,
       brand: brand || '',
       sales_rep_id: userId,
       total_products: totalProducts,
       total_quantity: totalQuantity,
       total_value: Math.round(totalValue),
+      order_date: orderDate || new Date().toISOString().slice(0, 10),
       latitude: location?.latitude ?? null,
       longitude: location?.longitude ?? null
     })
@@ -1310,17 +1314,21 @@ export async function loadBillingReps() {
     .sort((a, b) => b.pending - a.pending)
 }
 
-/** Pending orders for one rep (optionally filtered by delivery type EXP/STD). */
-export async function loadBillingOrders(repId, deliveryType, status = 'pending') {
+/** Pending orders for one rep (filtered by delivery type, date, express route). */
+export async function loadBillingOrders(repId, deliveryType, status = 'pending', dateStr = null, expressRoute = null) {
   let q = supabase
     .from('orders')
-    .select('id, shop_name, route, total_quantity, created_at, sales_rep_id')
+    .select('id, shop_name, route, total_quantity, created_at, order_date, sales_rep_id')
     .eq('sales_rep_id', repId)
     .eq('billing_status', status)
     .eq('hidden', false)
     .order('created_at', { ascending: false })
-  // For verified, limit to today's verifications to keep the list focused.
-  if (status === 'verified') {
+  // Filter by the chosen order date (order_date) when provided.
+  if (dateStr) {
+    q = q.eq('order_date', dateStr)
+  }
+  // For verified without an explicit date, limit to today's verifications.
+  if (status === 'verified' && !dateStr) {
     const startToday = new Date(); startToday.setHours(0, 0, 0, 0)
     q = q.gte('billing_verified_at', startToday.toISOString())
   }
@@ -1329,13 +1337,18 @@ export async function loadBillingOrders(repId, deliveryType, status = 'pending')
   let rows = data || []
   if (deliveryType === 'EXP') rows = rows.filter((o) => (o.route || '').toUpperCase().startsWith('EXP'))
   if (deliveryType === 'STD') rows = rows.filter((o) => (o.route || '').toUpperCase().startsWith('STD'))
+  // Express route sub-filter (e.g. only "EXP : VARKALA").
+  if (expressRoute) {
+    const want = expressRoute.toUpperCase().replace(/\s+/g, '')
+    rows = rows.filter((o) => (o.route || '').toUpperCase().replace(/\s+/g, '').includes(want))
+  }
 
   // Group into ONE card per shop per day. Multiple orders (incl. add-ons) for
   // the same shop on the same day merge — keep all order ids for the detail view.
   const groups = new Map()
   const order = []
   for (const o of rows) {
-    const day = (o.created_at || '').slice(0, 10) // YYYY-MM-DD
+    const day = o.order_date || (o.created_at || '').slice(0, 10) // prefer chosen order date
     const key = `${(o.shop_name || '').toUpperCase()}__${day}`
     let g = groups.get(key)
     if (!g) {
@@ -1568,4 +1581,65 @@ export async function loadVerifiedOrdersForAdmin(limit = 100) {
     verified_at: o.billing_verified_at,
     items: (o.order_items || []).filter((it) => !it.removed)
   }))
+}
+
+/** List active salespeople (id + name) for pickers like the Returns rep dropdown. */
+export async function listActiveSalespeople() {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id, full_name')
+    .eq('role', 'salesperson')
+    .order('full_name', { ascending: true })
+  if (error) { console.error(error); return [] }
+  return data || []
+}
+
+/** Performance for a specific date (YYYY-MM-DD) for the logged-in rep.
+ *  Order Value uses the actual selling price saved on each order (total_value),
+ *  never MRP, never recalculated from the current product master. */
+export async function loadPerformanceForDate(userId, dateStr) {
+  const start = new Date(`${dateStr}T00:00:00`)
+  const end = new Date(`${dateStr}T23:59:59.999`)
+
+  const [ordersRes, visitsRes] = await Promise.all([
+    supabase
+      .from('orders')
+      .select('id, total_quantity, total_value, shop_name, created_at')
+      .eq('sales_rep_id', userId)
+      .eq('hidden', false)
+      .gte('created_at', start.toISOString())
+      .lte('created_at', end.toISOString()),
+    supabase
+      .from('visits')
+      .select('id, shop_name, created_at')
+      .eq('sales_rep_id', userId)
+      .gte('created_at', start.toISOString())
+      .lte('created_at', end.toISOString())
+  ])
+
+  const orders = ordersRes.data || []
+  const visits = visitsRes.data || []
+  const uniqueShops = new Set([
+    ...orders.map((o) => (o.shop_name || '').toUpperCase()),
+    ...visits.map((v) => (v.shop_name || '').toUpperCase())
+  ])
+
+  return {
+    orders: orders.length,
+    quantity: orders.reduce((s, o) => s + (o.total_quantity || 0), 0),
+    shops: uniqueShops.size,
+    visits: visits.length,
+    orderValue: orders.reduce((s, o) => s + (o.total_value || 0), 0)
+  }
+}
+
+/** Distinct active routes across customers (for the per-order route dropdown). */
+export async function listAllRoutes() {
+  const { data, error } = await supabase
+    .from('customers')
+    .select('route')
+    .not('route', 'is', null)
+  if (error) { console.error(error); return [] }
+  const set = new Set((data || []).map((c) => (c.route || '').trim()).filter(Boolean))
+  return [...set].sort()
 }

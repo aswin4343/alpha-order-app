@@ -1,5 +1,7 @@
 import { useState, useMemo, useEffect } from 'react'
 import { useApp } from '../context/AppContext.jsx'
+import { useAuth } from '../context/AuthContext.jsx'
+import { listActiveSalespeople } from '../utils/cloudSync.js'
 import { useSearch } from '../hooks/useSearch.js'
 import { useDebounce } from '../hooks/useDebounce.js'
 import CustomerPicker from '../components/CustomerPicker.jsx'
@@ -117,6 +119,27 @@ function ReturnLine({ line, index, onChange, onRemove, products }) {
 
 export default function ReturnsPage({ onBack }) {
   const { settings, products } = useApp()
+  const { profile } = useAuth()
+  // Active salespeople for the rep dropdown; default to the logged-in user.
+  const [reps, setReps] = useState([])
+  const [repName, setRepName] = useState(() => {
+    try {
+      const saved = sessionStorage.getItem('returns_rep')
+      if (saved) return saved
+    } catch {}
+    return profile?.full_name || ''
+  })
+  useEffect(() => {
+    listActiveSalespeople().then((list) => {
+      setReps(list)
+      // If nothing chosen yet, default to logged-in user's name.
+      setRepName((cur) => cur || profile?.full_name || (list[0]?.full_name ?? ''))
+    })
+    // eslint-disable-next-line
+  }, [])
+  useEffect(() => {
+    try { sessionStorage.setItem('returns_rep', repName) } catch {}
+  }, [repName])
   // Restore in-progress return (customer, products, quantities, reasons) if the
   // tab reloaded — so switching apps/tabs never loses the work.
   const [customer, setCustomer] = useState(() => {
@@ -160,7 +183,7 @@ export default function ReturnsPage({ onBack }) {
     buildCreditNoteMessage({
       brand: settings.brand,
       customer,
-      salesperson: settings.salesperson,
+      salesperson: repName || profile?.full_name || settings.salesperson,
       lines: lines.map((l) => ({ name: l.name, mrp: l.mrp, qty: l.qty, reason: l.reason === 'Other' ? (l.customReason.trim() || 'Other') : l.reason })),
       location
     })
@@ -183,6 +206,7 @@ export default function ReturnsPage({ onBack }) {
     try {
       sessionStorage.removeItem('returns_customer')
       sessionStorage.removeItem('returns_lines')
+      sessionStorage.removeItem('returns_rep')
     } catch {}
   }
 
@@ -213,6 +237,22 @@ export default function ReturnsPage({ onBack }) {
       </header>
 
       <main className="mx-auto max-w-md px-3 pt-3">
+        {/* Sales Representative — defaults to logged-in user, editable */}
+        <label className="block text-xs font-semibold text-slate-400 mb-1 px-1">SALES REPRESENTATIVE</label>
+        <select
+          value={repName}
+          onChange={(e) => setRepName(e.target.value)}
+          className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-brand-500 bg-white mb-3"
+        >
+          {/* Ensure the current value is present even if list is still loading */}
+          {repName && !reps.some((r) => r.full_name === repName) && (
+            <option value={repName}>{repName}</option>
+          )}
+          {reps.map((r) => (
+            <option key={r.id} value={r.full_name}>{r.full_name}</option>
+          ))}
+        </select>
+
         <CustomerPicker selected={customer} onSelect={setCustomer} />
 
         <p className="text-xs font-semibold text-slate-400 mt-4 mb-2 px-1">RETURN ITEMS</p>
