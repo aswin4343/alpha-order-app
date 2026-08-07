@@ -1706,16 +1706,55 @@ export { QC_ERROR_TYPES }
 
 /** Load delivery items WITH their saved QC state (for resume). Seeds items first. */
 export async function loadQcItemsWithState(delivery) {
-  // Ensure delivery_items exist (seeds from order if empty).
-  await loadGroupDetail(delivery)
   const ids = delivery.deliveryIds || [delivery.id]
-  const { data, error } = await supabase
-    .from('delivery_items')
-    .select('id, delivery_id, product_name, ordered_qty, unit, qc_state, qc_error_type, qc_remarks, qc_packed_by')
-    .in('delivery_id', ids)
-    .order('product_name', { ascending: true })
-  if (error) throw error
-  return data || []
+
+  // Read existing delivery_items for this delivery.
+  const readItems = async () => {
+    const { data, error } = await supabase
+      .from('delivery_items')
+      .select('id, delivery_id, product_name, ordered_qty, unit, qc_state, qc_error_type, qc_remarks, qc_packed_by')
+      .in('delivery_id', ids)
+      .order('product_name', { ascending: true })
+    if (error) throw error
+    return data || []
+  }
+
+  let items = await readItems()
+  if (items.length > 0) return items
+
+  // None yet — seed from each delivery's order items (exclude removed).
+  for (const deliveryId of ids) {
+    // eslint-disable-next-line no-await-in-loop
+    const { data: del } = await supabase
+      .from('deliveries')
+      .select('id, order_id')
+      .eq('id', deliveryId)
+      .single()
+    if (!del?.order_id) continue
+    // eslint-disable-next-line no-await-in-loop
+    const { data: orderItems } = await supabase
+      .from('order_items')
+      .select('product_name, qty, unit, removed')
+      .eq('order_id', del.order_id)
+    const rows = (orderItems || [])
+      .filter((oi) => !oi.removed)
+      .map((oi) => ({
+        delivery_id: deliveryId,
+        product_name: oi.product_name,
+        ordered_qty: oi.qty,
+        unit: oi.unit || 'Piece',
+        delivered: false,
+        delivered_qty: null,
+        reason: ''
+      }))
+    if (rows.length) {
+      // eslint-disable-next-line no-await-in-loop
+      await supabase.from('delivery_items').insert(rows)
+    }
+  }
+
+  // Read again after seeding.
+  return await readItems()
 }
 
 /** Auto-save one product's QC state immediately. */
