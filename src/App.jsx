@@ -15,6 +15,7 @@ import AnnouncementsPage from './pages/AnnouncementsPage.jsx'
 import DeliveryAdminDashboard from './pages/DeliveryAdminDashboard.jsx'
 import BillingDashboard from './pages/BillingDashboard.jsx'
 import VerifiedOrdersPage from './pages/VerifiedOrdersPage.jsx'
+import QcDashboard from './pages/QcDashboard.jsx'
 import DeliveryRepDashboard from './pages/DeliveryRepDashboard.jsx'
 
 function Splash() {
@@ -61,6 +62,7 @@ export default function App() {
   if (profile.role === 'delivery_admin') return <DeliveryAdminDashboard />
   if (profile.role === 'delivery_rep') return <DeliveryRepDashboard />
   if (profile.role === 'billing_team') return <BillingDashboard />
+  if (profile.role === 'qc_team') return <QcDashboard />
 
   const isRep = profile.role === 'salesperson'
 

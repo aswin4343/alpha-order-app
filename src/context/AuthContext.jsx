@@ -76,7 +76,11 @@ export function AuthProvider({ children }) {
     isDeliveryRep: profile?.role === 'delivery_rep',
     loading,
     signIn,
-    signOut
+    signOut,
+    refreshProfile: async () => {
+      const { data } = await supabase.auth.getUser()
+      if (data?.user?.id) await loadProfile(data.user.id)
+    }
   }
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

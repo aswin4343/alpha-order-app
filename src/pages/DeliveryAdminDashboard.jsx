@@ -301,9 +301,23 @@ export default function DeliveryAdminDashboard() {
                             )}
                             <p className="text-[10px] text-slate-400 mt-0.5">{fmt(d.created_at)}</p>
                           </div>
-                          <span className={`text-[10px] font-semibold px-2 py-1 rounded-full shrink-0 ${STATUS_STYLE[d.status]}`}>
-                            {STATUS_LABEL[d.status]}
-                          </span>
+                          <div className="flex flex-col items-end gap-1 shrink-0">
+                            {d.qc_status === 'qc_pending' && (
+                              <span className="text-[10px] font-semibold px-2 py-1 rounded-full bg-amber-50 text-amber-700">🟡 QC Pending</span>
+                            )}
+                            {d.qc_status === 'in_progress' && (
+                              <span className="text-[10px] font-semibold px-2 py-1 rounded-full bg-blue-50 text-blue-700">🔵 QC In Progress</span>
+                            )}
+                            {d.qc_status === 'qc_verified' && (
+                              <span className="text-[10px] font-semibold px-2 py-1 rounded-full bg-green-50 text-green-700">🟢 Ready</span>
+                            )}
+                            {d.qc_status === 'qc_returned' && (
+                              <span className="text-[10px] font-semibold px-2 py-1 rounded-full bg-red-50 text-red-700">🔴 Returned</span>
+                            )}
+                            <span className={`text-[10px] font-semibold px-2 py-1 rounded-full ${STATUS_STYLE[d.status]}`}>
+                              {STATUS_LABEL[d.status]}
+                            </span>
+                          </div>
                         </div>
 
                         <div className="mt-2.5 flex items-center gap-2">

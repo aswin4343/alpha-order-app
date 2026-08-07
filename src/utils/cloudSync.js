@@ -620,7 +620,7 @@ export async function markAnnouncementRead(recipientId) {
 export async function loadDeliveryAdmin(routeFilter, dateFilter) {
   let q = supabase
     .from('deliveries')
-    .select('id, order_id, shop_name, route, sales_rep_name, assigned_to, assigned_at, status, created_at')
+    .select('id, order_id, shop_name, route, sales_rep_name, assigned_to, assigned_at, status, qc_status, packed_by, created_at')
     .neq('status', 'cancelled') // hide soft-deleted duplicate deliveries
     .order('created_at', { ascending: false })
     .limit(1500) // safety cap so the dashboard never tries to load everything
@@ -1642,4 +1642,115 @@ export async function listAllRoutes() {
   if (error) { console.error(error); return [] }
   const set = new Set((data || []).map((c) => (c.route || '').trim()).filter(Boolean))
   return [...set].sort()
+}
+
+// ===========================================================================
+// V4 QC MODULE — Phase 1
+// ===========================================================================
+
+export const PACKING_STAFF = ['Aswin', 'Rashmi', 'Sathi', 'Bindu', 'Jishnu (Achu)']
+
+/** QC dashboard counts + list, filtered by qc_status. */
+export async function loadQcDeliveries(qcStatus = 'qc_pending') {
+  const { data, error } = await supabase
+    .from('deliveries')
+    .select('id, order_id, shop_name, route, sales_rep_name, status, qc_status, packed_by, created_at, qc_verified_at')
+    .eq('qc_status', qcStatus)
+    .neq('status', 'cancelled')
+    .order('created_at', { ascending: false })
+    .limit(500)
+  if (error) throw error
+  return data || []
+}
+
+/** QC dashboard summary counts. */
+export async function loadQcCounts() {
+  const startToday = new Date(); startToday.setHours(0, 0, 0, 0)
+  const [pending, inProgress, verifiedToday, returned] = await Promise.all([
+    supabase.from('deliveries').select('id', { count: 'exact', head: true }).eq('qc_status', 'qc_pending').neq('status', 'cancelled'),
+    supabase.from('deliveries').select('id', { count: 'exact', head: true }).eq('qc_status', 'in_progress').neq('status', 'cancelled'),
+    supabase.from('deliveries').select('id', { count: 'exact', head: true }).eq('qc_status', 'qc_verified').gte('qc_verified_at', startToday.toISOString()),
+    supabase.from('deliveries').select('id', { count: 'exact', head: true }).eq('qc_status', 'qc_returned').neq('status', 'cancelled')
+  ])
+  return {
+    pending: pending.count || 0,
+    inProgress: inProgress.count || 0,
+    verifiedToday: verifiedToday.count || 0,
+    returned: returned.count || 0
+  }
+}
+
+/** Load a delivery's items for QC checking (reuses the group loader shape). */
+export async function loadQcDeliveryItems(delivery) {
+  return await loadGroupDetail(delivery)
+}
+
+/** QC verify: requires packed_by + checklist → sets Ready for Delivery. */
+export async function qcVerifyDelivery(deliveryId, packedBy, checklist) {
+  const { error } = await supabase.rpc('qc_verify_delivery', {
+    p_delivery_id: deliveryId,
+    p_packed_by: packedBy,
+    p_checklist: checklist || null
+  })
+  if (error) throw error
+}
+
+// --- QC per-product verification (auto-save + resume) ----------------------
+
+const QC_ERROR_TYPES = [
+  'Wrong Product', 'Wrong Quantity', 'Missing Item', 'Extra Item',
+  'Damaged Product', 'Expired Product', 'Wrong Scheme Item', 'Wrong Batch',
+  'Wrong MRP', 'Loose Packing', 'Other'
+]
+export { QC_ERROR_TYPES }
+
+/** Load delivery items WITH their saved QC state (for resume). Seeds items first. */
+export async function loadQcItemsWithState(delivery) {
+  // Ensure delivery_items exist (seeds from order if empty).
+  await loadGroupDetail(delivery)
+  const ids = delivery.deliveryIds || [delivery.id]
+  const { data, error } = await supabase
+    .from('delivery_items')
+    .select('id, delivery_id, product_name, ordered_qty, unit, qc_state, qc_error_type, qc_remarks, qc_packed_by')
+    .in('delivery_id', ids)
+    .order('product_name', { ascending: true })
+  if (error) throw error
+  return data || []
+}
+
+/** Auto-save one product's QC state immediately. */
+export async function saveQcItemState(itemId, patch) {
+  const row = { ...patch, qc_checked_at: new Date().toISOString() }
+  const { error } = await supabase.from('delivery_items').update(row).eq('id', itemId)
+  if (error) throw error
+}
+
+/** Mark the delivery(ies) as in-progress (called when QC first touches an item). */
+export async function markQcInProgress(delivery) {
+  const ids = delivery.deliveryIds || [delivery.id]
+  for (const id of ids) {
+    // eslint-disable-next-line no-await-in-loop
+    await supabase.rpc('qc_mark_in_progress', { p_delivery_id: id })
+  }
+}
+
+/** Verify all deliveries in a group (Ready for Delivery) with packed_by. */
+export async function qcVerifyGroup(delivery, packedBy, checklist) {
+  const ids = delivery.deliveryIds || [delivery.id]
+  for (const id of ids) {
+    // eslint-disable-next-line no-await-in-loop
+    const { error } = await supabase.rpc('qc_verify_delivery', {
+      p_delivery_id: id, p_packed_by: packedBy, p_checklist: checklist || null
+    })
+    if (error) throw error
+  }
+}
+
+/** Update the logged-in user's own display name (used by QC first-login prompt). */
+export async function updateMyName(newName) {
+  const { data: auth } = await supabase.auth.getUser()
+  const uid = auth?.user?.id
+  if (!uid) throw new Error('not signed in')
+  const { error } = await supabase.from('profiles').update({ full_name: newName.trim() }).eq('id', uid)
+  if (error) throw error
 }

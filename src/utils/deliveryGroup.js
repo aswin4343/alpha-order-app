@@ -52,6 +52,8 @@ export function groupDeliveriesByShopDay(deliveries) {
         created_at: d.created_at,
         assigned_to: d.assigned_to ?? null,
         assigned_at: d.assigned_at ?? null,
+        qc_status: d.qc_status ?? 'qc_verified',
+        packed_by: d.packed_by ?? null,
         latitude: d.latitude ?? null,
         longitude: d.longitude ?? null,
         count: 0
@@ -62,6 +64,11 @@ export function groupDeliveriesByShopDay(deliveries) {
     g.deliveryIds.push(d.id)
     if (d.order_id) g.orderIds.push(d.order_id)
     g.statuses.push(d.status)
+    // Group QC status: pending if any pending, else in_progress if any in progress.
+    if (d.qc_status === 'qc_pending') g.qc_status = 'qc_pending'
+    else if (d.qc_status === 'in_progress' && g.qc_status !== 'qc_pending') g.qc_status = 'in_progress'
+    else if (d.qc_status === 'qc_returned' && !['qc_pending','in_progress'].includes(g.qc_status)) g.qc_status = 'qc_returned'
+    if (d.packed_by && !g.packed_by) g.packed_by = d.packed_by
     g.count += 1
     // Keep the latest order time and its assignment.
     if (new Date(d.created_at) > new Date(g.created_at)) {
