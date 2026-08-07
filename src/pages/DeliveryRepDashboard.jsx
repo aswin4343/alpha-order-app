@@ -160,7 +160,7 @@ export default function DeliveryRepDashboard() {
   return (
     <div className="min-h-screen bg-slate-50 pb-10">
       <header className="sticky top-0 z-20 bg-white border-b border-slate-100 safe-top">
-        <div className="mx-auto max-w-md px-3 py-2.5 flex items-center gap-2">
+        <div className="mx-auto max-w-3xl px-3 py-2.5 flex items-center gap-2">
           <img src={appIcon} alt="" className="h-8 w-8 rounded-lg object-contain" />
           <div className="flex-1 min-w-0">
             <h1 className="text-base font-bold text-slate-800 leading-tight">My Deliveries</h1>
@@ -172,7 +172,7 @@ export default function DeliveryRepDashboard() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-md px-3 pt-3">
+      <main className="mx-auto max-w-3xl px-3 pt-3">
         {/* Punch In / Out */}
         {punchLoaded && (
           <div className={`rounded-2xl border p-3 mb-3 ${punch ? 'bg-green-50 border-green-200' : 'bg-amber-50 border-amber-200'}`}>
@@ -246,7 +246,7 @@ export default function DeliveryRepDashboard() {
             No deliveries assigned to you yet.
           </p>
         )}
-        <div className="space-y-2">
+        <div className="space-y-2 lg:space-y-0 lg:grid lg:grid-cols-2 lg:gap-2">
           {list &&
             list
               .filter((d) => !dateFilter || d.day === dateFilter)

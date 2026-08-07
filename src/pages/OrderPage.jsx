@@ -460,7 +460,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   return (
     <div className="min-h-screen bg-slate-50 pb-44">
       <header className="sticky top-0 z-20 bg-white/95 backdrop-blur border-b border-slate-100 safe-top">
-        <div className="mx-auto max-w-md px-3 py-2 flex items-center gap-2">
+        <div className="mx-auto max-w-3xl px-3 py-2 flex items-center gap-2">
           <img src={appIcon} alt="" className="h-8 w-8 rounded-lg object-contain" />
           <BrandSelector />
           <div className="flex-1" />
@@ -501,7 +501,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
         </div>
       </header>
 
-      <main className="mx-auto max-w-md px-3 pt-3 space-y-3">
+      <main className="mx-auto max-w-3xl px-3 pt-3 space-y-3">
         <CustomerPicker selected={customer} onSelect={handleSelectCustomer} />
 
         {customer && (
