@@ -1648,7 +1648,7 @@ export async function listAllRoutes() {
 // V4 QC MODULE — Phase 1
 // ===========================================================================
 
-export const PACKING_STAFF = ['Aswin', 'Rashmi', 'Sathi', 'Bindu', 'Jishnu (Achu)']
+export const PACKING_STAFF = ['Aswin', 'Rashmi', 'Sathi', 'Bindu', 'Jishnu (Achu)', 'Shivan']
 
 /** QC dashboard counts + list, filtered by qc_status. */
 export async function loadQcDeliveries(qcStatus = 'qc_pending') {
@@ -1699,7 +1699,7 @@ export async function qcVerifyDelivery(deliveryId, packedBy, checklist) {
 
 const QC_ERROR_TYPES = [
   'Wrong Product', 'Wrong Quantity', 'Missing Item', 'Extra Item',
-  'Damaged Product', 'Expired Product', 'Wrong Scheme Item', 'Wrong Batch',
+  'Damaged Product', 'Expired Product', 'Wrong Batch',
   'Wrong MRP', 'Loose Packing', 'Other'
 ]
 export { QC_ERROR_TYPES }

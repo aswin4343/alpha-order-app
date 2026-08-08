@@ -29,7 +29,17 @@ export default function QcDashboard() {
   const [counts, setCounts] = useState({ pending: 0, inProgress: 0, verifiedToday: 0, returned: 0 })
   const [list, setList] = useState(null)
   const [error, setError] = useState(false)
-  const [open, setOpen] = useState(null)
+  const [open, setOpenRaw] = useState(() => {
+    // Restore the order the QC user was working on (survives tab switch/reload).
+    try { return JSON.parse(sessionStorage.getItem('qc_open_delivery') || 'null') } catch { return null }
+  })
+  const setOpen = (d) => {
+    setOpenRaw(d)
+    try {
+      if (d) sessionStorage.setItem('qc_open_delivery', JSON.stringify(d))
+      else sessionStorage.removeItem('qc_open_delivery')
+    } catch {}
+  }
 
   // First-login name prompt: if the QC user's name is empty or still the
   // default email-based placeholder (e.g. "qc1"), ask them to enter it.
@@ -282,7 +292,11 @@ function QcDetail({ delivery, qcUser, onBack, onDone }) {
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
                     <p className="text-sm font-medium text-slate-800">{it.product_name}</p>
-                    <p className="text-[11px] text-slate-400">{it.ordered_qty} {it.unit}</p>
+                    <div className="mt-1 inline-flex items-center gap-1.5 rounded-lg bg-brand-50 border border-brand-200 px-2.5 py-1">
+                      <span className="text-[10px] font-semibold text-brand-600 uppercase">Qty</span>
+                      <span className="text-base font-extrabold text-brand-800">{it.ordered_qty}</span>
+                      <span className="text-xs font-semibold text-brand-600">{it.unit}</span>
+                    </div>
                     {it.qc_state === 'error' && (
                       <p className="text-[11px] text-amber-600 mt-0.5">⚠ {it.qc_error_type}{it.qc_remarks ? ` — ${it.qc_remarks}` : ''}</p>
                     )}
