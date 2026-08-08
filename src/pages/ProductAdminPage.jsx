@@ -3,9 +3,11 @@ import { useApp } from '../context/AppContext.jsx'
 import {
   getCatalogueMeta,
   replaceAllCloudProducts,
-  fetchAllCloudProducts
+  fetchAllCloudProducts,
+  sendAnnouncement
 } from '../utils/cloudSync.js'
 import { importFullProducts } from '../utils/excel.js'
+import { diffProducts, buildAnnouncement } from '../utils/productDiff.js'
 import seedProducts from '../data/products.json'
 import { BackIcon } from '../components/Icons.jsx'
 
@@ -36,13 +38,15 @@ export default function ProductAdminPage({ onBack }) {
   const cloudVersion = meta?.version ?? 0
 
   // Stage a replace (from Excel or from the bundled catalogue) for confirmation.
-  const stage = (list, source, fileName) => {
+  // `diff` (optional) carries the detected product changes so we can preview
+  // them and auto-generate the announcement on confirm.
+  const stage = (list, source, fileName, diff = null) => {
     setMsg('')
     if (!list || !list.length) {
       setMsg('No products found in that file.')
       return
     }
-    setPending({ list, source, fileName })
+    setPending({ list, source, fileName, diff })
   }
 
   const onExcel = async (e) => {
@@ -53,8 +57,19 @@ export default function ProductAdminPage({ onBack }) {
     setMsg('Reading file…')
     try {
       const list = await importFullProducts(file)
+      // Compare against the CURRENT cloud catalogue to detect actual changes.
+      setMsg('Comparing with current catalogue…')
+      let diff = null
+      try {
+        const prev = await fetchAllCloudProducts()
+        diff = diffProducts(prev, list)
+      } catch (cmpErr) {
+        // If we can't fetch the previous list (e.g. first-ever upload), we
+        // simply skip change detection — the replace still works.
+        console.warn('Could not compare with previous catalogue:', cmpErr)
+      }
       setMsg('')
-      stage(list, `Excel file "${file.name}"`, file.name)
+      stage(list, `Excel file "${file.name}"`, file.name, diff)
     } catch (err) {
       console.error(err)
       setMsg('Could not read that file. Check it is a valid .xlsx.')
@@ -69,9 +84,37 @@ export default function ProductAdminPage({ onBack }) {
     setMsg('Uploading to cloud… do not close this screen.')
     try {
       const res = await replaceAllCloudProducts(pending.list, pending.fileName)
+
+      // Auto-announcement: if we detected actual changes, publish ONE
+      // consolidated product-update announcement to all salespeople, expiring
+      // after 3 days. Never a generic "list updated" message.
+      let annNote = ''
+      const diff = pending.diff
+      if (diff && diff.hasChanges) {
+        const ann = buildAnnouncement(diff)
+        if (ann) {
+          try {
+            await sendAnnouncement({
+              title: ann.title,
+              body: ann.body,
+              highPriority: false,
+              audience: 'all',
+              expiresInDays: 3,
+              notifType: 'product_update'
+            })
+            annNote = ` ${diff.totalChanges} change(s) announced to all sales reps (expires in 3 days).`
+          } catch (annErr) {
+            console.error('Announcement failed:', annErr)
+            annNote = ' (Products updated, but the change announcement could not be sent — you can send one manually.)'
+          }
+        }
+      } else if (diff && !diff.hasChanges) {
+        annNote = ' No product changes detected, so no announcement was sent.'
+      }
+
       setPending(null)
       await loadMeta()
-      setMsg(`Done. ${res.count} products published (version ${res.version}). Reps will get them on next open.`)
+      setMsg(`Done. ${res.count} products published (version ${res.version}). Reps will get them on next open.${annNote}`)
     } catch (err) {
       console.error(err)
       setMsg('Upload failed: ' + (err.message || 'unknown error') + '. Nothing was changed if this was the delete step; try again.')
@@ -192,6 +235,44 @@ export default function ProductAdminPage({ onBack }) {
                 Make sure you uploaded the complete list.
               </p>
             )}
+
+            {/* Detected changes preview (Excel uploads only). */}
+            {pending.diff && (
+              <div className="mb-3 rounded-xl bg-slate-50 border border-slate-200 p-3 max-h-56 overflow-y-auto">
+                {pending.diff.hasChanges ? (
+                  <>
+                    <p className="text-[12px] font-semibold text-slate-700 mb-1.5">
+                      {pending.diff.totalChanges} change(s) detected — reps will be notified:
+                    </p>
+                    <ul className="text-[12px] text-slate-600 space-y-0.5">
+                      {pending.diff.priceUp.map((c) => (
+                        <li key={`pu-${c.name}`}>🔺 <b>{c.name}</b> ₹{c.oldPrice} → ₹{c.newPrice}</li>
+                      ))}
+                      {pending.diff.priceDown.map((c) => (
+                        <li key={`pd-${c.name}`}>🔻 <b>{c.name}</b> ₹{c.oldPrice} → ₹{c.newPrice}</li>
+                      ))}
+                      {pending.diff.schemeChanged.map((c) => (
+                        <li key={`sc-${c.name}`}>🎁 <b>{c.name}</b> scheme updated</li>
+                      ))}
+                      {pending.diff.added.map((c) => (
+                        <li key={`ad-${c.name}`}>🟢 <b>{c.name}</b> new product</li>
+                      ))}
+                      {pending.diff.removed.map((c) => (
+                        <li key={`rm-${c.name}`}>⛔ <b>{c.name}</b> removed</li>
+                      ))}
+                    </ul>
+                    <p className="text-[11px] text-slate-400 mt-2">
+                      An announcement will be sent to all sales reps and auto-expire in 3 days.
+                    </p>
+                  </>
+                ) : (
+                  <p className="text-[12px] text-slate-500">
+                    No product changes detected vs the current catalogue — no announcement will be sent.
+                  </p>
+                )}
+              </div>
+            )}
+
             <p className="text-xs text-slate-400 mb-4">
               Reps will receive this updated catalogue on their next open.
             </p>

@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
+import { useApp } from '../context/AppContext.jsx'
 import { loadMyPerformance, loadPerformanceForDate, currentUserId } from '../utils/cloudSync.js'
 import { BackIcon } from '../components/Icons.jsx'
 
@@ -15,11 +16,21 @@ function StatCard({ label, value, sub }) {
 
 export default function PerformancePage({ onBack }) {
   const { user, profile } = useAuth()
+  const { customers } = useApp()
   const [uid, setUid] = useState(null)
   const [dateStr, setDateStr] = useState(() => new Date().toISOString().slice(0, 10))
+  const [route, setRoute] = useState('') // '' = All routes (unchanged behaviour)
   const [dayPerf, setDayPerf] = useState(null)
   const [totals, setTotals] = useState(null)
   const [error, setError] = useState(false)
+
+  // Predefined route master — same source the New Customer form uses, so the
+  // list stays consistent app-wide (no separate hardcoded list).
+  const routes = useMemo(() => {
+    const s = new Set()
+    ;(customers || []).forEach((c) => c.route && s.add(c.route))
+    return Array.from(s).sort()
+  }, [customers])
 
   // Resolve the user id once.
   useEffect(() => {
@@ -30,21 +41,22 @@ export default function PerformancePage({ onBack }) {
     })()
   }, [user])
 
-  // Load performance for the selected date (updates instantly on date change).
+  // Load performance for the selected date + route (updates instantly on
+  // date OR route change). Empty route → all routes (original behaviour).
   useEffect(() => {
     if (!uid) return
     let active = true
     setDayPerf(null); setError(false)
     ;(async () => {
       try {
-        const p = await loadPerformanceForDate(uid, dateStr)
+        const p = await loadPerformanceForDate(uid, dateStr, route || null)
         if (active) setDayPerf(p)
       } catch {
         if (active) setError(true)
       }
     })()
     return () => { active = false }
-  }, [uid, dateStr])
+  }, [uid, dateStr, route])
 
   const prettyDate = new Date(`${dateStr}T00:00:00`).toLocaleDateString('en-IN', {
     weekday: 'short', day: 'numeric', month: 'short', year: 'numeric'
@@ -81,6 +93,34 @@ export default function PerformancePage({ onBack }) {
             </button>
           </div>
           <p className="text-xs text-slate-500 mt-2">{isToday ? "Today's performance" : prettyDate}</p>
+        </div>
+
+        {/* Route filter */}
+        <div className="rounded-2xl bg-white shadow-card border border-slate-100 p-3 mb-4">
+          <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Route</label>
+          <div className="flex items-center gap-2">
+            <select
+              value={route}
+              onChange={(e) => setRoute(e.target.value)}
+              className="flex-1 rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-brand-500 bg-white"
+            >
+              <option value="">All routes</option>
+              {routes.map((r) => (
+                <option key={r} value={r}>{r}</option>
+              ))}
+            </select>
+            {route && (
+              <button
+                onClick={() => setRoute('')}
+                className="px-3 py-2.5 rounded-xl text-sm font-semibold border border-slate-200 text-brand-700 hover:bg-slate-50"
+              >
+                Clear
+              </button>
+            )}
+          </div>
+          <p className="text-xs text-slate-500 mt-2">
+            {route ? `Showing ${route}` : 'Showing all routes'}
+          </p>
         </div>
 
         {error && <p className="text-center text-sm text-red-500 py-6">Could not load performance.</p>}

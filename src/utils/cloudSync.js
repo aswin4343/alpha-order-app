@@ -509,8 +509,14 @@ export async function renameSalesperson(id, newName) {
 // ---------------------------------------------------------------------------
 
 /** Admin: send an announcement to all reps or a selected list. */
-export async function sendAnnouncement({ title, body, highPriority, audience, repIds }) {
+export async function sendAnnouncement({ title, body, highPriority, audience, repIds, expiresInDays, notifType }) {
   const uid = await currentUserId()
+  // Optional auto-expiry: expires_at = now + N days. Omitted → never expires
+  // (preserves the original behaviour for manual announcements).
+  const expiresAt =
+    expiresInDays != null
+      ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString()
+      : null
   const { data: ann, error } = await supabase
     .from('announcements')
     .insert({
@@ -518,7 +524,9 @@ export async function sendAnnouncement({ title, body, highPriority, audience, re
       body: body || '',
       high_priority: !!highPriority,
       audience,
-      created_by: uid
+      created_by: uid,
+      expires_at: expiresAt,
+      notif_type: notifType || null
     })
     .select('id')
     .single()
@@ -571,12 +579,15 @@ export async function loadMyAnnouncements() {
   const uid = await currentUserId()
   const { data, error } = await supabase
     .from('announcement_recipients')
-    .select('id, read_at, announcements(id, title, body, high_priority, created_at)')
+    .select('id, read_at, announcements(id, title, body, high_priority, created_at, expires_at)')
     .eq('rep_id', uid)
     .order('read_at', { ascending: true, nullsFirst: true })
   if (error) throw error
+  const now = Date.now()
   const list = (data || [])
     .filter((r) => r.announcements)
+    // Hide expired announcements (expires_at in the past). NULL = never expires.
+    .filter((r) => !r.announcements.expires_at || new Date(r.announcements.expires_at).getTime() > now)
     .map((r) => ({
       recipientId: r.id,
       readAt: r.read_at,
@@ -594,13 +605,17 @@ export async function loadMyAnnouncements() {
 export async function countUnreadAnnouncements() {
   const uid = await currentUserId()
   if (!uid) return 0
-  const { count, error } = await supabase
+  // Join to announcements so we can exclude expired ones from the unread badge.
+  const { data, error } = await supabase
     .from('announcement_recipients')
-    .select('id', { count: 'exact', head: true })
+    .select('id, announcements(expires_at)')
     .eq('rep_id', uid)
     .is('read_at', null)
   if (error) return 0
-  return count || 0
+  const now = Date.now()
+  return (data || []).filter(
+    (r) => r.announcements && (!r.announcements.expires_at || new Date(r.announcements.expires_at).getTime() > now)
+  ).length
 }
 
 /** Rep: mark one announcement as read. */
@@ -1597,25 +1612,34 @@ export async function listActiveSalespeople() {
 /** Performance for a specific date (YYYY-MM-DD) for the logged-in rep.
  *  Order Value uses the actual selling price saved on each order (total_value),
  *  never MRP, never recalculated from the current product master. */
-export async function loadPerformanceForDate(userId, dateStr) {
+export async function loadPerformanceForDate(userId, dateStr, route = null) {
   const start = new Date(`${dateStr}T00:00:00`)
   const end = new Date(`${dateStr}T23:59:59.999`)
 
-  const [ordersRes, visitsRes] = await Promise.all([
-    supabase
-      .from('orders')
-      .select('id, total_quantity, total_value, shop_name, created_at')
-      .eq('sales_rep_id', userId)
-      .eq('hidden', false)
-      .gte('created_at', start.toISOString())
-      .lte('created_at', end.toISOString()),
-    supabase
-      .from('visits')
-      .select('id, shop_name, created_at')
-      .eq('sales_rep_id', userId)
-      .gte('created_at', start.toISOString())
-      .lte('created_at', end.toISOString())
-  ])
+  // Base queries (date-scoped). When a route is supplied, we additionally
+  // constrain by the per-order / per-visit route column. When it is null the
+  // queries are IDENTICAL to the original date-only behaviour.
+  let ordersQ = supabase
+    .from('orders')
+    .select('id, total_quantity, total_value, shop_name, created_at, route')
+    .eq('sales_rep_id', userId)
+    .eq('hidden', false)
+    .gte('created_at', start.toISOString())
+    .lte('created_at', end.toISOString())
+
+  let visitsQ = supabase
+    .from('visits')
+    .select('id, shop_name, created_at, route')
+    .eq('sales_rep_id', userId)
+    .gte('created_at', start.toISOString())
+    .lte('created_at', end.toISOString())
+
+  if (route) {
+    ordersQ = ordersQ.eq('route', route)
+    visitsQ = visitsQ.eq('route', route)
+  }
+
+  const [ordersRes, visitsRes] = await Promise.all([ordersQ, visitsQ])
 
   const orders = ordersRes.data || []
   const visits = visitsRes.data || []
@@ -1792,4 +1816,47 @@ export async function updateMyName(newName) {
   if (!uid) throw new Error('not signed in')
   const { error } = await supabase.from('profiles').update({ full_name: newName.trim() }).eq('id', uid)
   if (error) throw error
+}
+
+// ===========================================================================
+// WEB PUSH (QC external notifications) — subscription storage
+// ===========================================================================
+
+/** Save (upsert) a browser push subscription for the current user. */
+export async function savePushSubscription(subscription, role) {
+  const uid = await currentUserId()
+  if (!uid) throw new Error('not signed in')
+  const sub = subscription.toJSON ? subscription.toJSON() : subscription
+  const { error } = await supabase
+    .from('push_subscriptions')
+    .upsert(
+      {
+        user_id: uid,
+        endpoint: sub.endpoint,
+        subscription: sub,
+        role: role || null,
+        updated_at: new Date().toISOString()
+      },
+      { onConflict: 'endpoint' }
+    )
+  if (error) throw error
+}
+
+/** Remove a push subscription by endpoint (on unsubscribe). */
+export async function removePushSubscription(endpoint) {
+  if (!endpoint) return
+  const { error } = await supabase.from('push_subscriptions').delete().eq('endpoint', endpoint)
+  if (error) console.error('removePushSubscription failed', error)
+}
+
+/** Load ONE delivery by id (for QC deep-linking from a push notification). */
+export async function loadQcDeliveryById(deliveryId) {
+  if (!deliveryId) return null
+  const { data, error } = await supabase
+    .from('deliveries')
+    .select('id, order_id, shop_name, route, sales_rep_name, status, qc_status, packed_by, created_at, qc_verified_at')
+    .eq('id', deliveryId)
+    .maybeSingle()
+  if (error) throw error
+  return data || null
 }

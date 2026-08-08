@@ -8,6 +8,15 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'prompt',
+      // Custom service worker (injectManifest) so we can add Web Push handlers
+      // for the QC notifications while keeping full offline precaching.
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.js',
+      injectManifest: {
+        globPatterns: ['**/*.{js,css,html,ico,png,svg,json,woff2}'],
+        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024
+      },
       includeAssets: ['favicon.svg', 'logo.png'],
       manifest: {
         name: 'Alpha Trade Links Booking',
@@ -23,11 +32,6 @@ export default defineConfig({
           { src: 'pwa-512.png', sizes: '512x512', type: 'image/png' },
           { src: 'pwa-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' }
         ]
-      },
-      workbox: {
-        // Cache the app shell + assets so it works fully offline.
-        globPatterns: ['**/*.{js,css,html,ico,png,svg,json,woff2}'],
-        maximumFileSizeToCacheInBytes: 5 * 1024 * 1024
       }
     })
   ]

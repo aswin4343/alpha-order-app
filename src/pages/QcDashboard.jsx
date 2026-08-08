@@ -2,8 +2,10 @@ import { useEffect, useState, useMemo } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
 import {
   loadQcDeliveries, loadQcCounts, loadQcItemsWithState, saveQcItemState,
-  markQcInProgress, qcVerifyGroup, PACKING_STAFF, QC_ERROR_TYPES, updateMyName
+  markQcInProgress, qcVerifyGroup, PACKING_STAFF, QC_ERROR_TYPES, updateMyName,
+  loadQcDeliveryById
 } from '../utils/cloudSync.js'
+import { enablePush, pushStatus, pushSupported } from '../utils/push.js'
 import appIcon from '../assets/app_icon.png'
 
 const CHECKLIST = [
@@ -50,6 +52,68 @@ export default function QcDashboard() {
   const [showNamePrompt, setShowNamePrompt] = useState(false)
   useEffect(() => { if (needsName) setShowNamePrompt(true) }, [needsName])
 
+  // --- Push notifications: show an enable banner until subscribed/denied. ----
+  const [push, setPush] = useState({ supported: pushSupported(), permission: 'default', subscribed: false })
+  const [pushBusy, setPushBusy] = useState(false)
+  useEffect(() => {
+    let active = true
+    pushStatus().then((s) => { if (active) setPush(s) }).catch(() => {})
+    return () => { active = false }
+  }, [])
+  const onEnablePush = async () => {
+    setPushBusy(true)
+    try {
+      const res = await enablePush('qc_team')
+      const s = await pushStatus()
+      setPush(s)
+      if (!res.ok && res.reason === 'denied') {
+        alert('Notifications are blocked for this site. Enable them in your browser settings to receive QC alerts.')
+      }
+    } catch (e) {
+      console.error(e)
+      alert('Could not enable notifications on this device.')
+    } finally {
+      setPushBusy(false)
+    }
+  }
+
+  // --- Deep-link: open a specific delivery from a push notification. ----------
+  // Handles BOTH the ?qc_delivery= URL param (cold open) and the SW postMessage
+  // (app already open). Defined here so both paths reuse it.
+  const openDeliveryById = async (id) => {
+    if (!id) return
+    try {
+      const d = await loadQcDeliveryById(id)
+      if (d) setOpen(d)
+    } catch (e) { console.error('deep-link open failed', e) }
+  }
+  useEffect(() => {
+    // Cold-open deep link.
+    try {
+      const params = new URLSearchParams(window.location.search)
+      const id = params.get('qc_delivery')
+      if (id) {
+        openDeliveryById(id)
+        // Clean the URL so a refresh doesn't reopen it.
+        const url = new URL(window.location.href)
+        url.searchParams.delete('qc_delivery')
+        window.history.replaceState({}, '', url.toString())
+      }
+    } catch {}
+    // Live deep link while app is open.
+    const onMsg = (event) => {
+      const msg = event.data
+      if (msg && msg.type === 'qc_open' && msg.data && msg.data.delivery_id) {
+        openDeliveryById(msg.data.delivery_id)
+      }
+    }
+    if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', onMsg)
+    return () => {
+      if ('serviceWorker' in navigator) navigator.serviceWorker.removeEventListener('message', onMsg)
+    }
+    // eslint-disable-next-line
+  }, [])
+
   const refresh = async (showSpinner = true) => {
     setError(false)
     if (showSpinner) setList(null)
@@ -90,6 +154,28 @@ export default function QcDashboard() {
       </header>
 
       <main className="mx-auto max-w-4xl px-3 sm:px-6 pt-4">
+        {/* Enable push notifications banner (until subscribed or denied). */}
+        {push.supported && !push.subscribed && push.permission !== 'denied' && (
+          <div className="mb-4 rounded-2xl bg-blue-50 border border-blue-200 p-3 flex items-center gap-3">
+            <div className="text-2xl">🔔</div>
+            <div className="min-w-0 flex-1">
+              <p className="text-sm font-semibold text-blue-900">Turn on QC alerts</p>
+              <p className="text-[12px] text-blue-700">Get notified the moment Billing verifies a bill — even when the app is closed.</p>
+            </div>
+            <button onClick={onEnablePush} disabled={pushBusy}
+              className="shrink-0 rounded-xl bg-blue-600 text-white text-sm font-bold px-3 py-2 active:bg-blue-700 disabled:bg-blue-300">
+              {pushBusy ? '…' : 'Enable'}
+            </button>
+          </div>
+        )}
+        {push.supported && push.permission === 'denied' && (
+          <div className="mb-4 rounded-2xl bg-amber-50 border border-amber-200 p-3">
+            <p className="text-[12px] text-amber-800">
+              Notifications are blocked for this site. To receive QC alerts, enable notifications for this app in your browser settings.
+            </p>
+          </div>
+        )}
+
         <div className="grid grid-cols-4 gap-2 mb-4">
           <Stat label="Pending" value={counts.pending} color="text-amber-600" />
           <Stat label="In Progress" value={counts.inProgress} color="text-blue-600" />
