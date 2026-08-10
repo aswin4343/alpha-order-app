@@ -12,6 +12,7 @@ import BrandSelector from '../components/BrandSelector.jsx'
 import { SearchIcon, CloseIcon, SettingsIcon, ReturnIcon, ChartIcon, BellIcon } from '../components/Icons.jsx'
 import { buildOrderMessage, buildVisitMessage, buildWhatsappUrl } from '../utils/whatsapp.js'
 import VisitStatus from '../components/VisitStatus.jsx'
+import EnablePushBanner from '../components/EnablePushBanner.jsx'
 import appIcon from '../assets/app_icon.png'
 
 const getProductText = (p) => p.name
@@ -318,6 +319,31 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
     }
   }, [unreadTick])
 
+  // Deep-link: open the announcements screen when the rep taps a product-update
+  // push (either cold-open ?announcement= or a live SW message while app open).
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search)
+      if (params.get('announcement') && onOpenAnnouncements) {
+        onOpenAnnouncements()
+        const url = new URL(window.location.href)
+        url.searchParams.delete('announcement')
+        window.history.replaceState({}, '', url.toString())
+      }
+    } catch {}
+    const onMsg = (event) => {
+      const msg = event.data
+      if (msg && msg.type === 'qc_open' && msg.data && msg.data.type === 'announcement' && onOpenAnnouncements) {
+        onOpenAnnouncements()
+      }
+    }
+    if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', onMsg)
+    return () => {
+      if ('serviceWorker' in navigator) navigator.serviceWorker.removeEventListener('message', onMsg)
+    }
+    // eslint-disable-next-line
+  }, [])
+
   // Load all active routes once for the per-order route dropdown.
   useEffect(() => {
     listAllRoutes().then(setAllRoutes).catch(() => {})
@@ -502,6 +528,10 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
       </header>
 
       <main className="mx-auto max-w-3xl px-3 pt-3 space-y-3">
+        <EnablePushBanner
+          role="salesperson"
+          label="Get product & price updates instantly — even when the app is closed."
+        />
         <CustomerPicker selected={customer} onSelect={handleSelectCustomer} />
 
         {customer && (

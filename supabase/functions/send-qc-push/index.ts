@@ -40,40 +40,59 @@ Deno.serve(async (req) => {
     }
 
     const body = await req.json().catch(() => ({}))
-    const { delivery_id, order_id, shop_name, bill_no, verified_by, route } = body || {}
+    const {
+      kind, // 'qc' (default) | 'announcement'
+      delivery_id, order_id, shop_name, bill_no, verified_by, route,
+      ann_title, ann_body
+    } = body || {}
 
-    // Fetch all QC-team push subscriptions.
+    const isAnnouncement = kind === 'announcement'
+
+    // Choose recipients + message based on the kind of event.
+    // - QC alert       → push to qc_team devices.
+    // - Announcement   → push to salesperson devices.
+    const targetRole = isAnnouncement ? 'salesperson' : 'qc_team'
+
     const { data: subs, error } = await admin
       .from('push_subscriptions')
       .select('id, subscription')
-      .eq('role', 'qc_team')
+      .eq('role', targetRole)
 
     if (error) {
       return new Response(JSON.stringify({ error: error.message }), { status: 500 })
     }
     if (!subs || subs.length === 0) {
-      return new Response(JSON.stringify({ ok: true, sent: 0, note: 'no QC subscriptions' }), {
+      return new Response(JSON.stringify({ ok: true, sent: 0, note: `no ${targetRole} subscriptions` }), {
         headers: { 'Content-Type': 'application/json' }
       })
     }
 
-    const payload = JSON.stringify({
-      title: '🔔 New Quality Check Required',
-      body:
-        `A bill has been verified and is ready for Quality Check.\n` +
-        `Shop: ${shop_name || '-'}\n` +
-        `Bill No: ${bill_no || '-'}\n` +
-        `Verified By: ${verified_by || '-'}`,
-      // Data used by the service worker to deep-link on click.
-      data: {
-        type: 'qc_new',
-        delivery_id: delivery_id || null,
-        order_id: order_id || null,
-        shop_name: shop_name || '',
-        route: route || '',
-        url: `/?qc_delivery=${encodeURIComponent(delivery_id || '')}`
-      }
-    })
+    const payload = isAnnouncement
+      ? JSON.stringify({
+          title: ann_title || '📢 Product Update',
+          // Keep the push body short; full text lives in the in-app announcement.
+          body: (ann_body || 'Product / price updates have been posted. Tap to view.').slice(0, 240),
+          data: {
+            type: 'announcement',
+            url: `/?announcement=1`
+          }
+        })
+      : JSON.stringify({
+          title: '🔔 New Quality Check Required',
+          body:
+            `A bill has been verified and is ready for Quality Check.\n` +
+            `Shop: ${shop_name || '-'}\n` +
+            `Bill No: ${bill_no || '-'}\n` +
+            `Verified By: ${verified_by || '-'}`,
+          data: {
+            type: 'qc_new',
+            delivery_id: delivery_id || null,
+            order_id: order_id || null,
+            shop_name: shop_name || '',
+            route: route || '',
+            url: `/?qc_delivery=${encodeURIComponent(delivery_id || '')}`
+          }
+        })
 
     let sent = 0
     const stale: string[] = []
