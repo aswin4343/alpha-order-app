@@ -28,6 +28,7 @@ const QC_TABS = [
 export default function QcDashboard() {
   const { profile, signOut, refreshProfile } = useAuth()
   const [tab, setTab] = useState('qc_pending')
+  const [qcDate, setQcDate] = useState('') // '' = all dates (unchanged default)
   const [counts, setCounts] = useState({ pending: 0, inProgress: 0, verifiedToday: 0, returned: 0 })
   const [list, setList] = useState(null)
   const [error, setError] = useState(false)
@@ -122,7 +123,7 @@ export default function QcDashboard() {
     setError(false)
     if (showSpinner) setList(null)
     try {
-      const [items, c] = await Promise.all([loadQcDeliveries(tab), loadQcCounts()])
+      const [items, c] = await Promise.all([loadQcDeliveries(tab, qcDate || null), loadQcCounts()])
       setList(items); setCounts(c)
     } catch (e) { console.error(e); if (showSpinner) setError(true) }
   }
@@ -133,7 +134,7 @@ export default function QcDashboard() {
     window.addEventListener('focus', onFocus)
     return () => { clearInterval(iv); window.removeEventListener('focus', onFocus) }
     // eslint-disable-next-line
-  }, [tab])
+  }, [tab, qcDate])
 
   if (open) {
     return <QcDetail delivery={open} qcUser={profile}
@@ -194,6 +195,31 @@ export default function QcDashboard() {
               {label}
             </button>
           ))}
+        </div>
+
+        {/* Date filter */}
+        <div className="flex items-center gap-2 mb-3 flex-wrap">
+          <input
+            type="date"
+            value={qcDate}
+            onChange={(e) => setQcDate(e.target.value)}
+            className="rounded-lg border border-slate-200 px-3 py-1.5 text-sm outline-none focus:border-brand-500 bg-white"
+          />
+          <button
+            onClick={() => setQcDate(new Date().toISOString().slice(0, 10))}
+            className="px-3 py-1.5 rounded-lg text-xs font-bold bg-white border border-slate-200 text-slate-600 hover:bg-slate-50">
+            Today
+          </button>
+          {qcDate && (
+            <button
+              onClick={() => setQcDate('')}
+              className="px-3 py-1.5 rounded-lg text-xs font-bold text-brand-700 border border-slate-200 hover:bg-slate-50">
+              Clear
+            </button>
+          )}
+          <span className="text-xs text-slate-400">
+            {qcDate ? `Showing ${qcDate}${tab === 'qc_verified' ? ' (verified)' : ''}` : 'Showing all dates'}
+          </span>
         </div>
 
         {error && <p className="text-center text-sm text-red-500 py-6">Could not load.</p>}

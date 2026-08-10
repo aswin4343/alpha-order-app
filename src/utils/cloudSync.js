@@ -1675,12 +1675,24 @@ export async function listAllRoutes() {
 export const PACKING_STAFF = ['Aswin', 'Rashmi', 'Sathi', 'Bindu', 'Jishnu (Achu)', 'Shivan']
 
 /** QC dashboard counts + list, filtered by qc_status. */
-export async function loadQcDeliveries(qcStatus = 'qc_pending') {
-  const { data, error } = await supabase
+export async function loadQcDeliveries(qcStatus = 'qc_pending', dateStr = null) {
+  let q = supabase
     .from('deliveries')
     .select('id, order_id, shop_name, route, sales_rep_name, status, qc_status, packed_by, created_at, qc_verified_at')
     .eq('qc_status', qcStatus)
     .neq('status', 'cancelled')
+
+  // Optional date filter. When a date is supplied, restrict to that calendar
+  // day. For the Verified tab we filter on qc_verified_at (when QC actually
+  // verified it); for all other tabs we filter on created_at (when it arrived).
+  if (dateStr) {
+    const start = new Date(`${dateStr}T00:00:00`).toISOString()
+    const end = new Date(`${dateStr}T23:59:59.999`).toISOString()
+    const dateField = qcStatus === 'qc_verified' ? 'qc_verified_at' : 'created_at'
+    q = q.gte(dateField, start).lte(dateField, end)
+  }
+
+  const { data, error } = await q
     .order('created_at', { ascending: false })
     .limit(500)
   if (error) throw error
