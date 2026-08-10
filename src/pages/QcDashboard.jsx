@@ -68,10 +68,14 @@ export default function QcDashboard() {
       setPush(s)
       if (!res.ok && res.reason === 'denied') {
         alert('Notifications are blocked for this site. Enable them in your browser settings to receive QC alerts.')
+      } else if (!res.ok && res.reason === 'unsupported') {
+        alert('This browser does not support notifications. On iPhone, add the app to your Home Screen first, then open it from there.')
+      } else if (!res.ok) {
+        alert('Could not enable notifications.\n\nReason: ' + (res.reason || 'unknown') + (res.detail ? ('\n' + res.detail) : ''))
       }
     } catch (e) {
       console.error(e)
-      alert('Could not enable notifications on this device.')
+      alert('Could not enable notifications on this device.\n' + ((e && e.message) ? e.message : String(e)))
     } finally {
       setPushBusy(false)
     }

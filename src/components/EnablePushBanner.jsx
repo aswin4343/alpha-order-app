@@ -29,10 +29,13 @@ export default function EnablePushBanner({ role, label }) {
         alert('Notifications are blocked for this site. Enable them in your browser settings to receive alerts.')
       } else if (!res.ok && res.reason === 'unsupported') {
         alert('This browser does not support notifications. On iPhone, add the app to your Home Screen first, then open it from there.')
+      } else if (!res.ok) {
+        // Show the real technical reason so problems can be diagnosed.
+        alert('Could not enable notifications.\n\nReason: ' + (res.reason || 'unknown') + (res.detail ? ('\n' + res.detail) : ''))
       }
     } catch (e) {
       console.error(e)
-      alert('Could not enable notifications on this device.')
+      alert('Could not enable notifications on this device.\n' + ((e && e.message) ? e.message : String(e)))
     } finally {
       setBusy(false)
     }
