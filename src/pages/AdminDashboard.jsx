@@ -107,11 +107,20 @@ export default function AdminDashboard({ onOpenProducts, onOpenSalespeople, onOp
   const [period, setPeriod] = useState('today')
   const [selectedRep, setSelectedRep] = useState(null)
 
-  // Sales Trend + Top Products load independently of the main dashboard call
-  // (separate, slightly heavier queries) so a slow chart never blocks the
-  // core KPIs/leaderboard from appearing.
+  // Sales Trend + Top Products share one custom date range, adjustable by the
+  // admin. Defaults to the last 30 days (same as the original fixed window)
+  // so behaviour is unchanged until someone picks a different range.
+  const defaultTo = new Date().toISOString().slice(0, 10)
+  const defaultFrom = (() => {
+    const d = new Date()
+    d.setDate(d.getDate() - 29)
+    return d.toISOString().slice(0, 10)
+  })()
+  const [chartFrom, setChartFrom] = useState(defaultFrom)
+  const [chartTo, setChartTo] = useState(defaultTo)
   const [trend, setTrend] = useState(null)
   const [topProducts, setTopProducts] = useState(null)
+  const [chartError, setChartError] = useState(false)
 
   const refresh = async () => {
     setError(false)
@@ -122,15 +131,31 @@ export default function AdminDashboard({ onOpenProducts, onOpenSalespeople, onOp
       console.error(e)
       setError(true)
     }
-    // These are independent widgets — a failure here shouldn't blank the rest
-    // of the dashboard, so they're wrapped separately.
-    try { setTrend(await loadSalesTrend(30)) } catch (e) { console.error(e) }
-    try { setTopProducts(await loadTopProducts(5)) } catch (e) { console.error(e) }
+  }
+
+  // Charts reload whenever the shared date range changes — independently of
+  // the main dashboard call, so adjusting the range never blocks/reloads the
+  // KPIs or leaderboard above.
+  const refreshCharts = async () => {
+    setChartError(false)
+    try {
+      const [t, p] = await Promise.all([loadSalesTrend(chartFrom, chartTo), loadTopProducts(chartFrom, chartTo)])
+      setTrend(t)
+      setTopProducts(p)
+    } catch (e) {
+      console.error(e)
+      setChartError(true)
+    }
   }
 
   useEffect(() => {
     refresh()
   }, [])
+
+  useEffect(() => {
+    refreshCharts()
+    // eslint-disable-next-line
+  }, [chartFrom, chartTo])
 
   const reps = data
     ? [...data.reps].sort((a, b) => b[period].score - a[period].score)
@@ -205,30 +230,85 @@ export default function AdminDashboard({ onOpenProducts, onOpenSalespeople, onOp
               </div>
             </div>
 
-            {/* Sales Trend + Top Products — side by side on desktop */}
+            {/* Sales Trend + Top Products — share one adjustable date range */}
+            <div className="rounded-2xl bg-white shadow-card border border-slate-100 p-4 mb-2">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">
+                Chart Range
+              </p>
+              <div className="flex items-center gap-2 flex-wrap mb-2">
+                <input
+                  type="date" value={chartFrom} max={chartTo}
+                  onChange={(e) => setChartFrom(e.target.value)}
+                  className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-sm outline-none focus:border-brand-500"
+                />
+                <span className="text-slate-400 text-sm">to</span>
+                <input
+                  type="date" value={chartTo} min={chartFrom} max={defaultTo}
+                  onChange={(e) => setChartTo(e.target.value)}
+                  className="rounded-lg border border-slate-200 px-2.5 py-1.5 text-sm outline-none focus:border-brand-500"
+                />
+              </div>
+              <div className="flex gap-1.5 flex-wrap">
+                {[
+                  ['7', '7 Days', 6],
+                  ['30', '30 Days', 29],
+                  ['90', '90 Days', 89]
+                ].map(([key, label, back]) => (
+                  <button
+                    key={key}
+                    onClick={() => {
+                      const to = new Date().toISOString().slice(0, 10)
+                      const from = new Date(); from.setDate(from.getDate() - back)
+                      setChartFrom(from.toISOString().slice(0, 10)); setChartTo(to)
+                    }}
+                    className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
+                  >
+                    Last {label}
+                  </button>
+                ))}
+                <button
+                  onClick={() => {
+                    const now = new Date()
+                    setChartFrom(new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10))
+                    setChartTo(now.toISOString().slice(0, 10))
+                  }}
+                  className="px-2.5 py-1 rounded-lg text-xs font-semibold bg-white border border-slate-200 text-slate-600 hover:bg-slate-50"
+                >
+                  This Month
+                </button>
+              </div>
+            </div>
+
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-2 mb-4">
               <div className="rounded-2xl bg-white shadow-card border border-slate-100 p-4">
                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">
-                  Sales Trend — Last 30 Days
+                  Sales Trend
                 </p>
-                {trend ? (
-                  <SalesTrendChart data={trend} />
-                ) : (
+                {chartError && <p className="text-sm text-red-500 text-center py-8">Could not load trend.</p>}
+                {!trend && !chartError && (
                   <div className="py-12 flex justify-center">
                     <div className="h-6 w-6 rounded-full border-4 border-brand-100 border-t-brand-600 animate-spin" />
                   </div>
                 )}
+                {trend && !chartError && <SalesTrendChart data={trend} />}
               </div>
               <div className="rounded-2xl bg-white shadow-card border border-slate-100 p-4">
                 <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">
-                  Top Selling Products — This Month
+                  Top Selling Products
                 </p>
-                {topProducts ? (
-                  <TopProductsChart top={topProducts.top} otherQty={topProducts.otherQty} totalQty={topProducts.totalQty} />
-                ) : (
+                {chartError && <p className="text-sm text-red-500 text-center py-8">Could not load products.</p>}
+                {!topProducts && !chartError && (
                   <div className="py-12 flex justify-center">
                     <div className="h-6 w-6 rounded-full border-4 border-brand-100 border-t-brand-600 animate-spin" />
                   </div>
+                )}
+                {topProducts && !chartError && (
+                  <TopProductsChart
+                    byQty={topProducts.byQty}
+                    byOrders={topProducts.byOrders}
+                    totalQty={topProducts.totalQty}
+                    totalOrders={topProducts.totalOrders}
+                  />
                 )}
               </div>
             </div>

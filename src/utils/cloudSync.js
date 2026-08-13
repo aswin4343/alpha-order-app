@@ -447,33 +447,37 @@ export async function loadAdminDashboard() {
  * per calendar day. Uses order_date (already indexed) so the query stays
  * cheap regardless of catalogue size.
  */
-export async function loadSalesTrend(days = 30) {
-  const end = new Date()
-  const start = new Date()
-  start.setDate(end.getDate() - (days - 1))
-  const startStr = start.toISOString().slice(0, 10)
-  const endStr = end.toISOString().slice(0, 10)
+/**
+ * Daily sales trend for a custom date range: orders count + revenue per
+ * calendar day. Uses order_date (already indexed) so the query stays cheap.
+ * `from`/`to` are 'YYYY-MM-DD' strings, inclusive.
+ */
+export async function loadSalesTrend(from, to) {
+  const start = new Date(`${from}T00:00:00`)
+  const end = new Date(`${to}T00:00:00`)
+  const dayCount = Math.max(1, Math.round((end - start) / 86400000) + 1)
 
   const { data, error } = await supabase
     .from('orders')
     .select('order_date, total_value')
     .eq('hidden', false)
-    .gte('order_date', startStr)
-    .lte('order_date', endStr)
+    .gte('order_date', from)
+    .lte('order_date', to)
   if (error) throw error
 
   // Build one bucket per day in the window, even days with zero orders, so
-  // the line chart has a continuous, evenly-spaced x-axis.
+  // the line chart has a continuous, evenly-spaced x-axis. Capped at a
+  // sensible size so an accidentally huge range can't hang the browser.
+  const cappedDays = Math.min(dayCount, 366)
   const byDay = new Map()
-  for (let i = 0; i < days; i++) {
+  for (let i = 0; i < cappedDays; i++) {
     const d = new Date(start)
     d.setDate(start.getDate() + i)
     const key = d.toISOString().slice(0, 10)
     byDay.set(key, { date: key, orders: 0, revenue: 0 })
   }
   for (const o of data || []) {
-    const key = o.order_date
-    const bucket = byDay.get(key)
+    const bucket = byDay.get(o.order_date)
     if (bucket) {
       bucket.orders += 1
       bucket.revenue += o.total_value || 0
@@ -483,51 +487,59 @@ export async function loadSalesTrend(days = 30) {
 }
 
 /**
- * Top-selling products this month, ranked by total quantity sold.
- * Returns the top `limit` products plus an "Other" bucket for the remainder,
- * so the chart stays readable no matter how large the catalogue is.
+ * Every product sold in a custom date range, ranked two ways: by total
+ * quantity sold, and by number of distinct orders containing it. Returns the
+ * FULL list (not truncated) so the caller can show a compact top-N view with
+ * the rest expandable — nothing is hidden.
+ * `from`/`to` are 'YYYY-MM-DD' strings, inclusive.
  */
-export async function loadTopProducts(limit = 5) {
-  const now = new Date()
-  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10)
-
-  // This month's non-hidden order ids first (keeps the join small).
+export async function loadTopProducts(from, to) {
   const { data: orders, error: ordersErr } = await supabase
     .from('orders')
     .select('id')
     .eq('hidden', false)
-    .gte('order_date', startOfMonth)
+    .gte('order_date', from)
+    .lte('order_date', to)
   if (ordersErr) throw ordersErr
   const ids = (orders || []).map((o) => o.id)
-  if (ids.length === 0) return { top: [], otherQty: 0, totalQty: 0 }
+  if (ids.length === 0) return { byQty: [], byOrders: [], totalQty: 0, totalOrders: 0 }
 
   // Supabase/PostgREST .in() has a practical size limit — chunk if needed.
   const chunks = []
   for (let i = 0; i < ids.length; i += 500) chunks.push(ids.slice(i, i + 500))
 
   const qtyByProduct = new Map()
+  const ordersByProduct = new Map() // product -> Set(order_id), for a true distinct-order count
+
   for (const chunk of chunks) {
     // eslint-disable-next-line no-await-in-loop
     const { data: items, error } = await supabase
       .from('order_items')
-      .select('product_name, qty')
+      .select('order_id, product_name, qty')
       .in('order_id', chunk)
     if (error) throw error
     for (const it of items || []) {
       const key = it.product_name
       qtyByProduct.set(key, (qtyByProduct.get(key) || 0) + (it.qty || 0))
+      if (!ordersByProduct.has(key)) ordersByProduct.set(key, new Set())
+      ordersByProduct.get(key).add(it.order_id)
     }
   }
 
-  const sorted = Array.from(qtyByProduct.entries())
-    .map(([name, qty]) => ({ name, qty }))
-    .sort((a, b) => b.qty - a.qty)
+  const names = Array.from(qtyByProduct.keys())
+  const totalQty = Array.from(qtyByProduct.values()).reduce((s, v) => s + v, 0)
+  const totalOrders = ids.length
 
-  const totalQty = sorted.reduce((s, p) => s + p.qty, 0)
-  const top = sorted.slice(0, limit)
-  const otherQty = totalQty - top.reduce((s, p) => s + p.qty, 0)
+  const rows = names.map((name) => ({
+    name,
+    qty: qtyByProduct.get(name) || 0,
+    orderCount: ordersByProduct.get(name)?.size || 0
+  }))
 
-  return { top, otherQty, totalQty }
+  const byQty = [...rows].sort((a, b) => b.qty - a.qty)
+  const byOrders = [...rows].sort((a, b) => b.orderCount - a.orderCount)
+
+  return { byQty, byOrders, totalQty, totalOrders }
 }
 
 // ---------------------------------------------------------------------------
