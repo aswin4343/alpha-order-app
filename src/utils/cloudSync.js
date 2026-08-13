@@ -296,6 +296,28 @@ export function combinedScore({ orders, newShops, visits, quantity }) {
  * Pull everything the admin dashboard needs in a few queries, then aggregate
  * in JS. Returns per-rep stats for today/week/month + recent activity.
  */
+// Supabase/PostgREST caps any single response at 1000 rows by default
+// (server-side, regardless of a client .limit() above that) — this silently
+// truncates instead of erroring, which is exactly what caused the Admin
+// Dashboard to freeze at "1000 orders" even as more came in. This helper
+// pages through in 1000-row chunks so callers always get the true full set,
+// matching the pattern already used for fetchAllCloudProducts.
+async function fetchAllPaged(table, selectCols, applyFilters, pageSize = 1000) {
+  let from = 0
+  let all = []
+  // eslint-disable-next-line no-constant-condition
+  while (true) {
+    let q = supabase.from(table).select(selectCols).range(from, from + pageSize - 1)
+    if (applyFilters) q = applyFilters(q)
+    const { data, error } = await q
+    if (error) throw error
+    all = all.concat(data || [])
+    if (!data || data.length < pageSize) break
+    from += pageSize
+  }
+  return all
+}
+
 export async function loadAdminDashboard() {
   const now = new Date()
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
@@ -304,42 +326,33 @@ export async function loadAdminDashboard() {
   startOfWeek.setDate(startOfToday.getDate() - dow)
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
 
-  const [profilesRes, ordersRes, visitsRes, custRes, deliveriesRes] = await Promise.all([
+  const [profilesRes, orders, visits, customers, deliveries] = await Promise.all([
     supabase.from('profiles').select('id, full_name, role, route').eq('role', 'salesperson'),
-    supabase
-      .from('orders')
-      .select('id, sales_rep_id, shop_name, total_quantity, total_value, billing_status, created_at')
-      .eq('hidden', false)
-      .gte('created_at', startOfMonth.toISOString())
-      .order('created_at', { ascending: false })
-      .limit(5000),
-    supabase
-      .from('visits')
-      .select('id, sales_rep_id, created_at')
-      .gte('created_at', startOfMonth.toISOString())
-      .order('created_at', { ascending: false })
-      .limit(5000),
-    supabase
-      .from('customers')
-      .select('id, created_by, created_at, is_rep_created')
-      .gte('created_at', startOfMonth.toISOString())
-      .order('created_at', { ascending: false })
-      .limit(5000),
+    fetchAllPaged(
+      'orders',
+      'id, sales_rep_id, shop_name, total_quantity, total_value, billing_status, created_at',
+      (q) => q.eq('hidden', false).gte('created_at', startOfMonth.toISOString()).order('created_at', { ascending: false })
+    ),
+    fetchAllPaged(
+      'visits',
+      'id, sales_rep_id, created_at',
+      (q) => q.gte('created_at', startOfMonth.toISOString()).order('created_at', { ascending: false })
+    ),
+    fetchAllPaged(
+      'customers',
+      'id, created_by, created_at, is_rep_created',
+      (q) => q.gte('created_at', startOfMonth.toISOString()).order('created_at', { ascending: false })
+    ),
     // Delivery-stage rows for this month, used to build the Order Status
     // pipeline (QC pending/in progress, ready for delivery, delivered).
-    supabase
-      .from('deliveries')
-      .select('id, order_id, status, qc_status, created_at')
-      .gte('created_at', startOfMonth.toISOString())
-      .neq('status', 'cancelled')
-      .limit(5000)
+    fetchAllPaged(
+      'deliveries',
+      'id, order_id, status, qc_status, created_at',
+      (q) => q.gte('created_at', startOfMonth.toISOString()).neq('status', 'cancelled')
+    )
   ])
 
   const profiles = profilesRes.data || []
-  const orders = ordersRes.data || []
-  const visits = visitsRes.data || []
-  const customers = custRes.data || []
-  const deliveries = deliveriesRes.data || []
 
   const inRange = (iso, start) => new Date(iso) >= start
 
@@ -457,13 +470,11 @@ export async function loadSalesTrend(from, to) {
   const end = new Date(`${to}T00:00:00`)
   const dayCount = Math.max(1, Math.round((end - start) / 86400000) + 1)
 
-  const { data, error } = await supabase
-    .from('orders')
-    .select('order_date, total_value')
-    .eq('hidden', false)
-    .gte('order_date', from)
-    .lte('order_date', to)
-  if (error) throw error
+  const data = await fetchAllPaged(
+    'orders',
+    'order_date, total_value',
+    (q) => q.eq('hidden', false).gte('order_date', from).lte('order_date', to)
+  )
 
   // Build one bucket per day in the window, even days with zero orders, so
   // the line chart has a continuous, evenly-spaced x-axis. Capped at a
@@ -494,17 +505,17 @@ export async function loadSalesTrend(from, to) {
  * `from`/`to` are 'YYYY-MM-DD' strings, inclusive.
  */
 export async function loadTopProducts(from, to) {
-  const { data: orders, error: ordersErr } = await supabase
-    .from('orders')
-    .select('id')
-    .eq('hidden', false)
-    .gte('order_date', from)
-    .lte('order_date', to)
-  if (ordersErr) throw ordersErr
-  const ids = (orders || []).map((o) => o.id)
+  const orders = await fetchAllPaged(
+    'orders',
+    'id',
+    (q) => q.eq('hidden', false).gte('order_date', from).lte('order_date', to)
+  )
+  const ids = orders.map((o) => o.id)
   if (ids.length === 0) return { byQty: [], byOrders: [], totalQty: 0, totalOrders: 0 }
 
-  // Supabase/PostgREST .in() has a practical size limit — chunk if needed.
+  // Supabase/PostgREST .in() has a practical size limit — chunk the order ids
+  // AND page each chunk's result (an order can have many line items, so even
+  // 500 orders' worth of items could exceed the 1000-row response cap).
   const chunks = []
   for (let i = 0; i < ids.length; i += 500) chunks.push(ids.slice(i, i + 500))
 
@@ -513,12 +524,12 @@ export async function loadTopProducts(from, to) {
 
   for (const chunk of chunks) {
     // eslint-disable-next-line no-await-in-loop
-    const { data: items, error } = await supabase
-      .from('order_items')
-      .select('order_id, product_name, qty')
-      .in('order_id', chunk)
-    if (error) throw error
-    for (const it of items || []) {
+    const items = await fetchAllPaged(
+      'order_items',
+      'order_id, product_name, qty',
+      (q) => q.in('order_id', chunk)
+    )
+    for (const it of items) {
       const key = it.product_name
       qtyByProduct.set(key, (qtyByProduct.get(key) || 0) + (it.qty || 0))
       if (!ordersByProduct.has(key)) ordersByProduct.set(key, new Set())
@@ -787,22 +798,21 @@ export async function markAnnouncementRead(recipientId) {
 
 /** Delivery Admin: dashboard counts + all deliveries (optionally by route). */
 export async function loadDeliveryAdmin(routeFilter, dateFilter) {
-  let q = supabase
-    .from('deliveries')
-    .select('id, order_id, shop_name, route, sales_rep_name, assigned_to, assigned_at, status, qc_status, packed_by, created_at')
-    .neq('status', 'cancelled') // hide soft-deleted duplicate deliveries
-    .order('created_at', { ascending: false })
-    .limit(1500) // safety cap so the dashboard never tries to load everything
-  if (routeFilter) q = q.eq('route', routeFilter)
-  if (dateFilter) {
-    // dateFilter is a 'YYYY-MM-DD' string — show only that day's deliveries.
-    const start = new Date(`${dateFilter}T00:00:00`)
-    const end = new Date(`${dateFilter}T23:59:59.999`)
-    q = q.gte('created_at', start.toISOString()).lte('created_at', end.toISOString())
-  }
-  const { data, error } = await q
-  if (error) throw error
-  const deliveries = data || []
+  const deliveries = await fetchAllPaged(
+    'deliveries',
+    'id, order_id, shop_name, route, sales_rep_name, assigned_to, assigned_at, status, qc_status, packed_by, created_at',
+    (q) => {
+      q = q.neq('status', 'cancelled').order('created_at', { ascending: false }) // hide soft-deleted duplicate deliveries
+      if (routeFilter) q = q.eq('route', routeFilter)
+      if (dateFilter) {
+        // dateFilter is a 'YYYY-MM-DD' string — show only that day's deliveries.
+        const start = new Date(`${dateFilter}T00:00:00`)
+        const end = new Date(`${dateFilter}T23:59:59.999`)
+        q = q.gte('created_at', start.toISOString()).lte('created_at', end.toISOString())
+      }
+      return q
+    }
+  )
 
   // Distinct routes for the filter dropdown.
   const routes = Array.from(new Set(deliveries.map((d) => d.route).filter(Boolean))).sort()
@@ -1290,17 +1300,14 @@ export async function buildSalesReport(from, to) {
     return q
   }
 
-  const [profilesRes, ordersRes, visitsRes, custRes] = await Promise.all([
+  const [profilesRes, orders, visits, customers] = await Promise.all([
     supabase.from('profiles').select('id, full_name').eq('role', 'salesperson'),
-    withRange(supabase.from('orders').select('id, sales_rep_id, total_quantity, total_value, shop_name, created_at').eq('hidden', false)),
-    withRange(supabase.from('visits').select('id, sales_rep_id, created_at')),
-    withRange(supabase.from('customers').select('id, created_by, is_rep_created, created_at'))
+    fetchAllPaged('orders', 'id, sales_rep_id, total_quantity, total_value, shop_name, created_at', (q) => withRange(q.eq('hidden', false))),
+    fetchAllPaged('visits', 'id, sales_rep_id, created_at', (q) => withRange(q)),
+    fetchAllPaged('customers', 'id, created_by, is_rep_created, created_at', (q) => withRange(q))
   ])
 
   const profiles = profilesRes.data || []
-  const orders = ordersRes.data || []
-  const visits = visitsRes.data || []
-  const customers = custRes.data || []
 
   const reps = profiles.map((p) => {
     const o = orders.filter((x) => x.sales_rep_id === p.id)
@@ -1330,21 +1337,20 @@ export async function buildDeliveryReport(from, to) {
     return q
   }
 
-  const [staffRes, delRes, punchRes] = await Promise.all([
+  const [staffRes, delsRaw, punches] = await Promise.all([
     supabase.from('profiles').select('id, full_name').eq('role', 'delivery_rep'),
-    withRange(
-      supabase.from('deliveries').select('id, assigned_to, status, completed_at').neq('status', 'cancelled'),
-      'completed_at'
+    fetchAllPaged(
+      'deliveries', 'id, assigned_to, status, completed_at',
+      (q) => withRange(q.neq('status', 'cancelled'), 'completed_at')
     ),
-    withRange(
-      supabase.from('delivery_punches').select('rep_id, person_name, punch_in, punch_out'),
-      'punch_in'
+    fetchAllPaged(
+      'delivery_punches', 'rep_id, person_name, punch_in, punch_out',
+      (q) => withRange(q, 'punch_in')
     )
   ])
 
   const staff = staffRes.data || []
-  const dels = (delRes.data || []).filter((d) => d.completed_at) // only completed in range
-  const punches = punchRes.data || []
+  const dels = delsRaw.filter((d) => d.completed_at) // only completed in range
 
   const rows = staff.map((s) => {
     const mine = dels.filter((d) => d.assigned_to === s.id)
@@ -1485,24 +1491,23 @@ export async function loadBillingReps() {
 
 /** Pending orders for one rep (filtered by delivery type, date, express route). */
 export async function loadBillingOrders(repId, deliveryType, status = 'pending', dateStr = null, expressRoute = null) {
-  let q = supabase
-    .from('orders')
-    .select('id, shop_name, route, total_quantity, created_at, order_date, sales_rep_id')
-    .eq('sales_rep_id', repId)
-    .eq('billing_status', status)
-    .eq('hidden', false)
-    .order('created_at', { ascending: false })
-  // Filter by the chosen order date (order_date) when provided.
-  if (dateStr) {
-    q = q.eq('order_date', dateStr)
-  }
-  // For verified without an explicit date, limit to today's verifications.
-  if (status === 'verified' && !dateStr) {
-    const startToday = new Date(); startToday.setHours(0, 0, 0, 0)
-    q = q.gte('billing_verified_at', startToday.toISOString())
-  }
-  const { data, error } = await q
-  if (error) throw error
+  const data = await fetchAllPaged(
+    'orders',
+    'id, shop_name, route, total_quantity, created_at, order_date, sales_rep_id',
+    (q) => {
+      q = q.eq('sales_rep_id', repId).eq('billing_status', status).eq('hidden', false).order('created_at', { ascending: false })
+      // Filter by the chosen order date (order_date) when provided.
+      if (dateStr) {
+        q = q.eq('order_date', dateStr)
+      }
+      // For verified without an explicit date, limit to today's verifications.
+      if (status === 'verified' && !dateStr) {
+        const startToday = new Date(); startToday.setHours(0, 0, 0, 0)
+        q = q.gte('billing_verified_at', startToday.toISOString())
+      }
+      return q
+    }
+  )
   let rows = data || []
   if (deliveryType === 'EXP') rows = rows.filter((o) => (o.route || '').toUpperCase().startsWith('EXP'))
   if (deliveryType === 'STD') rows = rows.filter((o) => (o.route || '').toUpperCase().startsWith('STD'))
@@ -2095,33 +2100,28 @@ export function resolvePeriodRange(mode, dateStr) {
 
 /** Shop Visits list for the drill-down (real visit rows, not a derived count). */
 export async function loadVisitsList(userId, start, end, route = null) {
-  let q = supabase
-    .from('visits')
-    .select('id, shop_name, route, visit_status, custom_remark, created_at, customer_id')
-    .eq('sales_rep_id', userId)
-    .gte('created_at', start.toISOString())
-    .lte('created_at', end.toISOString())
-    .order('created_at', { ascending: false })
-  if (route) q = q.eq('route', route)
-  const { data, error } = await q
-  if (error) throw error
-  return data || []
+  return await fetchAllPaged(
+    'visits',
+    'id, shop_name, route, visit_status, custom_remark, created_at, customer_id',
+    (q) => {
+      q = q.eq('sales_rep_id', userId).gte('created_at', start.toISOString()).lte('created_at', end.toISOString()).order('created_at', { ascending: false })
+      if (route) q = q.eq('route', route)
+      return q
+    }
+  )
 }
 
 /** Orders Taken list for the drill-down (order header + item count/qty/value). */
 export async function loadOrdersList(userId, start, end, route = null) {
-  let q = supabase
-    .from('orders')
-    .select('id, shop_name, route, total_products, total_quantity, total_value, created_at, billing_status')
-    .eq('sales_rep_id', userId)
-    .eq('hidden', false)
-    .gte('created_at', start.toISOString())
-    .lte('created_at', end.toISOString())
-    .order('created_at', { ascending: false })
-  if (route) q = q.eq('route', route)
-  const { data, error } = await q
-  if (error) throw error
-  return data || []
+  return await fetchAllPaged(
+    'orders',
+    'id, shop_name, route, total_products, total_quantity, total_value, created_at, billing_status',
+    (q) => {
+      q = q.eq('sales_rep_id', userId).eq('hidden', false).gte('created_at', start.toISOString()).lte('created_at', end.toISOString()).order('created_at', { ascending: false })
+      if (route) q = q.eq('route', route)
+      return q
+    }
+  )
 }
 
 /**
@@ -2158,18 +2158,15 @@ export async function loadOrderSummary(orderId) {
 /** New Shops Added list — customers this rep created in the period. No phone
  * (customer phone is intentionally never stored in the cloud — device-only). */
 export async function loadNewShopsList(userId, start, end, route = null) {
-  let q = supabase
-    .from('customers')
-    .select('id, shop_name, route, category, created_at')
-    .eq('created_by', userId)
-    .eq('is_rep_created', true)
-    .gte('created_at', start.toISOString())
-    .lte('created_at', end.toISOString())
-    .order('created_at', { ascending: false })
-  if (route) q = q.eq('route', route)
-  const { data, error } = await q
-  if (error) throw error
-  return data || []
+  return await fetchAllPaged(
+    'customers',
+    'id, shop_name, route, category, created_at',
+    (q) => {
+      q = q.eq('created_by', userId).eq('is_rep_created', true).gte('created_at', start.toISOString()).lte('created_at', end.toISOString()).order('created_at', { ascending: false })
+      if (route) q = q.eq('route', route)
+      return q
+    }
+  )
 }
 
 /**
