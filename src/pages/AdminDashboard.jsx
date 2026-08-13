@@ -1,13 +1,26 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
-import { loadAdminDashboard } from '../utils/cloudSync.js'
+import { loadAdminDashboard, loadSalesTrend, loadTopProducts } from '../utils/cloudSync.js'
 import ReportPanel from '../components/ReportPanel.jsx'
+import SalesTrendChart from '../components/SalesTrendChart.jsx'
+import TopProductsChart from '../components/TopProductsChart.jsx'
 import appIcon from '../assets/app_icon.png'
 
 const PERIODS = [
   { key: 'today', label: 'Today' },
   { key: 'week', label: 'This Week' },
   { key: 'month', label: 'This Month' }
+]
+
+// Order-status pipeline stages, in order, with the color used consistently
+// across the donut and its legend. Colors are the brand green plus a small
+// set of complementary accents so each stage reads distinctly at a glance.
+const STATUS_STAGES = [
+  { key: 'pendingBilling', label: 'Pending Billing', color: '#f59e0b' },
+  { key: 'qcPending', label: 'QC Pending', color: '#f97316' },
+  { key: 'qcInProgress', label: 'QC In Progress', color: '#3b82f6' },
+  { key: 'readyForDelivery', label: 'Ready for Delivery', color: '#8b5cf6' },
+  { key: 'delivered', label: 'Delivered', color: '#059669' }
 ]
 
 function fmtTime(iso) {
@@ -24,21 +37,81 @@ function fmtTime(iso) {
   }
 }
 
-function TeamStat({ label, value }) {
+function fmtRupee(n) {
+  return `₹${Number(n || 0).toLocaleString('en-IN')}`
+}
+
+function TeamStat({ label, value, accent }) {
   return (
-    <div className="rounded-2xl bg-white shadow-card border border-slate-100 p-3 text-center">
-      <p className="text-2xl font-bold text-brand-700">{value}</p>
+    <div className="rounded-2xl bg-white shadow-card border border-slate-100 p-3.5 text-center">
+      <p className={`text-2xl font-bold ${accent || 'text-brand-700'}`}>{value}</p>
       <p className="text-[11px] text-slate-500 mt-0.5">{label}</p>
     </div>
   )
 }
 
-export default function AdminDashboard({ onOpenProducts, onOpenSalespeople, onOpenAnnounce, onOpenVerified }) {
+// Lightweight SVG donut — no external chart library needed. Renders a ring
+// made of one arc per non-zero stage, plus a centered total.
+function StatusDonut({ stages, total }) {
+  const size = 132
+  const stroke = 16
+  const r = (size - stroke) / 2
+  const cx = size / 2
+  const cy = size / 2
+  const circumference = 2 * Math.PI * r
+
+  let offset = 0
+  const arcs = stages
+    .filter((s) => s.value > 0)
+    .map((s) => {
+      const frac = total > 0 ? s.value / total : 0
+      const dash = frac * circumference
+      const arc = (
+        <circle
+          key={s.key}
+          cx={cx}
+          cy={cy}
+          r={r}
+          fill="none"
+          stroke={s.color}
+          strokeWidth={stroke}
+          strokeDasharray={`${dash} ${circumference - dash}`}
+          strokeDashoffset={-offset}
+          transform={`rotate(-90 ${cx} ${cy})`}
+          strokeLinecap={stages.filter((x) => x.value > 0).length === 1 ? 'butt' : 'round'}
+        />
+      )
+      offset += dash
+      return arc
+    })
+
+  return (
+    <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke="#f1f5f9" strokeWidth={stroke} />
+      {arcs}
+      <text x={cx} y={cy - 3} textAnchor="middle" className="fill-slate-800" style={{ fontSize: 22, fontWeight: 700 }}>
+        {total}
+      </text>
+      <text x={cx} y={cy + 14} textAnchor="middle" className="fill-slate-400" style={{ fontSize: 9.5 }}>
+        Total
+      </text>
+    </svg>
+  )
+}
+
+
+export default function AdminDashboard({ onOpenProducts, onOpenSalespeople, onOpenAnnounce, onOpenVerified, embedded }) {
   const { profile, signOut } = useAuth()
   const [data, setData] = useState(null)
   const [error, setError] = useState(false)
   const [period, setPeriod] = useState('today')
   const [selectedRep, setSelectedRep] = useState(null)
+
+  // Sales Trend + Top Products load independently of the main dashboard call
+  // (separate, slightly heavier queries) so a slow chart never blocks the
+  // core KPIs/leaderboard from appearing.
+  const [trend, setTrend] = useState(null)
+  const [topProducts, setTopProducts] = useState(null)
 
   const refresh = async () => {
     setError(false)
@@ -49,6 +122,10 @@ export default function AdminDashboard({ onOpenProducts, onOpenSalespeople, onOp
       console.error(e)
       setError(true)
     }
+    // These are independent widgets — a failure here shouldn't blank the rest
+    // of the dashboard, so they're wrapped separately.
+    try { setTrend(await loadSalesTrend(30)) } catch (e) { console.error(e) }
+    try { setTopProducts(await loadTopProducts(5)) } catch (e) { console.error(e) }
   }
 
   useEffect(() => {
@@ -59,58 +136,102 @@ export default function AdminDashboard({ onOpenProducts, onOpenSalespeople, onOp
     ? [...data.reps].sort((a, b) => b[period].score - a[period].score)
     : []
 
-  return (
-    <div className="min-h-screen bg-slate-50 pb-10">
-      <header className="sticky top-0 z-20 bg-white border-b border-slate-100 safe-top">
-        <div className="mx-auto max-w-5xl px-3 sm:px-6 py-2.5 flex items-center gap-2">
-          <img src={appIcon} alt="" className="h-8 w-8 rounded-lg object-contain" />
-          <div className="flex-1 min-w-0">
-            <h1 className="text-base font-bold text-slate-800 leading-tight">Admin Dashboard</h1>
-            <p className="text-[11px] text-slate-400">{profile?.full_name || 'Administrator'}</p>
-          </div>
-          <button
-            onClick={refresh}
-            className="text-xs font-semibold text-brand-600 px-2.5 py-1.5 rounded-lg active:bg-brand-50"
-          >
-            Refresh
-          </button>
-          <button
-            onClick={signOut}
-            className="text-xs font-semibold text-red-600 px-2.5 py-1.5 rounded-lg active:bg-red-50"
-          >
-            Sign Out
-          </button>
+  const content = (
+    <>
+      {error && (
+        <p className="text-center text-sm text-red-500 py-6">
+          Could not load dashboard. Check your connection and try Refresh.
+        </p>
+      )}
+
+      {!data && !error && (
+        <div className="py-16 flex justify-center">
+          <div className="h-8 w-8 rounded-full border-4 border-brand-100 border-t-brand-600 animate-spin" />
         </div>
-      </header>
+      )}
 
-      <main className="mx-auto max-w-5xl px-3 sm:px-6 pt-3">
-        {error && (
-          <p className="text-center text-sm text-red-500 py-6">
-            Could not load dashboard. Check your connection and try Refresh.
-          </p>
-        )}
-
-        {!data && !error && (
-          <div className="py-16 flex justify-center">
-            <div className="h-8 w-8 rounded-full border-4 border-brand-100 border-t-brand-600 animate-spin" />
-          </div>
-        )}
-
-        {data && (
-          <>
-            {/* Team snapshot */}
-            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2 px-1">
+      {data && (
+        <>
+          <div className="flex items-center justify-between mb-2 px-1">
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
               Team — This Month
             </p>
-            <div className="grid grid-cols-4 gap-2 mb-4">
-              <TeamStat label="Orders" value={data.teamMonth.orders} />
-              <TeamStat label="Qty" value={data.teamMonth.quantity} />
-              <TeamStat label="Visits" value={data.teamMonth.visits} />
-              <TeamStat label="New Shops" value={data.teamMonth.newShops} />
-            </div>
-            <p className="text-[11px] text-slate-400 mb-4 px-1">
-              Today: {data.teamToday.orders} orders · {data.teamToday.visits} visits
+            <button
+              onClick={refresh}
+              className="text-xs font-semibold text-brand-600 px-2 py-1 rounded-lg active:bg-brand-50"
+            >
+              ↻ Refresh
+            </button>
+          </div>
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 mb-4">
+            <TeamStat label="Orders" value={data.teamMonth.orders} />
+            <TeamStat label="Revenue" value={fmtRupee(data.teamRevenue)} accent="text-brand-700" />
+            <TeamStat label="Qty" value={data.teamMonth.quantity} />
+            <TeamStat label="Visits" value={data.teamMonth.visits} />
+            <TeamStat label="New Shops" value={data.teamMonth.newShops} />
+          </div>
+          <p className="text-[11px] text-slate-400 mb-4 px-1">
+            Today: {data.teamToday.orders} orders · {data.teamToday.visits} visits
+          </p>
+
+          {/* Order Status pipeline */}
+          <div className="rounded-2xl bg-white shadow-card border border-slate-100 p-4 mb-4">
+            <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">
+              Order Status — This Month
             </p>
+            <div className="flex items-center gap-5 flex-wrap sm:flex-nowrap">
+                <div className="shrink-0 mx-auto sm:mx-0">
+                  <StatusDonut
+                    stages={STATUS_STAGES.map((s) => ({ ...s, value: data.orderStatus[s.key] }))}
+                    total={data.orderStatusTotal}
+                  />
+                </div>
+                <div className="flex-1 min-w-[180px] space-y-2 w-full">
+                  {STATUS_STAGES.map((s) => (
+                    <div key={s.key} className="flex items-center justify-between text-sm">
+                      <span className="flex items-center gap-2 text-slate-600">
+                        <span className="h-2.5 w-2.5 rounded-full shrink-0" style={{ background: s.color }} />
+                        {s.label}
+                      </span>
+                      <span className="font-semibold text-slate-800">
+                        {data.orderStatus[s.key]}
+                        <span className="text-slate-400 font-normal ml-1">
+                          ({data.orderStatusTotal > 0 ? Math.round((data.orderStatus[s.key] / data.orderStatusTotal) * 100) : 0}%)
+                        </span>
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+
+            {/* Sales Trend + Top Products — side by side on desktop */}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-2 mb-4">
+              <div className="rounded-2xl bg-white shadow-card border border-slate-100 p-4">
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">
+                  Sales Trend — Last 30 Days
+                </p>
+                {trend ? (
+                  <SalesTrendChart data={trend} />
+                ) : (
+                  <div className="py-12 flex justify-center">
+                    <div className="h-6 w-6 rounded-full border-4 border-brand-100 border-t-brand-600 animate-spin" />
+                  </div>
+                )}
+              </div>
+              <div className="rounded-2xl bg-white shadow-card border border-slate-100 p-4">
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">
+                  Top Selling Products — This Month
+                </p>
+                {topProducts ? (
+                  <TopProductsChart top={topProducts.top} otherQty={topProducts.otherQty} totalQty={topProducts.totalQty} />
+                ) : (
+                  <div className="py-12 flex justify-center">
+                    <div className="h-6 w-6 rounded-full border-4 border-brand-100 border-t-brand-600 animate-spin" />
+                  </div>
+                )}
+              </div>
+            </div>
 
             {/* Management tools — row on desktop, stacked on mobile */}
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
@@ -262,12 +383,42 @@ export default function AdminDashboard({ onOpenProducts, onOpenSalespeople, onOp
             </div>{/* end activity column */}
             </div>{/* end two-column grid */}
 
-            <p className="text-center text-[11px] text-slate-400 mt-5">
-              Score = orders×10 + new shops×15 + visits×2 + qty÷10
-            </p>
-          </>
-        )}
-      </main>
+          <p className="text-center text-[11px] text-slate-400 mt-5">
+            Score = orders×10 + new shops×15 + visits×2 + qty÷10
+          </p>
+        </>
+      )}
+    </>
+  )
+
+  if (embedded) {
+    return <div className="px-3 sm:px-6 pt-3 pb-10">{content}</div>
+  }
+
+  return (
+    <div className="min-h-screen bg-slate-50 pb-10">
+      <header className="sticky top-0 z-20 bg-white border-b border-slate-100 safe-top">
+        <div className="mx-auto max-w-5xl px-3 sm:px-6 py-2.5 flex items-center gap-2">
+          <img src={appIcon} alt="" className="h-8 w-8 rounded-lg object-contain" />
+          <div className="flex-1 min-w-0">
+            <h1 className="text-base font-bold text-slate-800 leading-tight">Admin Dashboard</h1>
+            <p className="text-[11px] text-slate-400">{profile?.full_name || 'Administrator'}</p>
+          </div>
+          <button
+            onClick={refresh}
+            className="text-xs font-semibold text-brand-600 px-2.5 py-1.5 rounded-lg active:bg-brand-50"
+          >
+            Refresh
+          </button>
+          <button
+            onClick={signOut}
+            className="text-xs font-semibold text-red-600 px-2.5 py-1.5 rounded-lg active:bg-red-50"
+          >
+            Sign Out
+          </button>
+        </div>
+      </header>
+      <main className="mx-auto max-w-5xl px-3 sm:px-6 pt-3">{content}</main>
     </div>
   )
 }

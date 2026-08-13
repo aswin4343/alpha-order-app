@@ -7,14 +7,10 @@ import OrderChangeNotifier from './components/OrderChangeNotifier.jsx'
 import SettingsPage from './pages/SettingsPage.jsx'
 import ReturnsPage from './pages/ReturnsPage.jsx'
 import PerformancePage from './pages/PerformancePage.jsx'
-import AdminDashboard from './pages/AdminDashboard.jsx'
-import ProductAdminPage from './pages/ProductAdminPage.jsx'
-import SalespeopleAdminPage from './pages/SalespeopleAdminPage.jsx'
-import AnnouncementsAdminPage from './pages/AnnouncementsAdminPage.jsx'
+import AdminApp from './pages/AdminApp.jsx'
 import AnnouncementsPage from './pages/AnnouncementsPage.jsx'
 import DeliveryAdminDashboard from './pages/DeliveryAdminDashboard.jsx'
 import BillingDashboard from './pages/BillingDashboard.jsx'
-import VerifiedOrdersPage from './pages/VerifiedOrdersPage.jsx'
 import QcDashboard from './pages/QcDashboard.jsx'
 import DeliveryRepDashboard from './pages/DeliveryRepDashboard.jsx'
 
@@ -41,20 +37,9 @@ export default function App() {
   // Logged in but profile/products still loading.
   if (!ready || !profile) return <Splash />
 
-  // Admins get the dashboard; salespeople get the ordering app.
+  // Admins get the new sidebar shell; salespeople get the ordering app.
   if (profile.role === 'admin') {
-    if (route === 'products') return <ProductAdminPage onBack={() => setRoute('order')} />
-    if (route === 'salespeople') return <SalespeopleAdminPage onBack={() => setRoute('order')} />
-    if (route === 'announce') return <AnnouncementsAdminPage onBack={() => setRoute('order')} />
-    if (route === 'verified') return <VerifiedOrdersPage onBack={() => setRoute('order')} />
-    return (
-      <AdminDashboard
-        onOpenProducts={() => setRoute('products')}
-        onOpenSalespeople={() => setRoute('salespeople')}
-        onOpenAnnounce={() => setRoute('announce')}
-        onOpenVerified={() => setRoute('verified')}
-      />
-    )
+    return <AdminApp />
   }
 
   // V4 Delivery roles — completely separate screens. Sales users never reach

@@ -304,11 +304,11 @@ export async function loadAdminDashboard() {
   startOfWeek.setDate(startOfToday.getDate() - dow)
   const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1)
 
-  const [profilesRes, ordersRes, visitsRes, custRes] = await Promise.all([
+  const [profilesRes, ordersRes, visitsRes, custRes, deliveriesRes] = await Promise.all([
     supabase.from('profiles').select('id, full_name, role, route').eq('role', 'salesperson'),
     supabase
       .from('orders')
-      .select('id, sales_rep_id, shop_name, total_quantity, created_at')
+      .select('id, sales_rep_id, shop_name, total_quantity, total_value, billing_status, created_at')
       .eq('hidden', false)
       .gte('created_at', startOfMonth.toISOString())
       .order('created_at', { ascending: false })
@@ -324,6 +324,14 @@ export async function loadAdminDashboard() {
       .select('id, created_by, created_at, is_rep_created')
       .gte('created_at', startOfMonth.toISOString())
       .order('created_at', { ascending: false })
+      .limit(5000),
+    // Delivery-stage rows for this month, used to build the Order Status
+    // pipeline (QC pending/in progress, ready for delivery, delivered).
+    supabase
+      .from('deliveries')
+      .select('id, order_id, status, qc_status, created_at')
+      .gte('created_at', startOfMonth.toISOString())
+      .neq('status', 'cancelled')
       .limit(5000)
   ])
 
@@ -331,6 +339,7 @@ export async function loadAdminDashboard() {
   const orders = ordersRes.data || []
   const visits = visitsRes.data || []
   const customers = custRes.data || []
+  const deliveries = deliveriesRes.data || []
 
   const inRange = (iso, start) => new Date(iso) >= start
 
@@ -371,6 +380,10 @@ export async function loadAdminDashboard() {
     }),
     { orders: 0, quantity: 0, visits: 0, newShops: 0 }
   )
+  // Revenue is computed directly from this month's orders (not per-rep, since
+  // it's a team total) using the same total_value already stored per order.
+  const teamRevenue = orders.reduce((s, o) => s + (o.total_value || 0), 0)
+
   const teamToday = reps.reduce(
     (acc, r) => ({
       orders: acc.orders + r.today.orders,
@@ -378,6 +391,33 @@ export async function loadAdminDashboard() {
     }),
     { orders: 0, visits: 0 }
   )
+
+  // Order Status pipeline — classify every order this month into exactly one
+  // real stage, using data that already exists (billing_status on orders,
+  // qc_status/status on its matching delivery row). No fabricated numbers.
+  const deliveryByOrder = new Map(deliveries.map((d) => [d.order_id, d]))
+  const orderStatus = { pendingBilling: 0, qcPending: 0, qcInProgress: 0, readyForDelivery: 0, delivered: 0 }
+  for (const o of orders) {
+    if (o.billing_status !== 'verified') {
+      orderStatus.pendingBilling++
+      continue
+    }
+    const d = deliveryByOrder.get(o.id)
+    if (!d) {
+      // Verified but no delivery record yet — effectively awaiting QC pickup.
+      orderStatus.qcPending++
+    } else if (d.status === 'delivered') {
+      orderStatus.delivered++
+    } else if (d.qc_status === 'qc_verified') {
+      orderStatus.readyForDelivery++
+    } else if (d.qc_status === 'qc_pending') {
+      // Distinguish "not started" from "someone opened it" using status.
+      orderStatus[d.status === 'in_progress' ? 'qcInProgress' : 'qcPending']++
+    } else {
+      orderStatus.qcInProgress++
+    }
+  }
+  const orderStatusTotal = orders.length
 
   // Recent activity feed (last 15 orders + visits merged, newest first)
   const repName = (id) => profiles.find((p) => p.id === id)?.full_name || 'Unknown'
@@ -399,7 +439,95 @@ export async function loadAdminDashboard() {
     .sort((a, b) => new Date(b.at) - new Date(a.at))
     .slice(0, 15)
 
-  return { reps, teamMonth, teamToday, activity }
+  return { reps, teamMonth, teamToday, teamRevenue, orderStatus, orderStatusTotal, activity }
+}
+
+/**
+ * Daily sales trend for the last N days (default 30): orders count + revenue
+ * per calendar day. Uses order_date (already indexed) so the query stays
+ * cheap regardless of catalogue size.
+ */
+export async function loadSalesTrend(days = 30) {
+  const end = new Date()
+  const start = new Date()
+  start.setDate(end.getDate() - (days - 1))
+  const startStr = start.toISOString().slice(0, 10)
+  const endStr = end.toISOString().slice(0, 10)
+
+  const { data, error } = await supabase
+    .from('orders')
+    .select('order_date, total_value')
+    .eq('hidden', false)
+    .gte('order_date', startStr)
+    .lte('order_date', endStr)
+  if (error) throw error
+
+  // Build one bucket per day in the window, even days with zero orders, so
+  // the line chart has a continuous, evenly-spaced x-axis.
+  const byDay = new Map()
+  for (let i = 0; i < days; i++) {
+    const d = new Date(start)
+    d.setDate(start.getDate() + i)
+    const key = d.toISOString().slice(0, 10)
+    byDay.set(key, { date: key, orders: 0, revenue: 0 })
+  }
+  for (const o of data || []) {
+    const key = o.order_date
+    const bucket = byDay.get(key)
+    if (bucket) {
+      bucket.orders += 1
+      bucket.revenue += o.total_value || 0
+    }
+  }
+  return Array.from(byDay.values())
+}
+
+/**
+ * Top-selling products this month, ranked by total quantity sold.
+ * Returns the top `limit` products plus an "Other" bucket for the remainder,
+ * so the chart stays readable no matter how large the catalogue is.
+ */
+export async function loadTopProducts(limit = 5) {
+  const now = new Date()
+  const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0, 10)
+
+  // This month's non-hidden order ids first (keeps the join small).
+  const { data: orders, error: ordersErr } = await supabase
+    .from('orders')
+    .select('id')
+    .eq('hidden', false)
+    .gte('order_date', startOfMonth)
+  if (ordersErr) throw ordersErr
+  const ids = (orders || []).map((o) => o.id)
+  if (ids.length === 0) return { top: [], otherQty: 0, totalQty: 0 }
+
+  // Supabase/PostgREST .in() has a practical size limit — chunk if needed.
+  const chunks = []
+  for (let i = 0; i < ids.length; i += 500) chunks.push(ids.slice(i, i + 500))
+
+  const qtyByProduct = new Map()
+  for (const chunk of chunks) {
+    // eslint-disable-next-line no-await-in-loop
+    const { data: items, error } = await supabase
+      .from('order_items')
+      .select('product_name, qty')
+      .in('order_id', chunk)
+    if (error) throw error
+    for (const it of items || []) {
+      const key = it.product_name
+      qtyByProduct.set(key, (qtyByProduct.get(key) || 0) + (it.qty || 0))
+    }
+  }
+
+  const sorted = Array.from(qtyByProduct.entries())
+    .map(([name, qty]) => ({ name, qty }))
+    .sort((a, b) => b.qty - a.qty)
+
+  const totalQty = sorted.reduce((s, p) => s + p.qty, 0)
+  const top = sorted.slice(0, limit)
+  const otherQty = totalQty - top.reduce((s, p) => s + p.qty, 0)
+
+  return { top, otherQty, totalQty }
 }
 
 // ---------------------------------------------------------------------------
@@ -1737,6 +1865,31 @@ export async function loadQcCounts() {
     inProgress: inProgress.count || 0,
     verifiedToday: verifiedToday.count || 0,
     returned: returned.count || 0
+  }
+}
+
+/**
+ * Lightweight delivery status counts for the Admin read-only overview.
+ * Deliberately count-only (head:true), unlike loadDeliveryAdmin which pulls
+ * full delivery rows for the real Delivery Admin working dashboard — this
+ * avoids fetching route/tracking data we don't need just to show a summary.
+ */
+export async function loadDeliveryCounts() {
+  const [pending, assigned, inProgress, delivered, partial, failed] = await Promise.all([
+    supabase.from('deliveries').select('id', { count: 'exact', head: true }).eq('status', 'pending'),
+    supabase.from('deliveries').select('id', { count: 'exact', head: true }).eq('status', 'assigned'),
+    supabase.from('deliveries').select('id', { count: 'exact', head: true }).eq('status', 'in_progress'),
+    supabase.from('deliveries').select('id', { count: 'exact', head: true }).eq('status', 'delivered'),
+    supabase.from('deliveries').select('id', { count: 'exact', head: true }).eq('status', 'partial'),
+    supabase.from('deliveries').select('id', { count: 'exact', head: true }).eq('status', 'failed')
+  ])
+  return {
+    pending: pending.count || 0,
+    assigned: assigned.count || 0,
+    inProgress: inProgress.count || 0,
+    delivered: delivered.count || 0,
+    partial: partial.count || 0,
+    failed: failed.count || 0
   }
 }
 
