@@ -1,4 +1,5 @@
 import { supabase } from './supabase.js'
+import { schemeText } from './productDiff.js'
 
 /**
  * Always fetch the CURRENT authenticated user id straight from Supabase at the
@@ -137,13 +138,26 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     return null
   }
 
-  const rows = items.map((i) => ({
-    order_id: order.id,
-    product_name: i.name,
-    qty: i.qty,
-    unit: i.unit || 'Piece',
-    is_addon: !!i.isAddon
-  }))
+  const rows = items.map((i) => {
+    // Effective price actually used for this item (same priority as totalValue
+    // above), and a human-readable scheme snapshot — captured AT ORDER TIME so
+    // future price/scheme changes never rewrite what this order summary shows.
+    const effectivePrice =
+      (i.retail != null ? i.retail : null) ??
+      (i.base != null ? i.base : null) ??
+      (i.netOverride != null ? i.netOverride : null) ??
+      null
+    const schemeSnapshot = schemeText(i)
+    return {
+      order_id: order.id,
+      product_name: i.name,
+      qty: i.qty,
+      unit: i.unit || 'Piece',
+      is_addon: !!i.isAddon,
+      unit_price: effectivePrice,
+      scheme_applied: schemeSnapshot === 'No scheme' ? null : schemeSnapshot
+    }
+  })
   const { error: itemsErr } = await supabase.from('order_items').insert(rows)
   if (itemsErr) console.error('cloud order_items insert failed', itemsErr)
 
@@ -1612,9 +1626,9 @@ export async function listActiveSalespeople() {
 /** Performance for a specific date (YYYY-MM-DD) for the logged-in rep.
  *  Order Value uses the actual selling price saved on each order (total_value),
  *  never MRP, never recalculated from the current product master. */
-export async function loadPerformanceForDate(userId, dateStr, route = null) {
-  const start = new Date(`${dateStr}T00:00:00`)
-  const end = new Date(`${dateStr}T23:59:59.999`)
+export async function loadPerformanceForDate(userId, dateStr, route = null, rangeOverride = null) {
+  const start = rangeOverride ? rangeOverride.start : new Date(`${dateStr}T00:00:00`)
+  const end = rangeOverride ? rangeOverride.end : new Date(`${dateStr}T23:59:59.999`)
 
   // Base queries (date-scoped). When a route is supplied, we additionally
   // constrain by the per-order / per-visit route column. When it is null the
@@ -1639,7 +1653,16 @@ export async function loadPerformanceForDate(userId, dateStr, route = null) {
     visitsQ = visitsQ.eq('route', route)
   }
 
-  const [ordersRes, visitsRes] = await Promise.all([ordersQ, visitsQ])
+  let newShopsQ = supabase
+    .from('customers')
+    .select('id', { count: 'exact', head: true })
+    .eq('created_by', userId)
+    .eq('is_rep_created', true)
+    .gte('created_at', start.toISOString())
+    .lte('created_at', end.toISOString())
+  if (route) newShopsQ = newShopsQ.eq('route', route)
+
+  const [ordersRes, visitsRes, newShopsRes] = await Promise.all([ordersQ, visitsQ, newShopsQ])
 
   const orders = ordersRes.data || []
   const visits = visitsRes.data || []
@@ -1653,7 +1676,8 @@ export async function loadPerformanceForDate(userId, dateStr, route = null) {
     quantity: orders.reduce((s, o) => s + (o.total_quantity || 0), 0),
     shops: uniqueShops.size,
     visits: visits.length,
-    orderValue: orders.reduce((s, o) => s + (o.total_value || 0), 0)
+    orderValue: orders.reduce((s, o) => s + (o.total_value || 0), 0),
+    newShops: newShopsRes.count || 0
   }
 }
 
@@ -1871,4 +1895,154 @@ export async function loadQcDeliveryById(deliveryId) {
     .maybeSingle()
   if (error) throw error
   return data || null
+}
+
+// ===========================================================================
+// PERFORMANCE DRILL-DOWN (Shop Visits / Orders Taken / New Shops Added)
+// All functions below are strictly scoped to the given userId (the logged-in
+// rep) — RLS enforces this server-side too, but we always filter explicitly
+// to match the existing query style and keep intent obvious.
+// ===========================================================================
+
+// Turn a period selection into a concrete [start, end] Date range.
+// mode: 'today' | 'week' | 'month' | 'date'  (date uses dateStr as the day)
+export function resolvePeriodRange(mode, dateStr) {
+  const now = new Date()
+  if (mode === 'date' && dateStr) {
+    return {
+      start: new Date(`${dateStr}T00:00:00`),
+      end: new Date(`${dateStr}T23:59:59.999`)
+    }
+  }
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
+  if (mode === 'week') {
+    const dow = (now.getDay() + 6) % 7 // Monday-start, matches loadMyPerformance
+    const start = new Date(startOfToday)
+    start.setDate(startOfToday.getDate() - dow)
+    return { start, end: now }
+  }
+  if (mode === 'month') {
+    return { start: new Date(now.getFullYear(), now.getMonth(), 1), end: now }
+  }
+  // default: today
+  return { start: startOfToday, end: now }
+}
+
+/** Shop Visits list for the drill-down (real visit rows, not a derived count). */
+export async function loadVisitsList(userId, start, end, route = null) {
+  let q = supabase
+    .from('visits')
+    .select('id, shop_name, route, visit_status, custom_remark, created_at, customer_id')
+    .eq('sales_rep_id', userId)
+    .gte('created_at', start.toISOString())
+    .lte('created_at', end.toISOString())
+    .order('created_at', { ascending: false })
+  if (route) q = q.eq('route', route)
+  const { data, error } = await q
+  if (error) throw error
+  return data || []
+}
+
+/** Orders Taken list for the drill-down (order header + item count/qty/value). */
+export async function loadOrdersList(userId, start, end, route = null) {
+  let q = supabase
+    .from('orders')
+    .select('id, shop_name, route, total_products, total_quantity, total_value, created_at, billing_status')
+    .eq('sales_rep_id', userId)
+    .eq('hidden', false)
+    .gte('created_at', start.toISOString())
+    .lte('created_at', end.toISOString())
+    .order('created_at', { ascending: false })
+  if (route) q = q.eq('route', route)
+  const { data, error } = await q
+  if (error) throw error
+  return data || []
+}
+
+/**
+ * Full order summary for one order (used by both the Orders Taken drill-down
+ * and the New Shops -> Today's Activity -> order click path).
+ * Returns product lines with qty/unit; unit_price/scheme are included ONLY
+ * when present (new orders going forward) — never fabricated for old orders.
+ */
+export async function loadOrderSummary(orderId) {
+  const { data: order, error } = await supabase
+    .from('orders')
+    .select('id, shop_name, route, sales_rep_id, total_products, total_quantity, total_value, order_date, created_at, billing_status')
+    .eq('id', orderId)
+    .maybeSingle()
+  if (error) throw error
+  if (!order) return null
+
+  const { data: items, error: itemsErr } = await supabase
+    .from('order_items')
+    .select('id, product_name, qty, unit, is_addon, unit_price, scheme_applied')
+    .eq('order_id', orderId)
+  if (itemsErr) throw itemsErr
+
+  // Rep display name (for the summary header).
+  let repName = ''
+  try {
+    const { data: prof } = await supabase.from('profiles').select('full_name').eq('id', order.sales_rep_id).maybeSingle()
+    repName = prof?.full_name || ''
+  } catch { /* non-critical */ }
+
+  return { ...order, sales_rep_name: repName, items: items || [] }
+}
+
+/** New Shops Added list — customers this rep created in the period. No phone
+ * (customer phone is intentionally never stored in the cloud — device-only). */
+export async function loadNewShopsList(userId, start, end, route = null) {
+  let q = supabase
+    .from('customers')
+    .select('id, shop_name, route, category, created_at')
+    .eq('created_by', userId)
+    .eq('is_rep_created', true)
+    .gte('created_at', start.toISOString())
+    .lte('created_at', end.toISOString())
+    .order('created_at', { ascending: false })
+  if (route) q = q.eq('route', route)
+  const { data, error } = await q
+  if (error) throw error
+  return data || []
+}
+
+/**
+ * "Today's Activity" for one customer: was this specific customer visited
+ * today, and what orders (if any) did they place today. "Today" here means
+ * the calendar day the caller passes in (usually actual today).
+ */
+export async function loadCustomerTodayActivity(customerId, userId) {
+  const startOfToday = new Date(); startOfToday.setHours(0, 0, 0, 0)
+  const endOfToday = new Date(); endOfToday.setHours(23, 59, 59, 999)
+
+  const [visitRes, ordersRes] = await Promise.all([
+    supabase
+      .from('visits')
+      .select('id, created_at, visit_status')
+      .eq('customer_id', customerId)
+      .eq('sales_rep_id', userId)
+      .gte('created_at', startOfToday.toISOString())
+      .lte('created_at', endOfToday.toISOString())
+      .order('created_at', { ascending: false })
+      .limit(1),
+    supabase
+      .from('orders')
+      .select('id, total_products, total_quantity, total_value, created_at')
+      .eq('customer_id', customerId)
+      .eq('sales_rep_id', userId)
+      .eq('hidden', false)
+      .gte('created_at', startOfToday.toISOString())
+      .lte('created_at', endOfToday.toISOString())
+      .order('created_at', { ascending: false })
+  ])
+
+  const orders = ordersRes.data || []
+  return {
+    visitedToday: (visitRes.data || []).length > 0,
+    ordersToday: orders.length,
+    orderValueToday: orders.reduce((s, o) => s + (o.total_value || 0), 0),
+    lastOrderAt: orders[0]?.created_at || null,
+    orders
+  }
 }

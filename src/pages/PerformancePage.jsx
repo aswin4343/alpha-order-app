@@ -1,28 +1,51 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
 import { useApp } from '../context/AppContext.jsx'
-import { loadMyPerformance, loadPerformanceForDate, currentUserId } from '../utils/cloudSync.js'
+import { loadMyPerformance, loadPerformanceForDate, currentUserId, resolvePeriodRange } from '../utils/cloudSync.js'
 import { BackIcon } from '../components/Icons.jsx'
+import VisitsListModal from '../components/VisitsListModal.jsx'
+import OrdersListModal from '../components/OrdersListModal.jsx'
+import NewShopsListModal from '../components/NewShopsListModal.jsx'
 
-function StatCard({ label, value, sub }) {
+function StatCard({ label, value, sub, onClick }) {
+  const clickable = !!onClick
   return (
-    <div className="rounded-2xl bg-white shadow-card border border-slate-100 p-3 text-center">
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={!clickable}
+      className={`rounded-2xl bg-white shadow-card border border-slate-100 p-3 text-center ${
+        clickable ? 'active:bg-slate-50 active:scale-[0.98] transition-transform' : ''
+      }`}
+    >
       <p className="text-2xl font-bold text-brand-700">{value}</p>
       <p className="text-[11px] text-slate-500 mt-0.5">{label}</p>
       {sub != null && <p className="text-[10px] text-slate-400">{sub}</p>}
-    </div>
+      {clickable && <p className="text-[9px] text-brand-500 mt-1 font-semibold">TAP TO VIEW</p>}
+    </button>
   )
 }
+
+const PERIOD_MODES = [
+  ['today', 'Today'],
+  ['week', 'This Week'],
+  ['month', 'This Month'],
+  ['date', 'Pick a date']
+]
 
 export default function PerformancePage({ onBack }) {
   const { user, profile } = useAuth()
   const { customers } = useApp()
   const [uid, setUid] = useState(null)
+  const [periodMode, setPeriodMode] = useState('today') // 'today' | 'week' | 'month' | 'date'
   const [dateStr, setDateStr] = useState(() => new Date().toISOString().slice(0, 10))
   const [route, setRoute] = useState('') // '' = All routes (unchanged behaviour)
   const [dayPerf, setDayPerf] = useState(null)
   const [totals, setTotals] = useState(null)
   const [error, setError] = useState(false)
+
+  // Which drill-down modal is open, if any: 'visits' | 'orders' | 'newShops' | null
+  const [openModal, setOpenModal] = useState(null)
 
   // Predefined route master — same source the New Customer form uses, so the
   // list stays consistent app-wide (no separate hardcoded list).
@@ -41,27 +64,40 @@ export default function PerformancePage({ onBack }) {
     })()
   }, [user])
 
-  // Load performance for the selected date + route (updates instantly on
-  // date OR route change). Empty route → all routes (original behaviour).
+  // The concrete date range for the current period selection. Recomputed
+  // whenever the mode or the picked date changes.
+  const range = useMemo(
+    () => resolvePeriodRange(periodMode, dateStr),
+    [periodMode, dateStr]
+  )
+
+  // Load performance for the selected period + route. Empty route → all
+  // routes (original behaviour unchanged when mode='today'/no route picked).
   useEffect(() => {
     if (!uid) return
     let active = true
     setDayPerf(null); setError(false)
     ;(async () => {
       try {
-        const p = await loadPerformanceForDate(uid, dateStr, route || null)
+        const p = await loadPerformanceForDate(uid, dateStr, route || null, range)
         if (active) setDayPerf(p)
       } catch {
         if (active) setError(true)
       }
     })()
     return () => { active = false }
-  }, [uid, dateStr, route])
+  }, [uid, dateStr, route, range])
 
   const prettyDate = new Date(`${dateStr}T00:00:00`).toLocaleDateString('en-IN', {
     weekday: 'short', day: 'numeric', month: 'short', year: 'numeric'
   })
   const isToday = dateStr === new Date().toISOString().slice(0, 10)
+
+  const periodLabel =
+    periodMode === 'today' ? "Today's performance" :
+    periodMode === 'week' ? 'This week' :
+    periodMode === 'month' ? 'This month' :
+    (isToday ? "Today's performance" : prettyDate)
 
   return (
     <div className="min-h-screen bg-slate-50 pb-10">
@@ -81,18 +117,34 @@ export default function PerformancePage({ onBack }) {
           {profile?.route && <p className="text-xs opacity-80 mt-0.5">{profile.route}</p>}
         </div>
 
-        {/* Date picker */}
+        {/* Period selector — Today / This Week / This Month / a specific date.
+            This is the SAME filter used everywhere below; no duplicate filter. */}
         <div className="rounded-2xl bg-white shadow-card border border-slate-100 p-3 mb-4">
-          <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Performance date</label>
-          <div className="flex items-center gap-2">
-            <input type="date" value={dateStr} onChange={(e) => setDateStr(e.target.value)}
-              className="flex-1 rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-brand-500" />
-            <button onClick={() => setDateStr(new Date().toISOString().slice(0,10))}
-              className={`px-3 py-2.5 rounded-xl text-sm font-semibold border ${isToday ? 'bg-brand-600 text-white border-brand-600' : 'border-slate-200 text-brand-700 hover:bg-slate-50'}`}>
-              Today
-            </button>
+          <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">Period</label>
+          <div className="flex gap-1.5 flex-wrap mb-2">
+            {PERIOD_MODES.map(([val, label]) => (
+              <button
+                key={val}
+                onClick={() => setPeriodMode(val)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-bold ${
+                  periodMode === val ? 'bg-brand-600 text-white' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-50'
+                }`}
+              >
+                {label}
+              </button>
+            ))}
           </div>
-          <p className="text-xs text-slate-500 mt-2">{isToday ? "Today's performance" : prettyDate}</p>
+          {periodMode === 'date' && (
+            <div className="flex items-center gap-2">
+              <input type="date" value={dateStr} onChange={(e) => setDateStr(e.target.value)}
+                className="flex-1 rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-brand-500" />
+              <button onClick={() => setDateStr(new Date().toISOString().slice(0,10))}
+                className={`px-3 py-2.5 rounded-xl text-sm font-semibold border ${isToday ? 'bg-brand-600 text-white border-brand-600' : 'border-slate-200 text-brand-700 hover:bg-slate-50'}`}>
+                Today
+              </button>
+            </div>
+          )}
+          <p className="text-xs text-slate-500 mt-2">{periodLabel}</p>
         </div>
 
         {/* Route filter */}
@@ -130,14 +182,17 @@ export default function PerformancePage({ onBack }) {
 
         {dayPerf && (
           <>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-4">
-              <StatCard label="Orders Taken" value={dayPerf.orders} />
-              <StatCard label="Shops Visited" value={dayPerf.shops} />
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-2">
+              <StatCard label="Orders Taken" value={dayPerf.orders} onClick={() => setOpenModal('orders')} />
+              <StatCard label="Shops Visited" value={dayPerf.shops} onClick={() => setOpenModal('visits')} />
+              <StatCard label="New Shops Added" value={dayPerf.newShops} onClick={() => setOpenModal('newShops')} />
               <StatCard label="Total Qty" value={dayPerf.quantity} />
+            </div>
+            <div className="grid grid-cols-1 gap-2 mb-4">
               <StatCard label="Order Value" value={`₹${dayPerf.orderValue.toLocaleString('en-IN')}`} />
             </div>
             <p className="text-center text-[11px] text-slate-400">
-              Order Value uses the actual selling price recorded on each order.
+              Order Value uses the actual selling price recorded on each order. Tap a highlighted card to see the details behind it.
             </p>
           </>
         )}
@@ -151,6 +206,26 @@ export default function PerformancePage({ onBack }) {
           </div>
         )}
       </main>
+
+      {openModal === 'visits' && uid && (
+        <VisitsListModal
+          userId={uid} start={range.start} end={range.end} route={route}
+          periodLabel={periodLabel} onClose={() => setOpenModal(null)}
+        />
+      )}
+      {openModal === 'orders' && uid && (
+        <OrdersListModal
+          userId={uid} start={range.start} end={range.end} route={route}
+          periodLabel={periodLabel} onClose={() => setOpenModal(null)}
+        />
+      )}
+      {openModal === 'newShops' && uid && (
+        <NewShopsListModal
+          userId={uid} start={range.start} end={range.end} route={route}
+          periodLabel={periodLabel} onClose={() => setOpenModal(null)}
+        />
+      )}
     </div>
   )
 }
+
