@@ -242,9 +242,20 @@ export async function loadPreviousOrders(shopName, route) {
 // ===========================================================================
 
 function visitKey(row) {
-  const day = (row.created_at || '').slice(0, 10)
+  // Convert to the IST calendar date, not the raw UTC date — an order placed
+  // at 12:30 AM IST is UTC-previous-day, and naively slicing the ISO string
+  // would silently group it under the wrong day.
+  const day = istDateStr(row.created_at)
   const who = row.customer_id || `${(row.shop_name || '').trim().toUpperCase()}::${(row.route || '').trim().toUpperCase()}`
   return `${who}::${day}`
+}
+
+/** ISO timestamp -> 'YYYY-MM-DD' in Asia/Kolkata (IST, UTC+5:30). */
+function istDateStr(iso) {
+  if (!iso) return ''
+  const d = new Date(iso)
+  // en-CA gives YYYY-MM-DD directly, formatted in the target timezone.
+  return d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
 }
 
 /** Unique shop-day keys from orders alone — this IS "Orders Taken". */
@@ -257,6 +268,38 @@ export function getUniqueShopVisits(orders, noOrderVisits) {
   const keys = getUniqueOrderVisits(orders)
   for (const v of noOrderVisits || []) keys.add(visitKey(v))
   return keys
+}
+
+/**
+ * Group order rows by shop-day (same canonical key as getUniqueOrderVisits),
+ * and reduce each group to ONE consolidated entry: the LATEST row's
+ * quantity/value (since a same-day repeat order re-submits the full item
+ * list including everything already ordered — the latest row's totals are
+ * already cumulative, not incremental), plus an isAddon flag when more than
+ * one row exists in the group. This is the single source of truth for any
+ * screen listing "orders" — dashboards, modals, Excel exports — so a shop
+ * visited twice in one day for one add-on never appears as two entries or
+ * has its value double-counted.
+ */
+export function consolidateOrdersByVisit(orders) {
+  const groups = new Map()
+  for (const o of orders || []) {
+    const key = visitKey(o)
+    const g = groups.get(key)
+    if (!g || new Date(o.created_at) > new Date(g.created_at)) {
+      groups.set(key, o)
+    }
+  }
+  const addonCounts = new Map()
+  for (const o of orders || []) {
+    const key = visitKey(o)
+    addonCounts.set(key, (addonCounts.get(key) || 0) + 1)
+  }
+  return Array.from(groups.entries()).map(([key, latest]) => ({
+    ...latest,
+    isAddon: (addonCounts.get(key) || 1) > 1,
+    addonCount: (addonCounts.get(key) || 1) - 1
+  }))
 }
 
 export async function loadMyPerformance(userId) {
@@ -295,8 +338,10 @@ export async function loadMyPerformance(userId) {
     const inR = orders.filter((o) => inRange(o.created_at, start))
     return getUniqueOrderVisits(inR).size
   }
-  const countQty = (start) =>
-    orders.filter((o) => inRange(o.created_at, start)).reduce((s, o) => s + (o.total_quantity || 0), 0)
+  const countQty = (start) => {
+    const inR = orders.filter((o) => inRange(o.created_at, start))
+    return consolidateOrdersByVisit(inR).reduce((s, o) => s + (o.total_quantity || 0), 0)
+  }
   const countVisits = (start) => {
     const oInR = orders.filter((o) => inRange(o.created_at, start))
     const vInR = visits.filter((v) => inRange(v.created_at, start))
@@ -410,7 +455,7 @@ export async function loadAdminDashboard() {
     const ns = customers.filter(
       (c) => c.created_by === repId && c.is_rep_created && inRange(c.created_at, start)
     )
-    const quantity = o.reduce((s, x) => s + (x.total_quantity || 0), 0)
+    const quantity = consolidateOrdersByVisit(o).reduce((s, x) => s + (x.total_quantity || 0), 0)
     // Canonical counts (see getUniqueShopVisits/getUniqueOrderVisits):
     // "orders" = unique shops that placed an order this period (not raw
     // order rows), "visits" = all unique shops visited, order or not.
@@ -447,9 +492,19 @@ export async function loadAdminDashboard() {
     }),
     { orders: 0, quantity: 0, visits: 0, newShops: 0 }
   )
-  // Revenue is computed directly from this month's orders (not per-rep, since
-  // it's a team total) using the same total_value already stored per order.
-  const teamRevenue = orders.reduce((s, o) => s + (o.total_value || 0), 0)
+  // Revenue is computed from this month's orders using the same total_value
+  // already stored per order — but consolidated PER REP first (visitKey does
+  // not include sales_rep_id, so consolidating the combined multi-rep list
+  // directly would incorrectly merge two different reps' same-day orders to
+  // the same shop into one entry). Grouping by rep first keeps that safe.
+  const ordersByRep = new Map()
+  for (const o of orders) {
+    if (!ordersByRep.has(o.sales_rep_id)) ordersByRep.set(o.sales_rep_id, [])
+    ordersByRep.get(o.sales_rep_id).push(o)
+  }
+  const teamRevenue = Array.from(ordersByRep.values())
+    .flatMap((repOrders) => consolidateOrdersByVisit(repOrders))
+    .reduce((s, o) => s + (o.total_value || 0), 0)
 
   const teamToday = reps.reduce(
     (acc, r) => ({
@@ -1382,8 +1437,8 @@ export async function buildSalesReport(from, to) {
     return {
       Salesperson: p.full_name || 'Unnamed',
       Orders: ordersTaken,
-      Quantity: o.reduce((s, x) => s + (x.total_quantity || 0), 0),
-      'Order Value (Rs)': o.reduce((s, x) => s + (x.total_value || 0), 0),
+      Quantity: consolidateOrdersByVisit(o).reduce((s, x) => s + (x.total_quantity || 0), 0),
+      'Order Value (Rs)': consolidateOrdersByVisit(o).reduce((s, x) => s + (x.total_value || 0), 0),
       'New Shops': ns.length,
       Visits: totalVisits
     }
@@ -1885,12 +1940,19 @@ export async function loadPerformanceForDate(userId, dateStr, route = null, rang
   const orderVisitKeys = getUniqueOrderVisits(orders)
   const allVisitKeys = getUniqueShopVisits(orders, visits)
 
+  // Consolidated (one row per shop-day, latest values) — used for quantity
+  // and order value so a same-day add-on order is never double-counted. The
+  // latest order for a shop-day already includes everything from earlier
+  // orders that same day (reps re-submit the full item list on repeat visits
+  // to a shop), so summing raw rows would overstate both qty and value.
+  const consolidated = consolidateOrdersByVisit(orders)
+
   return {
     orders: orderVisitKeys.size,
-    quantity: orders.reduce((s, o) => s + (o.total_quantity || 0), 0),
+    quantity: consolidated.reduce((s, o) => s + (o.total_quantity || 0), 0),
     shops: allVisitKeys.size,
     visits: allVisitKeys.size, // alias — "Visits" IS "Shops Visited", same canonical number
-    orderValue: orders.reduce((s, o) => s + (o.total_value || 0), 0),
+    orderValue: consolidated.reduce((s, o) => s + (o.total_value || 0), 0),
     newShops: newShopsRes.count || 0
   }
 }
@@ -2167,30 +2229,91 @@ export function resolvePeriodRange(mode, dateStr) {
   return { start: startOfToday, end: now }
 }
 
-/** Shop Visits list for the drill-down (real visit rows, not a derived count). */
+/**
+ * Shop Visits list for the drill-down — the union of shops that placed an
+ * order AND shops with an explicit "mark as visit (no order)" row, one
+ * consolidated entry per shop-day, matching exactly what the Shops Visited
+ * KPI counts (getUniqueShopVisits). Each entry is labelled ORDER, ADD-ON, or
+ * NO ORDER so it's clear why a shop appears without necessarily having an
+ * order value.
+ */
 export async function loadVisitsList(userId, start, end, route = null) {
-  return await fetchAllPaged(
-    'visits',
-    'id, shop_name, route, visit_status, custom_remark, created_at, customer_id',
-    (q) => {
-      q = q.eq('sales_rep_id', userId).gte('created_at', start.toISOString()).lte('created_at', end.toISOString()).order('created_at', { ascending: false })
-      if (route) q = q.eq('route', route)
-      return q
-    }
-  )
+  const [orders, visits] = await Promise.all([
+    fetchAllPaged(
+      'orders',
+      'id, shop_name, route, customer_id, total_value, created_at',
+      (q) => {
+        q = q.eq('sales_rep_id', userId).eq('hidden', false).gte('created_at', start.toISOString()).lte('created_at', end.toISOString())
+        if (route) q = q.eq('route', route)
+        return q
+      }
+    ),
+    fetchAllPaged(
+      'visits',
+      'id, shop_name, route, visit_status, custom_remark, created_at, customer_id',
+      (q) => {
+        q = q.eq('sales_rep_id', userId).gte('created_at', start.toISOString()).lte('created_at', end.toISOString())
+        if (route) q = q.eq('route', route)
+        return q
+      }
+    )
+  ])
+
+  // Consolidate orders to one (latest) row per shop-day first, so a shop with
+  // an add-on order doesn't appear twice, and so we know which shop-days
+  // already have an order (those take priority — an order visit is still
+  // just one visit, even if a no-order "mark as visit" row also exists that
+  // day, e.g. the rep marked no-order then came back and ordered).
+  const consolidatedOrders = consolidateOrdersByVisit(orders)
+  const orderKeys = new Set(consolidatedOrders.map(visitKey))
+
+  const orderEntries = consolidatedOrders.map((o) => ({
+    key: visitKey(o),
+    shop_name: o.shop_name,
+    route: o.route,
+    customer_id: o.customer_id,
+    created_at: o.created_at,
+    total_value: o.total_value,
+    status: o.isAddon ? 'ADD-ON' : 'ORDER'
+  }))
+
+  // No-order visits: only include shop-days that DON'T already have an order
+  // that day (an order supersedes a no-order mark for the same shop-day).
+  const seenNoOrder = new Set()
+  const noOrderEntries = []
+  for (const v of visits) {
+    const key = visitKey(v)
+    if (orderKeys.has(key) || seenNoOrder.has(key)) continue
+    seenNoOrder.add(key)
+    noOrderEntries.push({
+      key,
+      shop_name: v.shop_name,
+      route: v.route,
+      customer_id: v.customer_id,
+      created_at: v.created_at,
+      total_value: null,
+      status: 'NO ORDER',
+      remark: v.custom_remark
+    })
+  }
+
+  return [...orderEntries, ...noOrderEntries].sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
 }
 
-/** Orders Taken list for the drill-down (order header + item count/qty/value). */
+/** Orders Taken list for the drill-down (order header + item count/qty/value).
+ *  Consolidated: a shop visited twice in one day (e.g. an add-on order) shows
+ *  as ONE entry with the latest/final totals, tagged isAddon. */
 export async function loadOrdersList(userId, start, end, route = null) {
-  return await fetchAllPaged(
+  const raw = await fetchAllPaged(
     'orders',
-    'id, shop_name, route, total_products, total_quantity, total_value, created_at, billing_status',
+    'id, shop_name, route, customer_id, total_products, total_quantity, total_value, created_at, billing_status',
     (q) => {
       q = q.eq('sales_rep_id', userId).eq('hidden', false).gte('created_at', start.toISOString()).lte('created_at', end.toISOString()).order('created_at', { ascending: false })
       if (route) q = q.eq('route', route)
       return q
     }
   )
+  return consolidateOrdersByVisit(raw).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
 }
 
 /**
@@ -2269,11 +2392,15 @@ export async function loadCustomerTodayActivity(customerId, userId) {
   ])
 
   const orders = ordersRes.data || []
+  const consolidated = consolidateOrdersByVisit(orders)
   return {
     visitedToday: (visitRes.data || []).length > 0,
-    ordersToday: orders.length,
-    orderValueToday: orders.reduce((s, o) => s + (o.total_value || 0), 0),
+    // ordersToday reflects unique order-taking visits (0 or 1 for "today" scoped
+    // to one customer), not raw row count — a same-day add-on order is still
+    // one order-taking visit, consistent with Orders Taken everywhere else.
+    ordersToday: consolidated.length,
+    orderValueToday: consolidated.reduce((s, o) => s + (o.total_value || 0), 0),
     lastOrderAt: orders[0]?.created_at || null,
-    orders
+    orders: consolidated
   }
 }

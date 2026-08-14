@@ -8,21 +8,22 @@ function fmtDate(iso) {
 function fmtTime(iso) {
   try { return new Date(iso).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true }) } catch { return '' }
 }
+const rupee = (n) => `₹${Number(n || 0).toLocaleString('en-IN')}`
 
-const statusStyle = (s) => {
-  const v = (s || '').toLowerCase()
-  if (v.includes('close') || v.includes('not')) return 'text-red-700 bg-red-100'
-  return 'text-emerald-700 bg-emerald-100'
+const statusStyle = (status) => {
+  if (status === 'NO ORDER') return 'text-slate-500 bg-slate-100'
+  if (status === 'ADD-ON') return 'text-amber-700 bg-amber-100'
+  return 'text-emerald-700 bg-emerald-100' // ORDER
 }
 
 /**
- * Shop Visits drill-down: KPI -> list of visited shops -> tap a shop to
- * expand its visit details inline (status, time, remark).
+ * Shop Visits drill-down: KPI -> list of visited shops (order + no-order,
+ * one entry per shop-day) -> tap a shop to expand its visit details inline.
  */
 export default function VisitsListModal({ userId, start, end, route, periodLabel, onClose }) {
   const [visits, setVisits] = useState(null) // null = loading
   const [error, setError] = useState(false)
-  const [openId, setOpenId] = useState(null)
+  const [openKey, setOpenKey] = useState(null)
 
   useEffect(() => {
     let active = true
@@ -63,25 +64,28 @@ export default function VisitsListModal({ userId, start, end, route, periodLabel
 
           {visits && visits.map((v) => (
             <button
-              key={v.id}
-              onClick={() => setOpenId(openId === v.id ? null : v.id)}
+              key={v.key}
+              onClick={() => setOpenKey(openKey === v.key ? null : v.key)}
               className="w-full text-left rounded-2xl border border-slate-200 mb-2.5 p-3 active:bg-slate-50"
             >
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-semibold text-slate-800">{v.shop_name}</span>
-                <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${statusStyle(v.visit_status)}`}>
-                  {v.visit_status || 'Visited'}
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-semibold text-slate-800 min-w-0 truncate">{v.shop_name}</span>
+                <span className="flex items-center gap-1.5 shrink-0">
+                  {v.total_value != null && <span className="text-sm font-semibold text-slate-700">{rupee(v.total_value)}</span>}
+                  <span className={`text-[10px] font-semibold px-2 py-0.5 rounded-full ${statusStyle(v.status)}`}>
+                    {v.status}
+                  </span>
                 </span>
               </div>
               <p className="text-[11px] text-slate-400 mt-0.5">
                 {v.route || 'No route'} · {fmtDate(v.created_at)}, {fmtTime(v.created_at)}
               </p>
-              {openId === v.id && (
+              {openKey === v.key && (
                 <div className="mt-2 pt-2 border-t border-slate-100 text-[12px] text-slate-600">
-                  <div className="flex justify-between py-0.5"><span className="text-slate-400">Status</span><span>{v.visit_status || '—'}</span></div>
+                  <div className="flex justify-between py-0.5"><span className="text-slate-400">Status</span><span>{v.status}</span></div>
                   <div className="flex justify-between py-0.5"><span className="text-slate-400">Time</span><span>{fmtTime(v.created_at)}</span></div>
-                  {v.custom_remark && (
-                    <div className="mt-1.5 rounded-lg bg-slate-50 p-2 text-slate-600">{v.custom_remark}</div>
+                  {v.remark && (
+                    <div className="mt-1.5 rounded-lg bg-slate-50 p-2 text-slate-600">{v.remark}</div>
                   )}
                 </div>
               )}

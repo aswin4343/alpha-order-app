@@ -63,9 +63,14 @@ export default function OrdersListModal({ userId, start, end, route, periodLabel
               onClick={() => setOpenOrderId(o.id)}
               className="w-full text-left rounded-2xl border border-slate-200 mb-2.5 p-3 active:bg-slate-50"
             >
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-semibold text-slate-800">{o.shop_name}</span>
-                <span className="text-sm font-bold text-brand-700">{rupee(o.total_value)}</span>
+              <div className="flex items-center justify-between gap-2">
+                <span className="flex items-center gap-1.5 min-w-0">
+                  <span className="text-sm font-semibold text-slate-800 truncate">{o.shop_name}</span>
+                  {o.isAddon && (
+                    <span className="text-[9px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded shrink-0">ADD-ON</span>
+                  )}
+                </span>
+                <span className="text-sm font-bold text-brand-700 shrink-0">{rupee(o.total_value)}</span>
               </div>
               <p className="text-[11px] text-slate-400 mt-0.5">
                 {o.total_products} products · {o.total_quantity} qty · {fmtDate(o.created_at)}, {fmtTime(o.created_at)}
