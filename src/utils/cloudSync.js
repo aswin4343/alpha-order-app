@@ -218,6 +218,47 @@ export async function loadPreviousOrders(shopName, route) {
  * Personal performance counts for the logged-in rep.
  * Returns orders + visits totals for today / this week / this month.
  */
+// ===========================================================================
+// CANONICAL VISIT / ORDER-TAKEN CALCULATION — single source of truth.
+//
+// Business rule: a "visit" is a unique (sales_rep, customer, calendar_date)
+// combination — it doesn't matter whether that visit resulted in an order or
+// not, and it doesn't matter how many order rows or add-ons happened that
+// day at that shop; it is still exactly ONE visit.
+//
+//   VISITS        = unique shop-days from ORDERS (hidden=false) UNION unique
+//                    shop-days from no-order VISITS rows.
+//   ORDERS TAKEN   = unique shop-days from ORDERS alone.
+//
+// Because "Orders Taken" is built from a subset of the same underlying keys
+// that make up "Visits", `ordersTaken <= visits` holds by construction — not
+// by clamping the result afterwards. Every screen (Sales Rep Performance,
+// Admin Dashboard, Excel exports) MUST go through these two functions rather
+// than counting raw rows, so numbers can never disagree across the app.
+//
+// Falls back to `${shop_name}::${route}` as the identity key on the rare
+// row that's missing customer_id (older data), so nothing is silently
+// dropped from the count.
+// ===========================================================================
+
+function visitKey(row) {
+  const day = (row.created_at || '').slice(0, 10)
+  const who = row.customer_id || `${(row.shop_name || '').trim().toUpperCase()}::${(row.route || '').trim().toUpperCase()}`
+  return `${who}::${day}`
+}
+
+/** Unique shop-day keys from orders alone — this IS "Orders Taken". */
+export function getUniqueOrderVisits(orders) {
+  return new Set((orders || []).map(visitKey))
+}
+
+/** Unique shop-day keys from orders UNION no-order visits — this IS "Visits". */
+export function getUniqueShopVisits(orders, noOrderVisits) {
+  const keys = getUniqueOrderVisits(orders)
+  for (const v of noOrderVisits || []) keys.add(visitKey(v))
+  return keys
+}
+
 export async function loadMyPerformance(userId) {
   const now = new Date()
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate())
@@ -230,12 +271,12 @@ export async function loadMyPerformance(userId) {
   const [ordersRes, visitsRes, custRes] = await Promise.all([
     supabase
       .from('orders')
-      .select('id, total_quantity, shop_name, created_at')
+      .select('id, total_quantity, shop_name, route, customer_id, created_at')
       .eq('sales_rep_id', userId)
       .eq('hidden', false),
     supabase
       .from('visits')
-      .select('id, created_at')
+      .select('id, shop_name, route, customer_id, created_at')
       .eq('sales_rep_id', userId),
     supabase
       .from('customers')
@@ -250,12 +291,17 @@ export async function loadMyPerformance(userId) {
 
   const inRange = (iso, start) => new Date(iso) >= start
 
-  const countOrders = (start) => orders.filter((o) => inRange(o.created_at, start)).length
+  const countOrders = (start) => {
+    const inR = orders.filter((o) => inRange(o.created_at, start))
+    return getUniqueOrderVisits(inR).size
+  }
   const countQty = (start) =>
     orders.filter((o) => inRange(o.created_at, start)).reduce((s, o) => s + (o.total_quantity || 0), 0)
-  const countVisits = (start) => visits.filter((v) => inRange(v.created_at, start)).length
-  const countShops = (start) =>
-    new Set(orders.filter((o) => inRange(o.created_at, start)).map((o) => o.shop_name)).size
+  const countVisits = (start) => {
+    const oInR = orders.filter((o) => inRange(o.created_at, start))
+    const vInR = visits.filter((v) => inRange(v.created_at, start))
+    return getUniqueShopVisits(oInR, vInR).size
+  }
   const countNewCustomers = (start) =>
     customers.filter((c) => inRange(c.created_at, start)).length
 
@@ -263,7 +309,9 @@ export async function loadMyPerformance(userId) {
     orders: countOrders(start),
     quantity: countQty(start),
     visits: countVisits(start),
-    shops: countShops(start),
+    // "shops" kept as an alias of the canonical visit count (unique shops
+    // visited, order or not) — some older callers expect this field name.
+    shops: countVisits(start),
     newCustomers: countNewCustomers(start)
   })
 
@@ -271,8 +319,8 @@ export async function loadMyPerformance(userId) {
     today: block(startOfToday),
     week: block(startOfWeek),
     month: block(startOfMonth),
-    totalOrders: orders.length,
-    totalVisits: visits.length,
+    totalOrders: getUniqueOrderVisits(orders).size,
+    totalVisits: getUniqueShopVisits(orders, visits).size,
     totalNewCustomers: customers.length
   }
 }
@@ -330,12 +378,12 @@ export async function loadAdminDashboard() {
     supabase.from('profiles').select('id, full_name, role, route').eq('role', 'salesperson'),
     fetchAllPaged(
       'orders',
-      'id, sales_rep_id, shop_name, total_quantity, total_value, billing_status, created_at',
+      'id, sales_rep_id, shop_name, customer_id, total_quantity, total_value, billing_status, created_at',
       (q) => q.eq('hidden', false).gte('created_at', startOfMonth.toISOString()).order('created_at', { ascending: false })
     ),
     fetchAllPaged(
       'visits',
-      'id, sales_rep_id, created_at',
+      'id, sales_rep_id, shop_name, customer_id, created_at',
       (q) => q.gte('created_at', startOfMonth.toISOString()).order('created_at', { ascending: false })
     ),
     fetchAllPaged(
@@ -363,14 +411,20 @@ export async function loadAdminDashboard() {
       (c) => c.created_by === repId && c.is_rep_created && inRange(c.created_at, start)
     )
     const quantity = o.reduce((s, x) => s + (x.total_quantity || 0), 0)
-    const shops = new Set(o.map((x) => x.shop_name)).size
+    // Canonical counts (see getUniqueShopVisits/getUniqueOrderVisits):
+    // "orders" = unique shops that placed an order this period (not raw
+    // order rows), "visits" = all unique shops visited, order or not.
+    const orderVisitKeys = getUniqueOrderVisits(o)
+    const allVisitKeys = getUniqueShopVisits(o, v)
+    const ordersTaken = orderVisitKeys.size
+    const totalVisits = allVisitKeys.size
     return {
-      orders: o.length,
+      orders: ordersTaken,
       quantity,
-      shops,
-      visits: v.length,
+      shops: totalVisits, // alias kept for existing consumers of `.shops`
+      visits: totalVisits,
       newShops: ns.length,
-      score: combinedScore({ orders: o.length, newShops: ns.length, visits: v.length, quantity })
+      score: combinedScore({ orders: ordersTaken, newShops: ns.length, visits: totalVisits, quantity })
     }
   }
 
@@ -1302,24 +1356,36 @@ export async function buildSalesReport(from, to) {
 
   const [profilesRes, orders, visits, customers] = await Promise.all([
     supabase.from('profiles').select('id, full_name').eq('role', 'salesperson'),
-    fetchAllPaged('orders', 'id, sales_rep_id, total_quantity, total_value, shop_name, created_at', (q) => withRange(q.eq('hidden', false))),
-    fetchAllPaged('visits', 'id, sales_rep_id, created_at', (q) => withRange(q)),
+    fetchAllPaged('orders', 'id, sales_rep_id, shop_name, route, customer_id, total_quantity, total_value, created_at', (q) => withRange(q.eq('hidden', false))),
+    fetchAllPaged('visits', 'id, sales_rep_id, shop_name, route, customer_id, created_at', (q) => withRange(q)),
     fetchAllPaged('customers', 'id, created_by, is_rep_created, created_at', (q) => withRange(q))
   ])
 
   const profiles = profilesRes.data || []
 
+  // This report MUST agree with the Sales Rep Performance Dashboard and the
+  // Admin Dashboard for the same rep/period — all three go through the same
+  // canonical getUniqueOrderVisits/getUniqueShopVisits functions, so numbers
+  // can never disagree between the screen and the exported Excel file.
   const reps = profiles.map((p) => {
     const o = orders.filter((x) => x.sales_rep_id === p.id)
     const v = visits.filter((x) => x.sales_rep_id === p.id)
     const ns = customers.filter((c) => c.created_by === p.id && c.is_rep_created)
+    const ordersTaken = getUniqueOrderVisits(o).size
+    const totalVisits = getUniqueShopVisits(o, v).size
+    // Validation per spec §14: Visits must never be less than Orders Taken —
+    // this holds by construction here, but assert it explicitly so a future
+    // change to the key logic can't silently reintroduce the bug.
+    if (totalVisits < ordersTaken) {
+      console.error(`Sales report invariant violated for ${p.full_name}: visits(${totalVisits}) < orders(${ordersTaken})`)
+    }
     return {
       Salesperson: p.full_name || 'Unnamed',
-      Orders: o.length,
+      Orders: ordersTaken,
       Quantity: o.reduce((s, x) => s + (x.total_quantity || 0), 0),
       'Order Value (Rs)': o.reduce((s, x) => s + (x.total_value || 0), 0),
       'New Shops': ns.length,
-      Visits: v.length
+      Visits: totalVisits
     }
   })
   return reps
@@ -1780,7 +1846,7 @@ export async function loadPerformanceForDate(userId, dateStr, route = null, rang
   // queries are IDENTICAL to the original date-only behaviour.
   let ordersQ = supabase
     .from('orders')
-    .select('id, total_quantity, total_value, shop_name, created_at, route')
+    .select('id, total_quantity, total_value, shop_name, customer_id, created_at, route')
     .eq('sales_rep_id', userId)
     .eq('hidden', false)
     .gte('created_at', start.toISOString())
@@ -1788,7 +1854,7 @@ export async function loadPerformanceForDate(userId, dateStr, route = null, rang
 
   let visitsQ = supabase
     .from('visits')
-    .select('id, shop_name, created_at, route')
+    .select('id, shop_name, customer_id, created_at, route')
     .eq('sales_rep_id', userId)
     .gte('created_at', start.toISOString())
     .lte('created_at', end.toISOString())
@@ -1811,16 +1877,19 @@ export async function loadPerformanceForDate(userId, dateStr, route = null, rang
 
   const orders = ordersRes.data || []
   const visits = visitsRes.data || []
-  const uniqueShops = new Set([
-    ...orders.map((o) => (o.shop_name || '').toUpperCase()),
-    ...visits.map((v) => (v.shop_name || '').toUpperCase())
-  ])
+
+  // Canonical counts — see getUniqueShopVisits/getUniqueOrderVisits. "orders"
+  // here means UNIQUE shops that placed an order (not raw order rows — a
+  // shop with two separate orders the same day is still one "order taken"
+  // visit), and "shops" means all unique shops visited, order or not.
+  const orderVisitKeys = getUniqueOrderVisits(orders)
+  const allVisitKeys = getUniqueShopVisits(orders, visits)
 
   return {
-    orders: orders.length,
+    orders: orderVisitKeys.size,
     quantity: orders.reduce((s, o) => s + (o.total_quantity || 0), 0),
-    shops: uniqueShops.size,
-    visits: visits.length,
+    shops: allVisitKeys.size,
+    visits: allVisitKeys.size, // alias — "Visits" IS "Shops Visited", same canonical number
     orderValue: orders.reduce((s, o) => s + (o.total_value || 0), 0),
     newShops: newShopsRes.count || 0
   }
