@@ -1,6 +1,8 @@
 import { useState, useMemo, useCallback } from 'react'
 import { useApp } from '../context/AppContext.jsx'
+import { useAuth } from '../context/AuthContext.jsx'
 import { saveCloudOrder, currentUserId } from '../utils/cloudSync.js'
+import { buildAddOnMessage } from '../utils/whatsapp.js'
 import { useSearch } from '../hooks/useSearch.js'
 import { useDebounce } from '../hooks/useDebounce.js'
 import ProductCard from './ProductCard.jsx'
@@ -25,6 +27,7 @@ const rupee = (n) => `₹${Number(n || 0).toLocaleString('en-IN')}`
  */
 export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
   const { products, settings } = useApp()
+  const { profile } = useAuth()
 
   const [query, setQuery] = useState('')
   const debouncedQuery = useDebounce(query, 150)
@@ -89,21 +92,40 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
   const totalQty = items.reduce((s, i) => s + i.qty, 0)
   const totalValue = items.reduce((s, i) => s + (i.finalSellingPrice || 0) * i.qty, 0)
 
+  const [copyFailed, setCopyFailed] = useState(false)
+
   const onSubmit = async () => {
     if (items.length === 0) return
     setSaving(true)
     setSaveError('')
     try {
       const uid = (await currentUserId()) || userId
+      const addOnDate = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
       await saveCloudOrder({
         customer: { name: order.shop_name, route: order.route },
         brand: settings?.brand,
         userId: uid,
         items,
         location: null,
-        orderDate: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }),
+        orderDate: addOnDate,
         route: order.route
       })
+      // "Send Add-On" both saves AND copies — a WhatsApp-ready message
+      // listing ONLY the add-on items just sent, headed "ADD-ON", never the
+      // original order's products.
+      try {
+        const text = buildAddOnMessage({
+          brand: settings?.brand,
+          customer: { name: order.shop_name, route: order.route },
+          salesperson: profile?.full_name,
+          items,
+          orderDate: addOnDate
+        })
+        await navigator.clipboard.writeText(text)
+      } catch (e) {
+        console.error('add-on message copy failed', e)
+        setCopyFailed(true)
+      }
       setDone(true)
       onSaved?.()
     } catch (e) {
@@ -115,14 +137,34 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
   }
 
   if (done) {
+    const retryCopy = async () => {
+      try {
+        const text = buildAddOnMessage({
+          brand: settings?.brand,
+          customer: { name: order.shop_name, route: order.route },
+          salesperson: profile?.full_name,
+          items,
+          orderDate: new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+        })
+        await navigator.clipboard.writeText(text)
+        setCopyFailed(false)
+      } catch (e) {
+        console.error('retry copy failed', e)
+      }
+    }
     return (
       <div className="fixed inset-0 z-[70] bg-black/40 flex items-end sm:items-center justify-center">
         <div className="bg-white w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl p-5 text-center">
           <p className="text-lg font-bold text-brand-700 mb-1">Add-On Sent ✅</p>
           <p className="text-sm text-slate-500 mb-4">
-            {items.length} product{items.length === 1 ? '' : 's'} added to {order.shop_name}'s order.
-            The original order was not changed.
+            {items.length} product{items.length === 1 ? '' : 's'} added to {order.shop_name}'s order
+            {copyFailed ? '.' : ' — message copied, ready to paste.'} The original order was not changed.
           </p>
+          {copyFailed && (
+            <button onClick={retryCopy} className="w-full rounded-xl border border-slate-200 py-3 font-semibold text-slate-600 mb-2">
+              Copy Add-On Message
+            </button>
+          )}
           <button onClick={onClose} className="w-full rounded-xl bg-brand-600 text-white py-3 font-bold active:bg-brand-700">
             Done
           </button>

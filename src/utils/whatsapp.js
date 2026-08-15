@@ -27,6 +27,59 @@ function creditTerms(customer) {
   return `${cd} Credit`
 }
 
+/**
+ * Build a message for an ADD-ON submission only — just the newly added
+ * products, never the original order's items. Used by the Add-On flow's
+ * "Send Add-On" button, which both saves the add-on AND copies this message
+ * (mirroring how the normal order screen's Copy/Send always saves first).
+ * items: [{ name, qty, unit, slabs, retail, wholesale, base, netOverride,
+ *           retailOverridden, wholesaleOverridden, baseOverridden, netOverridden }]
+ */
+export function buildAddOnMessage({ brand, customer, salesperson, items, orderDate = null, location = null }) {
+  const L = []
+  L.push(TOP)
+  L.push('\uD83D\uDD01  *ADD-ON TO EXISTING ORDER*')
+  L.push(`\uD83C\uDFE2 *${brand || BRANDS[0]}*`)
+  L.push(BOT)
+
+  const prettyDate = orderDate
+    ? new Date(`${orderDate}T00:00:00`).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+    : null
+
+  L.push('*CUSTOMER DETAILS*')
+  L.push(RULE)
+  L.push(`*Customer:* ${customer?.name || '-'}`)
+  if (customer?.route) L.push(`*Route:* ${customer.route}`)
+  if (salesperson) L.push(`*BDE:* ${salesperson}`)
+  if (prettyDate) L.push(`*Date:* ${prettyDate}`)
+
+  L.push(RULE)
+  L.push('\u2795 *ADD-ON*')
+  L.push(RULE)
+  items.forEach((i, idx) => {
+    L.push(`${itemNumber(idx)} ${i.name}`)
+    const unit = i.unit && i.unit !== 'Piece' ? ` ${i.unit}` : ''
+    L.push(`   \u279C Qty: *${i.qty}*${unit}`)
+    if (i.retailOverridden && i.retail != null) L.push(`   \uD83D\uDCB0 Special Retail: *\u20B9${i.retail}*`)
+    if (i.wholesaleOverridden && i.wholesale != null) L.push(`   \uD83D\uDCB0 Special Wholesale: *\u20B9${i.wholesale}*`)
+    if (i.baseOverridden && i.base != null) L.push(`   \uD83D\uDCB0 Special Base Rate: *\u20B9${i.base}*`)
+    if (i.netOverridden && i.netOverride != null) L.push(`   \uD83D\uDCB0 Special Net Rate: *\u20B9${i.netOverride}*`)
+    const res = calculateScheme(i.qty, i.slabs)
+    if (res.free > 0 && res.slab) {
+      L.push(`   \uD83C\uDF81 Scheme: Buy ${res.slab.buy} Get ${res.slab.free} Free (*${res.free} Free*)`)
+    }
+  })
+
+  L.push(RULE)
+  L.push('*ADD-ON SUMMARY*')
+  L.push(RULE)
+  L.push(locationLine(location))
+  L.push(EQ)
+  L.push('\u2705 Please add these to the existing order.')
+  L.push(EQ)
+  return L.join('\n')
+}
+
 export function buildOrderMessage({ brand, customer, salesperson, items, isNewCustomer = false, location = null, orderDate = null }) {
   const L = []
   L.push(TOP)
