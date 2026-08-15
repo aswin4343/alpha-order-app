@@ -4,7 +4,8 @@ import {
   loadGroupDetail,
   saveDeliveryItem,
   completeGroup,
-  startGroup
+  startGroup,
+  cancelDeliveryGroup
 } from '../utils/cloudSync.js'
 import { buildDeliveryReport } from '../utils/whatsapp.js'
 import { uploadDeliveryPhoto } from '../utils/photoUpload.js'
@@ -46,6 +47,14 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted, pers
   useEffect(() => { billRef.current = billPhoto }, [billPhoto])
   useEffect(() => { productRef.current = productPhoto }, [productPhoto])
   const [photoError, setPhotoError] = useState('')
+
+  // "Bill Cancelled" flow: a typed reason, a confirm step, and a busy flag so
+  // the button can't be double-tapped while the RPC is in flight.
+  const [showCancel, setShowCancel] = useState(false)
+  const [cancelReason, setCancelReason] = useState('')
+  const [cancelling, setCancelling] = useState(false)
+  const [cancelError, setCancelError] = useState('')
+  const [cancelled, setCancelled] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -243,6 +252,25 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted, pers
     }
   }
 
+  const onCancelBill = async () => {
+    if (!cancelReason.trim()) {
+      setCancelError('Please enter a reason.')
+      return
+    }
+    setCancelling(true)
+    setCancelError('')
+    try {
+      await cancelDeliveryGroup(group, cancelReason)
+      setCancelled(true)
+      setShowCancel(false)
+    } catch (e) {
+      console.error(e)
+      setCancelError(e?.message || 'Could not cancel this bill. Try again.')
+    } finally {
+      setCancelling(false)
+    }
+  }
+
   const copyReport = async () => {
     try {
       await navigator.clipboard.writeText(reportText)
@@ -290,7 +318,22 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted, pers
           </div>
         )}
 
-        {completed ? (
+        {cancelled ? (
+          <div className="space-y-4">
+            <div className="rounded-2xl bg-red-50 border border-red-200 p-4 text-center">
+              <p className="text-lg font-bold text-red-700">Bill Cancelled</p>
+              <p className="text-sm text-red-600 mt-1">
+                The Delivery Admin has been notified.
+              </p>
+            </div>
+            <button
+              onClick={onCompleted}
+              className="w-full rounded-xl border border-slate-200 py-3 font-semibold text-slate-600"
+            >
+              Back to My Deliveries
+            </button>
+          </div>
+        ) : completed ? (
           <div className="space-y-4">
             <div className="rounded-2xl bg-green-50 border border-green-200 p-4 text-center">
               <p className="text-lg font-bold text-green-700">Delivery Recorded ✅</p>
@@ -321,6 +364,13 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted, pers
         ) : (
           items && (
             <>
+              <button
+                onClick={() => { setShowCancel(true); setCancelReason(''); setCancelError('') }}
+                className="w-full mb-3 rounded-xl border-2 border-red-200 text-red-600 font-bold text-sm py-2.5 active:bg-red-50"
+              >
+                🚫 Bill Cancelled
+              </button>
+
               <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2 px-1">
                 Items to deliver ({deliveredCount}/{items.length} ticked)
               </p>
@@ -450,6 +500,45 @@ export default function DeliveryDetailPage({ delivery, onBack, onCompleted, pers
         <div className="fixed bottom-24 inset-x-0 flex justify-center px-4 z-30">
           <div className="bg-slate-800 text-white text-sm px-4 py-2.5 rounded-xl shadow-lg">
             {toast}
+          </div>
+        </div>
+      )}
+
+      {showCancel && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center">
+          <div className="bg-white w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl p-5">
+            <p className="text-lg font-bold text-red-700 mb-1">Cancel this bill?</p>
+            <p className="text-sm text-slate-500 mb-4">
+              This cancels the whole order for <b>{group.shop_name}</b>. The Delivery Admin will be notified.
+              This cannot be undone from here.
+            </p>
+            <label className="block text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5">
+              Reason
+            </label>
+            <textarea
+              value={cancelReason}
+              onChange={(e) => { setCancelReason(e.target.value); setCancelError('') }}
+              rows={3}
+              placeholder="Why is this bill being cancelled?"
+              className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-red-400 mb-1"
+            />
+            {cancelError && <p className="text-xs text-red-600 mb-2">{cancelError}</p>}
+            <div className="flex gap-2 mt-3">
+              <button
+                onClick={() => setShowCancel(false)}
+                disabled={cancelling}
+                className="flex-1 rounded-xl border border-slate-200 py-3 font-semibold text-slate-600 disabled:opacity-50"
+              >
+                Keep Bill
+              </button>
+              <button
+                onClick={onCancelBill}
+                disabled={cancelling}
+                className="flex-1 rounded-xl bg-red-600 text-white py-3 font-bold active:bg-red-700 disabled:opacity-50"
+              >
+                {cancelling ? 'Cancelling…' : 'Cancel Bill'}
+              </button>
+            </div>
           </div>
         </div>
       )}

@@ -9,7 +9,8 @@ import {
   editItemQty,
   removeItem,
   replaceItem,
-  verifyOrder
+  verifyOrder,
+  loadDeletedBillingOrders
 } from '../utils/cloudSync.js'
 import appIcon from '../assets/app_icon.png'
 
@@ -81,6 +82,8 @@ export default function BillingDashboard() {
     setOpenOrder(null)
   }
 
+  const [showDeleted, setShowDeleted] = useState(false)
+
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
       <header className="sticky top-0 z-20 bg-white border-b border-slate-200">
@@ -90,6 +93,9 @@ export default function BillingDashboard() {
             <h1 className="text-base font-bold text-slate-800 leading-tight">Billing Verification</h1>
             <p className="text-[11px] text-slate-400">{profile?.full_name || 'Billing Team'}</p>
           </div>
+          <button onClick={() => setShowDeleted(true)} className="text-sm font-semibold text-slate-500 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 hidden sm:block">
+            Deleted Bills
+          </button>
           <button onClick={loadReps} className="text-sm font-semibold text-brand-700 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50">Refresh</button>
           <button onClick={signOut} className="text-sm font-semibold text-red-600 px-2">Sign Out</button>
         </div>
@@ -142,6 +148,8 @@ export default function BillingDashboard() {
           </div>
         )}
       </div>
+
+      {showDeleted && <DeletedBillsModal onClose={() => setShowDeleted(false)} />}
     </div>
   )
 }
@@ -516,6 +524,82 @@ function Modal({ title, children, onClose }) {
           <button onClick={onClose} className="h-8 w-8 rounded-full hover:bg-slate-100 text-slate-500 text-lg">×</button>
         </div>
         {children}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Read-only audit view of orders sales reps deleted after they'd already
+ * reached (or were sitting in) Billing's queue. Deliberately separate from
+ * the Pending/Verified rep-scoped panels — this is a global history list,
+ * with no verify/edit actions exposed, matching the "read-only" requirement.
+ */
+function DeletedBillsModal({ onClose }) {
+  const [orders, setOrders] = useState(null)
+  const [error, setError] = useState(false)
+  const [dateStr, setDateStr] = useState('')
+
+  const load = async () => {
+    setError(false)
+    try {
+      setOrders(await loadDeletedBillingOrders(dateStr || null))
+    } catch (e) {
+      console.error(e)
+      setError(true)
+    }
+  }
+
+  useEffect(() => { load() }, [dateStr]) // eslint-disable-line
+
+  const fmt = (iso) => iso
+    ? new Date(iso).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit', hour12: true })
+    : '—'
+  const rupee = (n) => `₹${Number(n || 0).toLocaleString('en-IN')}`
+
+  return (
+    <div className="fixed inset-0 z-[80] bg-black/40 flex items-end sm:items-center justify-center">
+      <div className="bg-white w-full sm:max-w-lg rounded-t-3xl sm:rounded-3xl max-h-[85vh] flex flex-col">
+        <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
+          <div>
+            <h2 className="font-bold text-slate-800">Deleted Bills</h2>
+            <p className="text-xs text-slate-400">Read-only — deleted by sales reps, kept for history</p>
+          </div>
+          <button onClick={onClose} className="p-2 text-slate-400" aria-label="Close">✕</button>
+        </div>
+        <div className="px-4 pt-3 flex items-center gap-2">
+          <input type="date" value={dateStr} onChange={(e) => setDateStr(e.target.value)}
+            className="flex-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs outline-none focus:border-brand-500" />
+          {dateStr && (
+            <button onClick={() => setDateStr('')} className="text-xs font-semibold text-brand-700 px-2.5 py-1.5 rounded-lg border border-slate-200">
+              All dates
+            </button>
+          )}
+        </div>
+        <div className="overflow-y-auto px-4 py-3 scroll-area">
+          {error && <p className="text-center text-sm text-red-500 py-6">Could not load.</p>}
+          {!orders && !error && (
+            <div className="py-10 flex justify-center"><div className="h-6 w-6 rounded-full border-4 border-brand-100 border-t-brand-600 animate-spin" /></div>
+          )}
+          {orders && orders.length === 0 && !error && (
+            <p className="text-center text-sm text-slate-400 py-10">No deleted bills{dateStr ? ' on this date' : ''}.</p>
+          )}
+          {orders && orders.map((o) => (
+            <div key={o.id} className="rounded-2xl border border-red-100 bg-red-50/40 mb-2.5 p-3 opacity-80">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-sm font-semibold text-slate-600 line-through truncate">{o.shop_name}</span>
+                <span className="text-[10px] font-bold text-red-700 bg-red-100 px-2 py-0.5 rounded-full shrink-0">DELETED BILL</span>
+              </div>
+              <p className="text-[11px] text-slate-400 mt-0.5">
+                {o.route || 'No route'} · {rupee(o.total_value)} · {o.total_quantity} qty
+              </p>
+              <p className="text-[11px] text-slate-400">Created {fmt(o.created_at)} · Deleted {fmt(o.deleted_at)}</p>
+              {o.delete_reason && (
+                <p className="text-[12px] text-slate-500 mt-1.5 bg-white/70 rounded-lg px-2 py-1.5">{o.delete_reason}</p>
+              )}
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   )

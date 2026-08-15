@@ -909,9 +909,14 @@ export async function markAnnouncementRead(recipientId) {
 export async function loadDeliveryAdmin(routeFilter, dateFilter) {
   const deliveries = await fetchAllPaged(
     'deliveries',
-    'id, order_id, shop_name, route, sales_rep_name, assigned_to, assigned_at, status, qc_status, packed_by, created_at',
+    'id, order_id, shop_name, route, sales_rep_name, assigned_to, assigned_at, status, qc_status, packed_by, created_at, cancel_reason, cancelled_by, cancelled_at',
     (q) => {
-      q = q.neq('status', 'cancelled').order('created_at', { ascending: false }) // hide soft-deleted duplicate deliveries
+      // Historically, status='cancelled' was also used to hide soft-deleted
+      // duplicate deliveries (no cancel_reason on those). We want the NEW
+      // "Bill Cancelled" rows (which always have a cancel_reason) to stay
+      // visible to Delivery Admin as a record, while still hiding the old
+      // duplicate-cleanup rows exactly as before.
+      q = q.or('status.neq.cancelled,cancel_reason.not.is.null').order('created_at', { ascending: false })
       if (routeFilter) q = q.eq('route', routeFilter)
       if (dateFilter) {
         // dateFilter is a 'YYYY-MM-DD' string — show only that day's deliveries.
@@ -965,7 +970,8 @@ function countByGroupStatus(groups) {
     in_progress: groups.filter((d) => d.status === 'in_progress').length,
     delivered: groups.filter((d) => d.status === 'delivered').length,
     partial: groups.filter((d) => d.status === 'partial').length,
-    failed: groups.filter((d) => d.status === 'failed').length
+    failed: groups.filter((d) => d.status === 'failed').length,
+    cancelled: groups.filter((d) => d.status === 'cancelled').length
   }
 }
 
@@ -2403,4 +2409,89 @@ export async function loadCustomerTodayActivity(customerId, userId) {
     lastOrderAt: orders[0]?.created_at || null,
     orders: consolidated
   }
+}
+
+// ===========================================================================
+// BILL CANCELLED (Delivery Rep) + Delivery Admin notifications
+// ===========================================================================
+
+/**
+ * Cancel an entire shop-day delivery group (all rows in group.deliveryIds)
+ * with a required typed reason. Server-side RPC enforces: only the assigned
+ * rep can cancel, and only while not yet delivered/cancelled — so this can't
+ * be bypassed by tampering with the client.
+ */
+export async function cancelDeliveryGroup(group, reason) {
+  const trimmed = (reason || '').trim()
+  if (!trimmed) throw new Error('A reason is required to cancel a bill.')
+  const { error } = await supabase.rpc('cancel_delivery_group', {
+    p_delivery_ids: group.deliveryIds || [group.id],
+    p_reason: trimmed
+  })
+  if (error) throw error
+}
+
+/** Delivery Admin's notification inbox (cancelled bills, newest first). */
+export async function loadDeliveryAdminNotifications() {
+  const { data, error } = await supabase
+    .from('delivery_admin_notifications')
+    .select('id, delivery_id, shop_name, route, reason, cancelled_by_name, created_at, read')
+    .order('created_at', { ascending: false })
+    .limit(100)
+  if (error) throw error
+  return data || []
+}
+
+/** Count of unread Delivery Admin notifications, for a bell badge. */
+export async function countUnreadDeliveryAdminNotifications() {
+  const { count, error } = await supabase
+    .from('delivery_admin_notifications')
+    .select('id', { count: 'exact', head: true })
+    .eq('read', false)
+  if (error) return 0
+  return count || 0
+}
+
+/** Mark one Delivery Admin notification as read. */
+export async function markDeliveryAdminNotificationRead(id) {
+  const { error } = await supabase
+    .from('delivery_admin_notifications')
+    .update({ read: true })
+    .eq('id', id)
+  if (error) throw error
+}
+
+// ===========================================================================
+// SALES REP: delete own order (any time while still billing_status='pending')
+// ===========================================================================
+
+/** Delete an order the current rep created. Server-side enforces ownership
+ *  and that it hasn't been verified by Billing yet. */
+export async function deleteOwnOrder(orderId, reason = null) {
+  const { error } = await supabase.rpc('delete_own_order', {
+    p_order_id: orderId,
+    p_reason: reason || null
+  })
+  if (error) throw error
+}
+
+/**
+ * Billing's "Deleted" tab — read-only history of orders a rep deleted after
+ * they'd already reached (or were sitting in) Billing's queue. Deliberately
+ * queries hidden=true + billing_status='deleted' (the one intentional
+ * exception to the hidden=false filter used everywhere else), grouped the
+ * same way as the Pending/Verified tabs for a consistent one-card-per-shop
+ * view.
+ */
+export async function loadDeletedBillingOrders(dateStr = null) {
+  const data = await fetchAllPaged(
+    'orders',
+    'id, shop_name, route, total_quantity, total_value, created_at, order_date, sales_rep_id, deleted_at, delete_reason',
+    (q) => {
+      q = q.eq('billing_status', 'deleted').eq('hidden', true).order('deleted_at', { ascending: false })
+      if (dateStr) q = q.eq('order_date', dateStr)
+      return q
+    }
+  )
+  return data
 }
