@@ -10,7 +10,8 @@ import {
   removeItem,
   replaceItem,
   verifyOrder,
-  loadDeletedBillingOrders
+  loadDeletedBillingOrders,
+  loadBillingCounts
 } from '../utils/cloudSync.js'
 import appIcon from '../assets/app_icon.png'
 
@@ -136,9 +137,15 @@ export default function BillingDashboard() {
         )}
 
         {openOrder && (
-          <OrderDetailPanel order={openOrder}
-            onBackToOrders={() => setOpenOrder(null)}
-            onVerified={() => { setOpenOrder(null); loadReps() }} />
+          openOrder.hasAddon ? (
+            <AddonAwareDetailPanel order={openOrder}
+              onBackToOrders={() => setOpenOrder(null)}
+              onVerified={() => { setOpenOrder(null); loadReps() }} />
+          ) : (
+            <OrderDetailPanel order={openOrder}
+              onBackToOrders={() => setOpenOrder(null)}
+              onVerified={() => { setOpenOrder(null); loadReps() }} />
+          )
         )}
 
         {!selectedRep && (
@@ -161,6 +168,7 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
   const [dateStr, setDateStr] = useState(() => new Date().toISOString().slice(0, 10)) // default today
   const [expressRoute, setExpressRoute] = useState('') // '' = all express
   const [error, setError] = useState(false)
+  const [counts, setCounts] = useState(null) // { all, express, standard, addons }
 
   const EXPRESS_ROUTES = ['EXP : VARKALA', 'EXP : ATTINGAL', 'EXP : KAZHAKUTTAM']
 
@@ -170,13 +178,19 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
     setError(false)
     if (showSpinner) setOrders(null)
     try {
-      setOrders(await loadBillingOrders(
-        rep.id,
-        type === 'All' ? undefined : type,
-        status,
-        dateStr || null,
-        type === 'EXP' && expressRoute ? expressRoute : null
-      ))
+      const effectiveStatus = type === 'Addons' ? 'addons' : status
+      const [list, badgeCounts] = await Promise.all([
+        loadBillingOrders(
+          rep.id,
+          type === 'EXP' ? 'EXP' : type === 'STD' ? 'STD' : undefined,
+          effectiveStatus,
+          dateStr || null,
+          type === 'EXP' && expressRoute ? expressRoute : null
+        ),
+        loadBillingCounts(rep.id, dateStr || null)
+      ])
+      setOrders(list)
+      setCounts(badgeCounts)
     }
     catch (e) { console.error(e); if (showSpinner) setError(true) }
   }
@@ -200,18 +214,23 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
         <button onClick={onBackToReps} className="lg:hidden h-8 w-8 rounded-full flex items-center justify-center text-slate-600 hover:bg-slate-100 text-lg">‹</button>
         <div className="min-w-0 flex-1">
           <p className="font-bold text-slate-800 truncate">{rep.name}</p>
-          <p className="text-[11px] text-slate-400">{status === 'verified' ? 'Verified today' : 'Pending orders'}</p>
+          <p className="text-[11px] text-slate-400">
+            {type === 'Addons' ? 'Add-ons pending verification' : status === 'verified' ? 'Verified today' : 'Pending orders'}
+          </p>
         </div>
       </div>
-      {/* Pending / Verified toggle */}
-      <div className="flex gap-1.5 px-3 pt-3">
-        {[['pending','Pending'],['verified','Verified']].map(([val,label]) => (
-          <button key={val} onClick={() => setStatus(val)}
-            className={`flex-1 px-3 py-1.5 rounded-lg text-xs font-bold ${status===val ? (val==='verified' ? 'bg-green-600 text-white' : 'bg-amber-500 text-white') : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}>
-            {label}
-          </button>
-        ))}
-      </div>
+      {/* Pending / Verified toggle — hidden for Add-ons (that tab is always
+          "pending add-on" by definition; verified add-ons simply drop out) */}
+      {type !== 'Addons' && (
+        <div className="flex gap-1.5 px-3 pt-3">
+          {[['pending','Pending'],['verified','Verified']].map(([val,label]) => (
+            <button key={val} onClick={() => setStatus(val)}
+              className={`flex-1 px-3 py-1.5 rounded-lg text-xs font-bold ${status===val ? (val==='verified' ? 'bg-green-600 text-white' : 'bg-amber-500 text-white') : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}>
+              {label}
+            </button>
+          ))}
+        </div>
+      )}
       {/* Order date filter (default today) */}
       <div className="px-3 pt-3 flex items-center gap-2">
         <input type="date" value={dateStr} onChange={(e) => setDateStr(e.target.value)}
@@ -219,11 +238,12 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
         <button onClick={() => setDateStr(new Date().toISOString().slice(0,10))}
           className="text-xs font-semibold text-brand-700 px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50">Today</button>
       </div>
-      <div className="flex gap-1.5 p-3 pb-2 border-b border-slate-50">
-        {['All','EXP','STD'].map((t) => (
-          <button key={t} onClick={() => { setType(t); if (t !== 'EXP') setExpressRoute('') }}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold ${type===t ? 'bg-brand-600 text-white' : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}>
-            {t==='EXP' ? 'Express' : t==='STD' ? 'Standard' : 'All'}
+      <div className="grid grid-cols-4 gap-1.5 p-3 pb-2 border-b border-slate-50">
+        {[['All','All',counts?.all], ['EXP','Express',counts?.express], ['STD','Standard',counts?.standard], ['Addons','Add-ons',counts?.addons]].map(([t,label,count]) => (
+          <button key={t} onClick={() => { setType(t); if (t !== 'EXP') setExpressRoute(''); if (t === 'Addons') setStatus('pending') }}
+            className={`px-2 py-1.5 rounded-lg text-[11px] font-semibold flex flex-col items-center gap-0.5 ${type===t ? 'bg-brand-600 text-white' : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}>
+            <span>{label}</span>
+            <span className={`text-[13px] font-extrabold ${type===t ? 'text-white' : 'text-brand-600'}`}>{count ?? '–'}</span>
           </button>
         ))}
       </div>
@@ -260,7 +280,7 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
   )
 }
 
-function OrderDetailPanel({ order, onBackToOrders, onVerified }) {
+function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, embedded }) {
   const { products } = useApp()
   const [items, setItems] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -270,11 +290,17 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified }) {
   const [reasonModal, setReasonModal] = useState(null) // {mode:'remove'|'replace', item, newProduct?}
   const [replaceItemTarget, setReplaceItemTarget] = useState(null) // item being replaced
 
+  // When singleOrderId is given (independent Original/Add-on verification),
+  // every item/verify action is scoped to JUST that one order id — never the
+  // whole group. This is what keeps the two states independent: verifying
+  // here can only ever touch this one order's billing_status.
+  const scopeIds = singleOrderId ? [singleOrderId] : (order.orderIds || [order.id])
+
   const reload = async () => {
-    try { setItems(await loadBillingOrderItemsFull(order.orderIds || order.id)) }
+    try { setItems(await loadBillingOrderItemsFull(scopeIds)) }
     catch (e) { console.error(e); setError(true) }
   }
-  useEffect(() => { setItems(null); setError(false); reload() /* eslint-disable-next-line */ }, [order.id])
+  useEffect(() => { setItems(null); setError(false); reload() /* eslint-disable-next-line */ }, [order.id, singleOrderId])
 
   const copyProduct = (name) => {
     navigator.clipboard?.writeText(name)
@@ -282,9 +308,10 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified }) {
   }
 
   const doVerify = async () => {
-    if (!window.confirm('Are you sure you want to verify this order? It will be sent to Delivery.')) return
+    const label = singleOrderId ? 'this add-on' : 'this order'
+    if (!window.confirm(`Are you sure you want to verify ${label}? It will be sent to Delivery.`)) return
     setBusy(true)
-    try { await verifyOrder(order.orderIds || order.id); onVerified() }
+    try { await verifyOrder(scopeIds); onVerified() }
     catch (e) { console.error(e); alert('Could not verify. Try again.'); setBusy(false) }
   }
 
@@ -300,14 +327,16 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified }) {
   const activeCount = items ? items.filter((i) => !i.removed).length : 0
 
   return (
-    <section className="flex flex-col w-full flex-1 bg-slate-50 overflow-y-auto">
-      <div className="sticky top-0 bg-white border-b border-slate-200 p-4 flex items-start gap-2 z-10">
-        <button onClick={onBackToOrders} className="lg:hidden h-8 w-8 rounded-full flex items-center justify-center text-slate-600 hover:bg-slate-100 text-lg mt-0.5">‹</button>
-        <div className="min-w-0 flex-1">
-          <h2 className="text-lg font-bold text-slate-800 truncate">{order.shop_name}</h2>
-          <p className="text-xs text-slate-500 mt-0.5">{order.route || 'No route'} · {fmt(order.created_at)}</p>
+    <section className={embedded ? 'w-full' : 'flex flex-col w-full flex-1 bg-slate-50 overflow-y-auto'}>
+      {!embedded && (
+        <div className="sticky top-0 bg-white border-b border-slate-200 p-4 flex items-start gap-2 z-10">
+          <button onClick={onBackToOrders} className="lg:hidden h-8 w-8 rounded-full flex items-center justify-center text-slate-600 hover:bg-slate-100 text-lg mt-0.5">‹</button>
+          <div className="min-w-0 flex-1">
+            <h2 className="text-lg font-bold text-slate-800 truncate">{order.shop_name}</h2>
+            <p className="text-xs text-slate-500 mt-0.5">{order.route || 'No route'} · {fmt(order.created_at)}</p>
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="p-4 lg:p-6 max-w-3xl w-full mx-auto flex-1 pb-6">
         {error && <p className="text-center text-sm text-red-500 py-6">Could not load items.</p>}
@@ -602,5 +631,83 @@ function DeletedBillsModal({ onClose }) {
         </div>
       </div>
     </div>
+  )
+}
+
+/**
+ * Wraps a shop-day group that has an add-on (orderCount > 1). Shows the
+ * Add-on and the Original as two INDEPENDENT sections, each with its own
+ * status label and its own verify action — reusing OrderDetailPanel (scoped
+ * via singleOrderId) unchanged for each, so every existing ticket/edit/
+ * verify interaction keeps working exactly as it does for a normal single
+ * order. Per spec: verifying one section must NEVER affect the other's
+ * billing_status, and a Verified section shows fully but at reduced opacity.
+ */
+function AddonAwareDetailPanel({ order, onBackToOrders, onVerified }) {
+  // order.addons is oldest→newest among the add-ons; per spec we treat the
+  // combined "Add-on" section as verified only once ALL add-on orders in the
+  // group are verified (mirrors how "Original" is a single order today —
+  // most groups will have exactly one add-on order in practice).
+  const original = order.original
+  const addons = order.addons
+  const addonsVerified = addons.every((a) => a.billing_status === 'verified')
+
+  const fmt = (iso) => new Date(iso).toLocaleString('en-IN', { day:'numeric', month:'short', year:'numeric', hour:'numeric', minute:'2-digit', hour12:true })
+
+  return (
+    <section className="flex flex-col w-full flex-1 bg-slate-50 overflow-y-auto">
+      <div className="sticky top-0 bg-white border-b border-slate-200 p-4 flex items-start gap-2 z-10">
+        <button onClick={onBackToOrders} className="lg:hidden h-8 w-8 rounded-full flex items-center justify-center text-slate-600 hover:bg-slate-100 text-lg mt-0.5">‹</button>
+        <div className="min-w-0 flex-1">
+          <h2 className="text-lg font-bold text-slate-800 truncate">{order.shop_name}</h2>
+          <p className="text-xs text-slate-500 mt-0.5">{order.route || 'No route'} · {addons.length} add-on{addons.length === 1 ? '' : 's'}</p>
+        </div>
+      </div>
+
+      <div className="p-4 lg:p-6 max-w-3xl w-full mx-auto flex-1 pb-6 space-y-4">
+        {/* ADD-ON section — shown first/prominently, per spec */}
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-[10px] font-extrabold text-amber-700 bg-amber-100 px-2 py-1 rounded-full">ADD-ON</span>
+            <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${addonsVerified ? 'bg-green-100 text-green-700' : 'bg-amber-50 text-amber-700'}`}>
+              {addonsVerified ? 'Verified' : 'Pending'}
+            </span>
+          </div>
+          <div className={addonsVerified ? 'opacity-60 pointer-events-none' : ''}>
+            {addons.map((a) => (
+              <OrderDetailPanel
+                key={a.id}
+                order={order}
+                singleOrderId={a.id}
+                onBackToOrders={onBackToOrders}
+                onVerified={onVerified}
+                embedded
+              />
+            ))}
+          </div>
+        </div>
+
+        <div className="border-t-2 border-dashed border-slate-200" />
+
+        {/* ORIGINAL BILL section */}
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-[10px] font-extrabold text-slate-500 bg-slate-100 px-2 py-1 rounded-full">ORIGINAL ORDER</span>
+            <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${original.billing_status === 'verified' ? 'bg-green-100 text-green-700' : 'bg-amber-50 text-amber-700'}`}>
+              {original.billing_status === 'verified' ? 'Verified' : 'Pending'}
+            </span>
+          </div>
+          <div className={original.billing_status === 'verified' ? 'opacity-60 pointer-events-none' : ''}>
+            <OrderDetailPanel
+              order={order}
+              singleOrderId={original.id}
+              onBackToOrders={onBackToOrders}
+              onVerified={onVerified}
+              embedded
+            />
+          </div>
+        </div>
+      </div>
+    </section>
   )
 }

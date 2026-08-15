@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { CloseIcon } from './Icons.jsx'
 
@@ -37,21 +37,44 @@ const inputCls = (bad) =>
  *   GSTN filled -> Email becomes MANDATORY (Save disabled until valid)
  *   GSTN empty  -> Email optional
  */
+const DRAFT_KEY = 'atl_new_customer_draft'
+
 export default function NewCustomerModal({ initialName = '', onClose, onCreated }) {
   const { categories, customers, addCustomer } = useApp()
 
-  const [f, setF] = useState({
-    name: initialName,
-    area: '',
-    route: '',
-    category: '',
-    creditDays: 'No Credit',
-    gstn: '',
-    phone: '',
-    email: ''
+  // Restore an in-progress draft (device-local only, matches how customer
+  // data already stays off the cloud in this app). Falls back to a fresh
+  // form seeded with initialName if there's no draft, or the draft is stale.
+  // This is a backstop for scenarios the auth-refresh fix doesn't cover
+  // (e.g. a mobile browser killing a backgrounded tab to save memory, or an
+  // actual page reload) — the primary fix for routine tab-switching lives in
+  // AuthContext (it no longer remounts the whole app on a token refresh).
+  const [f, setF] = useState(() => {
+    try {
+      const raw = sessionStorage.getItem(DRAFT_KEY)
+      if (raw) {
+        const draft = JSON.parse(raw)
+        if (draft && typeof draft === 'object') return { ...draft, name: draft.name || initialName }
+      }
+    } catch { /* corrupt/unavailable storage — fall through to a fresh form */ }
+    return {
+      name: initialName,
+      area: '',
+      route: '',
+      category: '',
+      creditDays: 'No Credit',
+      gstn: '',
+      phone: '',
+      email: ''
+    }
   })
   const [touched, setTouched] = useState(false)
   const [saving, setSaving] = useState(false)
+
+  // Persist the draft on every change so it survives a killed/reloaded tab.
+  useEffect(() => {
+    try { sessionStorage.setItem(DRAFT_KEY, JSON.stringify(f)) } catch { /* storage full/unavailable — non-fatal */ }
+  }, [f])
 
   // Stable updater — does not change identity between renders.
   const set = useCallback(
@@ -99,6 +122,7 @@ export default function NewCustomerModal({ initialName = '', onClose, onCreated 
         )
       }
       onCreated(rec)
+      try { sessionStorage.removeItem(DRAFT_KEY) } catch { /* non-fatal */ }
     } finally {
       setSaving(false)
     }

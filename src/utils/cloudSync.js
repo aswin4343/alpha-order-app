@@ -1617,58 +1617,153 @@ export async function loadBillingReps() {
 }
 
 /** Pending orders for one rep (filtered by delivery type, date, express route). */
+/**
+ * Billing's order list for a rep. Each shop-day "card" can bundle more than
+ * one order row (an add-on = a second, later order to the same shop the same
+ * day). Each order in a group keeps its OWN independent billing_status —
+ * verifying the original never verifies the add-on, and vice versa. `orders`
+ * on each group is sorted oldest→newest so `orders[0]` is unambiguously the
+ * ORIGINAL and any entries after it are ADD-ONS, in the order they occurred.
+ */
 export async function loadBillingOrders(repId, deliveryType, status = 'pending', dateStr = null, expressRoute = null) {
+  // NOTE: we intentionally do NOT filter by billing_status here anymore —
+  // each group needs to see every order's status to classify correctly (a
+  // group can have its original Verified while its add-on is Pending, or the
+  // reverse). Filtering happens after grouping, based on the tab selected.
   const data = await fetchAllPaged(
     'orders',
-    'id, shop_name, route, total_quantity, created_at, order_date, sales_rep_id',
+    'id, shop_name, route, total_quantity, total_value, created_at, order_date, sales_rep_id, billing_status, billing_verified_at',
     (q) => {
-      q = q.eq('sales_rep_id', repId).eq('billing_status', status).eq('hidden', false).order('created_at', { ascending: false })
-      // Filter by the chosen order date (order_date) when provided.
-      if (dateStr) {
-        q = q.eq('order_date', dateStr)
-      }
-      // For verified without an explicit date, limit to today's verifications.
-      if (status === 'verified' && !dateStr) {
-        const startToday = new Date(); startToday.setHours(0, 0, 0, 0)
-        q = q.gte('billing_verified_at', startToday.toISOString())
-      }
+      q = q.eq('sales_rep_id', repId).eq('hidden', false).order('created_at', { ascending: true }) // oldest first
+      if (dateStr) q = q.eq('order_date', dateStr)
       return q
     }
   )
   let rows = data || []
   if (deliveryType === 'EXP') rows = rows.filter((o) => (o.route || '').toUpperCase().startsWith('EXP'))
   if (deliveryType === 'STD') rows = rows.filter((o) => (o.route || '').toUpperCase().startsWith('STD'))
-  // Express route sub-filter (e.g. only "EXP : VARKALA").
   if (expressRoute) {
     const want = expressRoute.toUpperCase().replace(/\s+/g, '')
     rows = rows.filter((o) => (o.route || '').toUpperCase().replace(/\s+/g, '').includes(want))
   }
 
-  // Group into ONE card per shop per day. Multiple orders (incl. add-ons) for
-  // the same shop on the same day merge — keep all order ids for the detail view.
+  // Group into one card per shop per day. `orders` is oldest→newest, so
+  // orders[0] = ORIGINAL, orders[1..] = ADD-ONS in the order they happened.
   const groups = new Map()
   const order = []
   for (const o of rows) {
-    const day = o.order_date || (o.created_at || '').slice(0, 10) // prefer chosen order date
+    const day = o.order_date || (o.created_at || '').slice(0, 10)
     const key = `${(o.shop_name || '').toUpperCase()}__${day}`
     let g = groups.get(key)
     if (!g) {
       g = {
-        id: o.id,               // primary id (most recent, since sorted desc)
+        id: o.id,
         orderIds: [o.id],
+        orders: [o], // oldest → newest; orders[0] is the ORIGINAL
         shop_name: o.shop_name,
         route: o.route,
-        created_at: o.created_at, // latest order time (first seen = newest)
+        created_at: o.created_at,
         orderCount: 1
       }
       groups.set(key, g)
       order.push(g)
     } else {
       g.orderIds.push(o.id)
+      g.orders.push(o)
       g.orderCount += 1
+      g.created_at = o.created_at // keep the latest timestamp for display/sort
     }
   }
-  return order
+
+  // Derive each group's classification for filtering:
+  //   original      = orders[0]
+  //   addons        = orders[1..]  (each independently pending/verified)
+  //   hasAddon      = orderCount > 1
+  //   addonPending  = any add-on still billing_status='pending'
+  for (const g of order) {
+    g.original = g.orders[0]
+    g.addons = g.orders.slice(1)
+    g.hasAddon = g.orderCount > 1
+    g.addonPending = g.addons.some((a) => a.billing_status === 'pending')
+    g.addonAllVerified = g.hasAddon && g.addons.every((a) => a.billing_status === 'verified')
+  }
+
+  // Apply the requested status/tab filter AFTER classification.
+  let filtered = order
+  if (status === 'addons') {
+    // Add-ons tab: groups that have at least one add-on still pending.
+    filtered = order.filter((g) => g.hasAddon && g.addonPending)
+  } else if (status === 'pending') {
+    // Existing Pending tab: unchanged meaning — the ORIGINAL order is
+    // pending. (An add-on's own pending state is tracked separately, in the
+    // new Add-ons tab, per the "don't change Express/Standard" requirement.)
+    filtered = order.filter((g) => g.original.billing_status === 'pending')
+  } else if (status === 'verified') {
+    // Preserves the existing behaviour: with no explicit date chosen, the
+    // Verified tab defaults to today's verifications only (not all-time).
+    const startToday = new Date(); startToday.setHours(0, 0, 0, 0)
+    filtered = order.filter((g) => {
+      if (g.original.billing_status !== 'verified') return false
+      if (dateStr) return true // an explicit date was chosen — show all verified that day
+      return g.original.billing_verified_at && new Date(g.original.billing_verified_at) >= startToday
+    })
+  }
+
+  return filtered.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+}
+
+/**
+ * Count-only summary for the four Billing filter badges (All / Express /
+ * Standard / Add-ons), for a rep + date. Mirrors loadBillingOrders' grouping
+ * and classification exactly, so badge counts always match what the tabs
+ * actually show — computed from ONE shared fetch to avoid drift between the
+ * counts and the lists.
+ */
+export async function loadBillingCounts(repId, dateStr = null) {
+  const data = await fetchAllPaged(
+    'orders',
+    'id, shop_name, route, order_date, created_at, billing_status',
+    (q) => {
+      q = q.eq('sales_rep_id', repId).eq('hidden', false)
+      if (dateStr) q = q.eq('order_date', dateStr)
+      return q
+    }
+  )
+  const rows = (data || []).sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+
+  const groups = new Map()
+  for (const o of rows) {
+    const day = o.order_date || (o.created_at || '').slice(0, 10)
+    const key = `${(o.shop_name || '').toUpperCase()}__${day}`
+    let g = groups.get(key)
+    if (!g) { g = { orders: [o], route: o.route }; groups.set(key, g) }
+    else g.orders.push(o)
+  }
+
+  let all = 0, express = 0, standard = 0, addons = 0
+  for (const g of groups.values()) {
+    const original = g.orders[0]
+    const rest = g.orders.slice(1)
+    const isExpress = (g.route || '').toUpperCase().startsWith('EXP')
+    const isStandard = (g.route || '').toUpperCase().startsWith('STD')
+    const originalPending = original.billing_status === 'pending'
+    const addonPending = rest.some((a) => a.billing_status === 'pending')
+
+    // "All" = distinct verification WORK ITEMS still pending: the original
+    // (if pending) counts once, and — if it has a pending add-on — that adds
+    // ONE more (not one per add-on order row), matching "do not simply add
+    // all counts together" / "avoid double counting" from the spec.
+    if (originalPending) all++
+    if (addonPending) all++
+
+    if (originalPending) {
+      if (isExpress) express++
+      if (isStandard) standard++
+    }
+    if (addonPending) addons++
+  }
+
+  return { all, express, standard, addons }
 }
 
 /** Full item list for one order (for the billing detail view). */
@@ -2494,4 +2589,27 @@ export async function loadDeletedBillingOrders(dateStr = null) {
     }
   )
   return data
+}
+
+/**
+ * Items for a shop-day group, split by which underlying order they belong
+ * to — used ONLY by the independent Original/Add-on verification view. Does
+ * NOT merge across orders (unlike loadBillingOrderItemsFull, which is used
+ * for the normal single-verify-action detail view and merges duplicate
+ * product lines across the whole group by design — a different, existing
+ * concern this function intentionally leaves untouched).
+ */
+export async function loadBillingItemsByOrder(orderIds) {
+  const { data, error } = await supabase
+    .from('order_items')
+    .select('id, order_id, product_name, qty, unit, available, removed, change_type')
+    .in('order_id', orderIds)
+    .order('removed', { ascending: true })
+  if (error) throw error
+  const byOrder = new Map()
+  for (const it of data || []) {
+    if (!byOrder.has(it.order_id)) byOrder.set(it.order_id, [])
+    byOrder.get(it.order_id).push(it)
+  }
+  return byOrder // Map<order_id, items[]>
 }
