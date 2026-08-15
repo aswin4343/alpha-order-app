@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { loadOrdersList, deleteOwnOrder } from '../utils/cloudSync.js'
 import { CloseIcon } from './Icons.jsx'
 import OrderSummaryModal from './OrderSummaryModal.jsx'
+import AddOnFlowModal from './AddOnFlowModal.jsx'
 
 function fmtDate(iso) {
   try { return new Date(iso).toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }) } catch { return '' }
@@ -24,6 +25,7 @@ export default function OrdersListModal({ userId, start, end, route, periodLabel
   const [confirmDelete, setConfirmDelete] = useState(null) // the order pending delete confirmation
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
+  const [addOnOrder, setAddOnOrder] = useState(null) // the order being extended with an add-on
 
   const refresh = async () => {
     try {
@@ -109,16 +111,26 @@ export default function OrdersListModal({ userId, start, end, route, periodLabel
                     {o.total_products} products · {o.total_quantity} qty · {fmtDate(o.created_at)}, {fmtTime(o.created_at)}
                   </p>
                 </button>
-                {canDelete && (
+                <div className="shrink-0 flex flex-col gap-1.5 items-center">
                   <button
-                    onClick={() => setConfirmDelete(o)}
-                    className="shrink-0 h-8 w-8 rounded-lg flex items-center justify-center text-red-500 active:bg-red-50"
-                    aria-label="Delete this order"
-                    title="Delete this order"
+                    onClick={() => setAddOnOrder(o)}
+                    className="h-8 px-2.5 rounded-lg flex items-center justify-center text-[11px] font-bold text-brand-700 bg-brand-50 active:bg-brand-100"
+                    aria-label="Add products to this order"
+                    title="Add products to this order"
                   >
-                    🗑
+                    + ADD-ON
                   </button>
-                )}
+                  {canDelete && (
+                    <button
+                      onClick={() => setConfirmDelete(o)}
+                      className="h-8 w-8 rounded-lg flex items-center justify-center text-red-500 active:bg-red-50"
+                      aria-label="Delete this order"
+                      title="Delete this order"
+                    >
+                      🗑
+                    </button>
+                  )}
+                </div>
               </div>
             )
           })}
@@ -127,6 +139,15 @@ export default function OrdersListModal({ userId, start, end, route, periodLabel
 
       {openOrderId && (
         <OrderSummaryModal orderId={openOrderId} onClose={() => setOpenOrderId(null)} />
+      )}
+
+      {addOnOrder && (
+        <AddOnFlowModal
+          order={addOnOrder}
+          userId={userId}
+          onClose={() => setAddOnOrder(null)}
+          onSaved={refresh}
+        />
       )}
 
       {confirmDelete && (

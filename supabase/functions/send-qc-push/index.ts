@@ -41,33 +41,59 @@ Deno.serve(async (req) => {
 
     const body = await req.json().catch(() => ({}))
     const {
-      kind, // 'qc' (default) | 'announcement'
+      kind, // 'qc' (default) | 'announcement' | 'billing_edit'
       delivery_id, order_id, shop_name, bill_no, verified_by, route,
-      ann_title, ann_body
+      ann_title, ann_body,
+      // billing_edit-specific:
+      sales_rep_id, change_summary
     } = body || {}
 
     const isAnnouncement = kind === 'announcement'
+    const isBillingEdit = kind === 'billing_edit'
 
     // Choose recipients + message based on the kind of event.
     // - QC alert       → push to qc_team devices.
-    // - Announcement   → push to salesperson devices.
-    const targetRole = isAnnouncement ? 'salesperson' : 'qc_team'
-
-    const { data: subs, error } = await admin
-      .from('push_subscriptions')
-      .select('id, subscription')
-      .eq('role', targetRole)
+    // - Announcement   → push to ALL salesperson devices.
+    // - Billing edit   → push to ONE specific rep's device(s) only — the rep
+    //   who originally placed the order that was just edited. Targeted by
+    //   user_id, not role, since this must never reach every rep.
+    let subs, subsError
+    if (isBillingEdit) {
+      if (!sales_rep_id) {
+        return new Response(JSON.stringify({ ok: true, sent: 0, note: 'no sales_rep_id provided' }), {
+          headers: { 'Content-Type': 'application/json' }
+        })
+      }
+      const res = await admin.from('push_subscriptions').select('id, subscription').eq('user_id', sales_rep_id)
+      subs = res.data; subsError = res.error
+    } else {
+      const targetRole = isAnnouncement ? 'salesperson' : 'qc_team'
+      const res = await admin.from('push_subscriptions').select('id, subscription').eq('role', targetRole)
+      subs = res.data; subsError = res.error
+    }
+    const error = subsError
 
     if (error) {
       return new Response(JSON.stringify({ error: error.message }), { status: 500 })
     }
     if (!subs || subs.length === 0) {
-      return new Response(JSON.stringify({ ok: true, sent: 0, note: `no ${targetRole} subscriptions` }), {
+      return new Response(JSON.stringify({ ok: true, sent: 0, note: isBillingEdit ? 'rep has no subscribed devices' : 'no subscriptions' }), {
         headers: { 'Content-Type': 'application/json' }
       })
     }
 
-    const payload = isAnnouncement
+    const payload = isBillingEdit
+      ? JSON.stringify({
+          title: '🔔 Order Updated',
+          body: (change_summary || `${shop_name || 'Your order'} was updated by Billing.`).slice(0, 240),
+          data: {
+            type: 'billing_edit',
+            order_id: order_id || null,
+            shop_name: shop_name || '',
+            url: `/?order=${encodeURIComponent(order_id || '')}`
+          }
+        })
+      : isAnnouncement
       ? JSON.stringify({
           title: ann_title || '📢 Product Update',
           // Keep the push body short; full text lives in the in-app announcement.

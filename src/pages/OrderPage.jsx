@@ -3,6 +3,7 @@ import { useApp } from '../context/AppContext.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
 import { saveCloudOrder, currentUserId, countUnreadAnnouncements, listAllRoutes, ensureCloudCustomer, updateCustomerDefaultRoute } from '../utils/cloudSync.js'
 import PreviousOrdersModal from '../components/PreviousOrdersModal.jsx'
+import OrderSummaryModal from '../components/OrderSummaryModal.jsx'
 import { useSearch } from '../hooks/useSearch.js'
 import { useDebounce } from '../hooks/useDebounce.js'
 import CustomerPicker from '../components/CustomerPicker.jsx'
@@ -82,6 +83,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   const [visitRemark, setVisitRemark] = useState(saved?.visitRemark ?? '')
   const [gpsBusy, setGpsBusy] = useState(false)
   const [sending, setSending] = useState(false) // blocks double-submit
+  const [visitBusy, setVisitBusy] = useState(false) // blocks double-tap on Copy/Save Visit
   const [gpsFailed, setGpsFailed] = useState(false)
   // #1 Order date — always defaults to TODAY (in IST, not UTC — a rep working
   // late evening should not get tomorrow's date, and vice versa near
@@ -120,6 +122,32 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
     if (!saved?.originalQtyById) return null
     return new Map(Object.entries(saved.originalQtyById).map(([k, v]) => [k, Number(v)]))
   })
+
+  // Deep-link from a "Billing edited your order" push notification
+  // (?order=<id>) — opens the exact order summary directly.
+  const [deepLinkOrderId, setDeepLinkOrderId] = useState(null)
+  useEffect(() => {
+    try {
+      const params = new URLSearchParams(window.location.search)
+      const id = params.get('order')
+      if (id) {
+        setDeepLinkOrderId(id)
+        const url = new URL(window.location.href)
+        url.searchParams.delete('order')
+        window.history.replaceState({}, '', url.toString())
+      }
+    } catch {}
+    const onMsg = (event) => {
+      const msg = event.data
+      if (msg && msg.type === 'qc_open' && msg.data?.type === 'billing_edit' && msg.data?.order_id) {
+        setDeepLinkOrderId(msg.data.order_id)
+      }
+    }
+    if ('serviceWorker' in navigator) navigator.serviceWorker.addEventListener('message', onMsg)
+    return () => {
+      if ('serviceWorker' in navigator) navigator.serviceWorker.removeEventListener('message', onMsg)
+    }
+  }, [])
 
   // Continuously persist the working session so nothing is lost if the browser
   // reloads the page after returning from another app.
@@ -453,72 +481,110 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
       )
     })
 
-  const handleVisit = async () => {
-    if (!customer || !visitReady) return
-    const loc = await getLocation()
+  // Shared by "Save Visit" and "Copy Visit Message" — persists the visit both
+  // locally and to the cloud (rep-attributed). Previously only the Save Visit
+  // button did this; Copy silently never saved anything at all, meaning a
+  // rep who used Copy (without ALSO tapping Save) had that real field visit
+  // vanish — not counted anywhere. Both actions must always save first.
+  const persistVisit = async (visitStatusVal, remarkVal, loc) => {
     const visit = {
       customer_id: customer.id,
       customer_name: customer.name,
       route: customer.route,
       salesperson: profile?.full_name || settings.salesperson,
-      visit_status: visitStatus,
-      custom_remark: visitStatus === 'Other' ? visitRemark.trim() : '',
+      visit_status: visitStatusVal,
+      custom_remark: remarkVal,
       ...loc
     }
     await saveVisit(visit)
-    // Also persist to cloud (rep-attributed). Fresh id at save time.
     try {
       const uid = (await currentUserId()) || user.id
-      await import('../utils/cloudSync.js').then((m) =>
-        m.saveCloudVisit({
-          customer,
-          userId: uid,
-          visitStatus,
-          remark: visit.custom_remark,
-          location: loc
-        })
-      )
+      const cloud = await import('../utils/cloudSync.js')
+      await cloud.saveCloudVisit({
+        customer,
+        userId: uid,
+        visitStatus: visitStatusVal,
+        remark: remarkVal,
+        location: loc
+      })
     } catch (e) {
       console.error('cloud visit save failed', e)
     }
-    const msg = buildVisitMessage({
-      brand: settings.brand,
-      customer,
-      salesperson: profile?.full_name || settings.salesperson,
-      visit
-    })
-    window.open(buildWhatsappUrl(msg), '_blank')
-    // Reset for next customer.
-    setVisitStatus('')
-    setVisitRemark('')
-    setCustomer(null)
-    clearSession()
-    setToast('Visit recorded')
-    setTimeout(() => setToast(''), 2600)
+    return visit
   }
+
+  const handleVisit = async () => {
+    if (!customer || !visitReady) return
+    if (visitBusy) return // already saving — ignore double-tap
+    setVisitBusy(true)
+    try {
+      const loc = await getLocation()
+      const remark = visitStatus === 'Other' ? visitRemark.trim() : ''
+      const visit = await persistVisit(visitStatus, remark, loc)
+      const msg = buildVisitMessage({
+        brand: settings.brand,
+        customer,
+        salesperson: profile?.full_name || settings.salesperson,
+        visit
+      })
+      window.open(buildWhatsappUrl(msg), '_blank')
+      // Reset for next customer.
+      setVisitStatus('')
+      setVisitRemark('')
+      setCustomer(null)
+      clearSession()
+      setToast('Visit recorded')
+      setTimeout(() => setToast(''), 2600)
+    } finally {
+      setVisitBusy(false)
+    }
+  }
+
+  // Tracks whether THIS visit (for the customer currently on screen) has
+  // already been persisted this session — so tapping Copy a second time (to
+  // re-copy the message, e.g. if the paste didn't work) never creates a
+  // second visit row. Cleared whenever the customer/reason changes.
+  const [visitAlreadySaved, setVisitAlreadySaved] = useState(false)
+  useEffect(() => { setVisitAlreadySaved(false) }, [customer?.id, visitStatus, visitRemark])
 
   const handleCopyVisit = async () => {
     if (!customer || !visitReady) return
-    // Capture GPS and build the SAME message as Save Visit (with location line).
-    const loc = await getLocation()
-    const visit = {
-      visit_status: visitStatus,
-      custom_remark: visitStatus === 'Other' ? visitRemark.trim() : '',
-      ...loc
-    }
-    const text = buildVisitMessage({
-      brand: settings.brand,
-      customer,
-      salesperson: profile?.full_name || settings.salesperson,
-      visit
-    })
+    if (visitBusy) return // already saving — ignore double-tap
+    setVisitBusy(true)
     try {
-      await navigator.clipboard.writeText(text)
-      setToast(loc?.latitude != null ? 'Visit copied' : 'Copied — location not captured')
-    } catch {
-      setToast('Copy failed')
+      // Capture GPS and build the SAME message as Save Visit (with location line).
+      const loc = await getLocation()
+      const remark = visitStatus === 'Other' ? visitRemark.trim() : ''
+      let visit
+      if (visitAlreadySaved) {
+        // Already saved (e.g. an earlier tap on Copy) — just rebuild the
+        // message for re-copying, without inserting another visit row.
+        visit = { visit_status: visitStatus, custom_remark: remark, ...loc }
+      } else {
+        try {
+          visit = await persistVisit(visitStatus, remark, loc)
+          setVisitAlreadySaved(true)
+        } catch (e) {
+          console.error('visit save (via copy) failed', e)
+          visit = { visit_status: visitStatus, custom_remark: remark, ...loc }
+        }
+      }
+      const text = buildVisitMessage({
+        brand: settings.brand,
+        customer,
+        salesperson: profile?.full_name || settings.salesperson,
+        visit
+      })
+      try {
+        await navigator.clipboard.writeText(text)
+        setToast(loc?.latitude != null ? 'Visit saved & copied' : 'Visit saved — location not captured')
+      } catch {
+        setToast(visitAlreadySaved ? 'Copy failed' : 'Could not save or copy — try again')
+      }
+      setTimeout(() => setToast(''), 2600)
+    } finally {
+      setVisitBusy(false)
     }
-    setTimeout(() => setToast(''), 2600)
   }
 
   // Every order attempts to capture current GPS. Soft policy: if it fails we
@@ -785,6 +851,10 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
         <div className="fixed bottom-44 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm px-4 py-2.5 rounded-full shadow-pop z-50">
           {toast}
         </div>
+      )}
+
+      {deepLinkOrderId && (
+        <OrderSummaryModal orderId={deepLinkOrderId} onClose={() => setDeepLinkOrderId(null)} />
       )}
 
       {showMakeDefaultConfirm && (

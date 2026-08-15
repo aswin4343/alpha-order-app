@@ -70,29 +70,42 @@ async function syncProductsFromCloud(localProducts) {
   }
 }
 
-// Download the shared customer list and merge with local records. Local records
-// (which carry full phone/GST/address) are preserved; cloud-only shops are added
-// so new shops created by any rep appear for everyone. Matching is by
-// shop name + route (case-insensitive) to avoid duplicates.
+// Download the shared customer list and merge with local records. Local
+// records (which carry full phone/GST/address) are preserved; cloud-only
+// shops are added so new shops created by any rep appear for everyone.
+//
+// Customers are matched by NAME ALONE here (not name+route) specifically so
+// that a permanent route change made on one device (or by another rep) is
+// correctly picked up as an UPDATE to the existing local record, rather than
+// being treated as an unrelated new shop that never overwrites the stale
+// route sitting in this device's own cache. Matching by name+route was the
+// original design, but a route is no longer immutable once set — it can be
+// permanently changed by a rep and must then propagate to every device.
 async function syncCustomersFromCloud(localCustomers) {
   try {
     const { fetchAllCloudCustomers } = await import('../utils/cloudSync.js')
     const cloud = await fetchAllCloudCustomers()
     if (!cloud || !cloud.length) return null
 
-    const key = (name, route) =>
-      `${(name || '').trim().toUpperCase()}|${(route || '').trim().toUpperCase()}`
-    const haveKeys = new Set((localCustomers || []).map((c) => key(c.name, c.route)))
+    const nameKey = (name) => (name || '').trim().toUpperCase()
+    const byName = new Map((localCustomers || []).map((c) => [nameKey(c.name), c]))
 
     const additions = []
+    let changed = false
+    const updated = (localCustomers || []).map((c) => c) // shallow copy to mutate in place below
+
     cloud.forEach((cc) => {
-      const k = key(cc.shop_name, cc.route)
-      if (!haveKeys.has(k)) {
+      const k = nameKey(cc.shop_name)
+      const existingLocal = byName.get(k)
+      const cloudRoute = cc.route || ''
+
+      if (!existingLocal) {
+        // Genuinely new shop (from any rep/device) — add it.
         additions.push({
           id: `cloud_${cc.id}`,
           name: cc.shop_name,
           area: '',
-          route: cc.route || '',
+          route: cloudRoute,
           category: cc.category || '',
           creditDays: 'No Credit',
           gstn: '',
@@ -100,12 +113,25 @@ async function syncCustomersFromCloud(localCustomers) {
           email: '',
           fromCloud: true
         })
-        haveKeys.add(k)
+        changed = true
+        return
+      }
+
+      // Existing shop — if the cloud's route has since changed (a permanent
+      // route override made anywhere), bring this device's copy up to date.
+      // Local-only fields (phone/GST/etc, which the cloud never stores) are
+      // always preserved untouched.
+      if ((existingLocal.route || '') !== cloudRoute) {
+        const idx = updated.findIndex((u) => u.id === existingLocal.id)
+        if (idx !== -1) {
+          updated[idx] = { ...updated[idx], route: cloudRoute }
+          changed = true
+        }
       }
     })
 
-    if (!additions.length) return null
-    const merged = [...localCustomers, ...additions]
+    if (!changed) return null
+    const merged = [...updated, ...additions]
     await bulkPut('customers', merged)
     return merged
   } catch (e) {
