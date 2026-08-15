@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
-import { loadAdminDashboard, loadSalesTrend, loadTopProducts } from '../utils/cloudSync.js'
+import { loadAdminDashboard, loadSalesTrend, loadTopProducts, listAllRoutes, listSalespeople } from '../utils/cloudSync.js'
 import ReportPanel from '../components/ReportPanel.jsx'
 import SalesTrendChart from '../components/SalesTrendChart.jsx'
 import TopProductsChart from '../components/TopProductsChart.jsx'
@@ -122,6 +122,19 @@ export default function AdminDashboard({ onOpenProducts, onOpenSalespeople, onOp
   const [topProducts, setTopProducts] = useState(null)
   const [chartError, setChartError] = useState(false)
 
+  // Route + Sales Rep filters for the product analytics (Sales Trend + Top
+  // Selling Products) — combinable with each other and with the date range.
+  // '' means "All" for both, matching the existing behaviour when unset.
+  const [chartRoute, setChartRoute] = useState('')
+  const [chartRepId, setChartRepId] = useState('')
+  const [routeOptions, setRouteOptions] = useState([])
+  const [repOptions, setRepOptions] = useState([])
+
+  useEffect(() => {
+    listAllRoutes().then(setRouteOptions).catch(() => {})
+    listSalespeople().then(setRepOptions).catch(() => {})
+  }, [])
+
   const refresh = async () => {
     setError(false)
     try {
@@ -133,13 +146,16 @@ export default function AdminDashboard({ onOpenProducts, onOpenSalespeople, onOp
     }
   }
 
-  // Charts reload whenever the shared date range changes — independently of
-  // the main dashboard call, so adjusting the range never blocks/reloads the
-  // KPIs or leaderboard above.
+  // Charts reload whenever the shared date range OR the route/rep filter
+  // changes — independently of the main dashboard call, so adjusting a
+  // filter never blocks/reloads the KPIs or leaderboard above.
   const refreshCharts = async () => {
     setChartError(false)
     try {
-      const [t, p] = await Promise.all([loadSalesTrend(chartFrom, chartTo), loadTopProducts(chartFrom, chartTo)])
+      const [t, p] = await Promise.all([
+        loadSalesTrend(chartFrom, chartTo, chartRoute || null, chartRepId || null),
+        loadTopProducts(chartFrom, chartTo, chartRoute || null, chartRepId || null)
+      ])
       setTrend(t)
       setTopProducts(p)
     } catch (e) {
@@ -155,7 +171,7 @@ export default function AdminDashboard({ onOpenProducts, onOpenSalespeople, onOp
   useEffect(() => {
     refreshCharts()
     // eslint-disable-next-line
-  }, [chartFrom, chartTo])
+  }, [chartFrom, chartTo, chartRoute, chartRepId])
 
   const reps = data
     ? [...data.reps].sort((a, b) => b[period].score - a[period].score)
@@ -277,6 +293,46 @@ export default function AdminDashboard({ onOpenProducts, onOpenSalespeople, onOp
                   This Month
                 </button>
               </div>
+
+              {/* Route + Sales Rep filters — combinable with each other and
+                  with the date range above. Both default to "All". */}
+              <div className="flex items-center gap-2 flex-wrap mt-3 pt-3 border-t border-slate-100">
+                <div className="flex-1 min-w-[160px]">
+                  <label className="block text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Route</label>
+                  <select
+                    value={chartRoute}
+                    onChange={(e) => setChartRoute(e.target.value)}
+                    className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 text-sm outline-none focus:border-brand-500 bg-white"
+                  >
+                    <option value="">All Routes</option>
+                    {routeOptions.map((r) => <option key={r} value={r}>{r}</option>)}
+                  </select>
+                </div>
+                <div className="flex-1 min-w-[160px]">
+                  <label className="block text-[10px] font-semibold text-slate-400 uppercase tracking-wide mb-1">Sales Representative</label>
+                  <select
+                    value={chartRepId}
+                    onChange={(e) => setChartRepId(e.target.value)}
+                    className="w-full rounded-lg border border-slate-200 px-2.5 py-1.5 text-sm outline-none focus:border-brand-500 bg-white"
+                  >
+                    <option value="">All Representatives</option>
+                    {repOptions.map((r) => <option key={r.id} value={r.id}>{r.full_name}</option>)}
+                  </select>
+                </div>
+                {(chartRoute || chartRepId) && (
+                  <button
+                    onClick={() => { setChartRoute(''); setChartRepId('') }}
+                    className="self-end px-2.5 py-1.5 rounded-lg text-xs font-semibold text-brand-700 border border-slate-200 hover:bg-slate-50"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              {(chartRoute || chartRepId) && (
+                <p className="text-[11px] text-slate-400 mt-2">
+                  Showing: {chartRoute || 'All routes'} · {repOptions.find((r) => r.id === chartRepId)?.full_name || 'All representatives'}
+                </p>
+              )}
             </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-2 mb-4">

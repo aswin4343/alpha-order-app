@@ -585,7 +585,7 @@ export async function loadAdminDashboard() {
  * calendar day. Uses order_date (already indexed) so the query stays cheap.
  * `from`/`to` are 'YYYY-MM-DD' strings, inclusive.
  */
-export async function loadSalesTrend(from, to) {
+export async function loadSalesTrend(from, to, route = null, salesRepId = null) {
   const start = new Date(`${from}T00:00:00`)
   const end = new Date(`${to}T00:00:00`)
   const dayCount = Math.max(1, Math.round((end - start) / 86400000) + 1)
@@ -593,7 +593,12 @@ export async function loadSalesTrend(from, to) {
   const data = await fetchAllPaged(
     'orders',
     'order_date, total_value',
-    (q) => q.eq('hidden', false).gte('order_date', from).lte('order_date', to)
+    (q) => {
+      q = q.eq('hidden', false).gte('order_date', from).lte('order_date', to)
+      if (route) q = q.eq('route', route)
+      if (salesRepId) q = q.eq('sales_rep_id', salesRepId)
+      return q
+    }
   )
 
   // Build one bucket per day in the window, even days with zero orders, so
@@ -624,11 +629,16 @@ export async function loadSalesTrend(from, to) {
  * the rest expandable — nothing is hidden.
  * `from`/`to` are 'YYYY-MM-DD' strings, inclusive.
  */
-export async function loadTopProducts(from, to) {
+export async function loadTopProducts(from, to, route = null, salesRepId = null) {
   const orders = await fetchAllPaged(
     'orders',
     'id',
-    (q) => q.eq('hidden', false).gte('order_date', from).lte('order_date', to)
+    (q) => {
+      q = q.eq('hidden', false).gte('order_date', from).lte('order_date', to)
+      if (route) q = q.eq('route', route)
+      if (salesRepId) q = q.eq('sales_rep_id', salesRepId)
+      return q
+    }
   )
   const ids = orders.map((o) => o.id)
   if (ids.length === 0) return { byQty: [], byOrders: [], totalQty: 0, totalOrders: 0 }
