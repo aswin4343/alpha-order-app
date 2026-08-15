@@ -20,7 +20,15 @@ export async function currentUserId() {
 
 /** Ensure a cloud customer row exists for this shop; returns its cloud id. */
 export async function ensureCloudCustomer(customer, userId, repCreated = false) {
-  // Match on shop name + route to avoid duplicates across reps.
+  // Match on shop name + route first (the existing, widely-used identity key
+  // in this app). If that fails, fall back to shop name ALONE before ever
+  // creating a new row — a customer's route can now change permanently (see
+  // updateCustomerDefaultRoute), and if the caller's local `customer.route`
+  // is even briefly stale after such a change, a shop_name+route lookup can
+  // legitimately miss the row that already has the new route. Without this
+  // fallback, that miss would create a duplicate customer record instead of
+  // finding and reusing the one that already exists — exactly what "each
+  // customer can have only one active/default route" requires we prevent.
   const { data: existing } = await supabase
     .from('customers')
     .select('id')
@@ -30,6 +38,19 @@ export async function ensureCloudCustomer(customer, userId, repCreated = false) 
     .maybeSingle()
 
   if (existing?.id) return existing.id
+
+  const { data: byNameOnly } = await supabase
+    .from('customers')
+    .select('id')
+    .eq('shop_name', customer.name)
+    .limit(2) // only need to know if there's 0, 1, or "more than 1"
+
+  // Only trust this fallback when the shop name is UNAMBIGUOUS (exactly one
+  // customer with this name, regardless of route) — if two different real
+  // shops happen to share a name on different routes, guessing which one is
+  // "the" match could wrongly merge them. In that ambiguous case, fall
+  // through to the normal insert path exactly as before this fix.
+  if (byNameOnly?.length === 1) return byNameOnly[0].id
 
   const { data, error } = await supabase
     .from('customers')
