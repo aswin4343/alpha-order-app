@@ -280,7 +280,7 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
   )
 }
 
-function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, embedded }) {
+function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, embedded, onlyAddonItems }) {
   const { products } = useApp()
   const [items, setItems] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -326,6 +326,17 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
 
   const activeCount = items ? items.filter((i) => !i.removed).length : 0
 
+  // When rendering just the ADD-ON section of a group, only show the items
+  // that were genuinely added on this visit (is_addon=true on the item) —
+  // NOT the full item list of the order row, which also carries the
+  // original items forward (a same-day repeat order re-submits everything
+  // already ordered, plus the addition). Showing all of them under "ADD-ON"
+  // was the exact source of the confusion: 3 unrelated original items were
+  // appearing alongside the 1 real add-on with no way to tell them apart.
+  const displayItems = onlyAddonItems && items
+    ? items.filter((it) => it.is_addon || it._addonQty > 0)
+    : items
+
   return (
     <section className={embedded ? 'w-full' : 'flex flex-col w-full flex-1 bg-slate-50 overflow-y-auto'}>
       {!embedded && (
@@ -344,10 +355,15 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
         {items && (
           <>
             <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">
-              Order items ({activeCount}{items.length !== activeCount ? ` · ${items.length - activeCount} removed` : ''})
+              {onlyAddonItems
+                ? `Added items (${displayItems.length})`
+                : `Order items (${activeCount}${items.length !== activeCount ? ` · ${items.length - activeCount} removed` : ''})`}
             </p>
+            {onlyAddonItems && displayItems.length === 0 && (
+              <p className="text-sm text-slate-400 mb-3">No newly added items found for this add-on.</p>
+            )}
             <div className="space-y-2">
-              {items.map((it) => (
+              {displayItems.map((it) => (
                 <div key={it.id}
                   className={`rounded-xl bg-white shadow-card border p-3 ${it.removed ? 'border-red-100 opacity-60' : it.available ? 'border-green-200' : 'border-slate-100'}`}>
                   <div className="flex items-start justify-between gap-3">
@@ -650,7 +666,6 @@ function AddonAwareDetailPanel({ order, onBackToOrders, onVerified }) {
   // most groups will have exactly one add-on order in practice).
   const original = order.original
   const addons = order.addons
-  const addonsVerified = addons.every((a) => a.billing_status === 'verified')
 
   const fmt = (iso) => new Date(iso).toLocaleString('en-IN', { day:'numeric', month:'short', year:'numeric', hour:'numeric', minute:'2-digit', hour12:true })
 
@@ -665,27 +680,34 @@ function AddonAwareDetailPanel({ order, onBackToOrders, onVerified }) {
       </div>
 
       <div className="p-4 lg:p-6 max-w-3xl w-full mx-auto flex-1 pb-6 space-y-4">
-        {/* ADD-ON section — shown first/prominently, per spec */}
-        <div>
-          <div className="flex items-center gap-2 mb-2">
-            <span className="text-[10px] font-extrabold text-amber-700 bg-amber-100 px-2 py-1 rounded-full">ADD-ON</span>
-            <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${addonsVerified ? 'bg-green-100 text-green-700' : 'bg-amber-50 text-amber-700'}`}>
-              {addonsVerified ? 'Verified' : 'Pending'}
-            </span>
-          </div>
-          <div className={addonsVerified ? 'opacity-60 pointer-events-none' : ''}>
-            {addons.map((a) => (
-              <OrderDetailPanel
-                key={a.id}
-                order={order}
-                singleOrderId={a.id}
-                onBackToOrders={onBackToOrders}
-                onVerified={onVerified}
-                embedded
-              />
-            ))}
-          </div>
-        </div>
+        {/* ADD-ON section(s) — shown first/prominently, per spec. Each add-on
+            order gets its OWN badge + status, since with more than one
+            add-on they can be verified independently of each other too. */}
+        {addons.map((a, i) => {
+          const isVerified = a.billing_status === 'verified'
+          return (
+            <div key={a.id}>
+              <div className="flex items-center gap-2 mb-2">
+                <span className="text-[10px] font-extrabold text-amber-700 bg-amber-100 px-2 py-1 rounded-full">
+                  ADD-ON{addons.length > 1 ? ` ${i + 1}/${addons.length}` : ''}
+                </span>
+                <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${isVerified ? 'bg-green-100 text-green-700' : 'bg-amber-50 text-amber-700'}`}>
+                  {isVerified ? 'Verified' : 'Pending'}
+                </span>
+              </div>
+              <div className={isVerified ? 'opacity-60 pointer-events-none' : ''}>
+                <OrderDetailPanel
+                  order={order}
+                  singleOrderId={a.id}
+                  onlyAddonItems
+                  onBackToOrders={onBackToOrders}
+                  onVerified={onVerified}
+                  embedded
+                />
+              </div>
+            </div>
+          )
+        })}
 
         <div className="border-t-2 border-dashed border-slate-200" />
 
