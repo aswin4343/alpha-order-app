@@ -89,7 +89,11 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride }
   const selected = qty > 0
   const badge = schemeBadge(product.slabs)
   const hasScheme = !!badge
-  const result = selected ? calculateScheme(qty, product.slabs) : null
+  // Defaults ON (per spec) — only OFF when the rep has explicitly toggled it
+  // for this order/line. This never touches the product's own configured
+  // scheme; it's purely a per-order-line exception held in `override`.
+  const schemeOff = override?.schemeEnabled === false
+  const result = selected && !schemeOff ? calculateScheme(qty, product.slabs) : null
 
   // Effective prices: use a one-time override if the rep set one for this order.
   const effRetail = override?.retail != null ? override.retail : product.retail
@@ -174,22 +178,35 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride }
         <QtyStepper qty={qty} onChange={(v) => onQty(product.id, v)} />
       </div>
 
-      {/* Live scheme feedback */}
+      {/* Live scheme feedback + per-order Scheme ON/OFF toggle */}
       {selected && hasScheme && (
-        <p className="text-[11px] mt-1.5 font-medium">
-          {result.free > 0 ? (
-            <span className="text-brand-700">
-              ✓ {result.free} free
-              {result.leftover > 0 && (
-                <span className="text-slate-400 font-normal"> · {result.leftover} no scheme</span>
-              )}
-            </span>
-          ) : (
-            <span className="text-slate-400">
-              +{product.slabs[0][0] - qty} more → {product.slabs[0][1]} free
-            </span>
-          )}
-        </p>
+        <div className="flex items-center justify-between mt-1.5">
+          <p className="text-[11px] font-medium">
+            {schemeOff ? (
+              <span className="text-slate-400">Scheme off — {qty} only, no free qty</span>
+            ) : result.free > 0 ? (
+              <span className="text-brand-700">
+                ✓ {result.free} free
+                {result.leftover > 0 && (
+                  <span className="text-slate-400 font-normal"> · {result.leftover} no scheme</span>
+                )}
+              </span>
+            ) : (
+              <span className="text-slate-400">
+                +{product.slabs[0][0] - qty} more → {product.slabs[0][1]} free
+              </span>
+            )}
+          </p>
+          <button
+            type="button"
+            onClick={() => onOverride(product.id, { schemeEnabled: schemeOff })}
+            className={`shrink-0 text-[10px] font-bold px-2 py-1 rounded-full ${
+              schemeOff ? 'bg-slate-100 text-slate-500' : 'bg-brand-50 text-brand-700'
+            }`}
+          >
+            Scheme: {schemeOff ? 'OFF' : 'ON'}
+          </button>
+        </div>
       )}
     </div>
   )

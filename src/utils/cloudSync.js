@@ -67,7 +67,7 @@ export async function ensureCloudCustomer(customer, userId, repCreated = false) 
 }
 
 /** Save an order + its items. Returns the new order id (or null on failure). */
-export async function saveCloudOrder({ customer, brand, userId, items, location, orderDate, route }) {
+export async function saveCloudOrder({ customer, brand, userId, items, location, orderDate, route, isNewCustomer, introDetails }) {
   const cloudCustomerId = await ensureCloudCustomer(customer, userId)
   // Per-order route: use the chosen route if provided, else the customer default.
   // NOTE: this never overwrites the customer's default route in the DB.
@@ -104,14 +104,12 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     console.error('duplicate check failed', e)
   }
 
-  // Order value: sum of (effective price × qty). Uses the item's retail (or its
-  // override if set), then base, then net; 0 when no price is known.
+  // Order value: sum of (Final Selling Price × qty). Final Selling Price is
+  // whatever the rep manually edited (any price field), or Retail Price if
+  // nothing was edited — computed once in OrderPage per the exact priority
+  // rule, never re-derived here with a different (and wrong) priority.
   const totalValue = items.reduce((s, i) => {
-    const price =
-      (i.retail != null ? i.retail : null) ??
-      (i.base != null ? i.base : null) ??
-      (i.netOverride != null ? i.netOverride : null) ??
-      0
+    const price = i.finalSellingPrice != null ? i.finalSellingPrice : 0
     return s + price * (i.qty || 0)
   }, 0)
 
@@ -126,9 +124,18 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
       total_products: totalProducts,
       total_quantity: totalQuantity,
       total_value: Math.round(totalValue),
-      order_date: orderDate || new Date().toISOString().slice(0, 10),
+      order_date: orderDate || new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }),
       latitude: location?.latitude ?? null,
-      longitude: location?.longitude ?? null
+      longitude: location?.longitude ?? null,
+      // New-customer intro: stored ONLY on this order (never on the customer
+      // record), and only when this genuinely is their first order — see
+      // isIntroPending/clearIntro in AppContext, the existing "first order"
+      // detection this reuses rather than duplicating.
+      is_new_customer: !!isNewCustomer,
+      intro_phone: isNewCustomer ? (introDetails?.phone || null) : null,
+      intro_gstn: isNewCustomer ? (introDetails?.gstn || null) : null,
+      intro_credit_days: isNewCustomer ? (introDetails?.creditDays || null) : null,
+      intro_email: isNewCustomer ? (introDetails?.email || null) : null
     })
     .select('id')
     .single()
@@ -139,15 +146,16 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
   }
 
   const rows = items.map((i) => {
-    // Effective price actually used for this item (same priority as totalValue
-    // above), and a human-readable scheme snapshot — captured AT ORDER TIME so
-    // future price/scheme changes never rewrite what this order summary shows.
-    const effectivePrice =
-      (i.retail != null ? i.retail : null) ??
-      (i.base != null ? i.base : null) ??
-      (i.netOverride != null ? i.netOverride : null) ??
-      null
-    const schemeSnapshot = schemeText(i)
+    // Final Selling Price — see the exact priority rule computed once in
+    // OrderPage: manually edited price (any field) wins; otherwise Retail
+    // Price. Captured AT ORDER TIME so future product price/scheme changes
+    // never rewrite what this order summary shows.
+    const effectivePrice = i.finalSellingPrice != null ? i.finalSellingPrice : null
+    // Special Price: only true when the Final Selling Price genuinely
+    // differs from the product's Default Retail Price — never just because
+    // a price field happens to be populated.
+    const isSpecial = i.normalPrice != null && effectivePrice != null && effectivePrice !== i.normalPrice
+    const schemeSnapshot = i.schemeEnabled === false ? null : schemeText(i)
     return {
       order_id: order.id,
       product_name: i.name,
@@ -155,7 +163,10 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
       unit: i.unit || 'Piece',
       is_addon: !!i.isAddon,
       unit_price: effectivePrice,
-      scheme_applied: schemeSnapshot === 'No scheme' ? null : schemeSnapshot
+      scheme_applied: schemeSnapshot === 'No scheme' ? null : schemeSnapshot,
+      normal_price: i.normalPrice ?? null,
+      is_special_price: isSpecial,
+      scheme_enabled: i.schemeEnabled !== false
     }
   })
   const { error: itemsErr } = await supabase.from('order_items').insert(rows)
@@ -1632,7 +1643,7 @@ export async function loadBillingOrders(repId, deliveryType, status = 'pending',
   // reverse). Filtering happens after grouping, based on the tab selected.
   const data = await fetchAllPaged(
     'orders',
-    'id, shop_name, route, total_quantity, total_value, created_at, order_date, sales_rep_id, billing_status, billing_verified_at',
+    'id, shop_name, route, total_quantity, total_value, created_at, order_date, sales_rep_id, billing_status, billing_verified_at, is_new_customer, intro_phone, intro_gstn, intro_credit_days, intro_email',
     (q) => {
       q = q.eq('sales_rep_id', repId).eq('hidden', false).order('created_at', { ascending: true }) // oldest first
       if (dateStr) q = q.eq('order_date', dateStr)
@@ -1799,7 +1810,7 @@ export async function loadBillingOrderItemsFull(orderIdOrIds) {
   const ids = Array.isArray(orderIdOrIds) ? orderIdOrIds : [orderIdOrIds]
   const { data, error } = await supabase
     .from('order_items')
-    .select('id, order_id, product_name, qty, unit, is_addon, available, original_qty, change_type, change_reason, original_product_name, removed')
+    .select('id, order_id, product_name, qty, unit, is_addon, available, original_qty, change_type, change_reason, original_product_name, removed, normal_price, is_special_price, scheme_enabled, unit_price')
     .in('order_id', ids)
     .order('removed', { ascending: true })
   if (error) throw error
@@ -2612,4 +2623,21 @@ export async function loadBillingItemsByOrder(orderIds) {
     byOrder.get(it.order_id).push(it)
   }
   return byOrder // Map<order_id, items[]>
+}
+
+/**
+ * Permanently change a customer's default route in the cloud. This is a rare,
+ * explicit action (confirmed by the rep) — NOT the normal per-order route
+ * override, which stays purely local to that one order and never touches
+ * this. Historical orders are untouched: each order already stores its own
+ * route independently (route column on `orders`), so changing the customer's
+ * default here can never retroactively alter what an old order shows.
+ */
+export async function updateCustomerDefaultRoute(customerCloudId, newRoute) {
+  if (!customerCloudId) return
+  const { error } = await supabase
+    .from('customers')
+    .update({ route: newRoute })
+    .eq('id', customerCloudId)
+  if (error) throw error
 }

@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
-import { saveCloudOrder, currentUserId, countUnreadAnnouncements, listAllRoutes } from '../utils/cloudSync.js'
+import { saveCloudOrder, currentUserId, countUnreadAnnouncements, listAllRoutes, ensureCloudCustomer, updateCustomerDefaultRoute } from '../utils/cloudSync.js'
 import PreviousOrdersModal from '../components/PreviousOrdersModal.jsx'
 import { useSearch } from '../hooks/useSearch.js'
 import { useDebounce } from '../hooks/useDebounce.js'
@@ -62,7 +62,7 @@ function clearSession() {
 }
 
 export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerformance, onOpenAnnouncements, unreadTick }) {
-  const { settings, products, isIntroPending, clearIntro, saveVisit } = useApp()
+  const { settings, products, isIntroPending, clearIntro, saveVisit, updateCustomer } = useApp()
   const { user, profile } = useAuth()
 
   // Restore any in-progress order that was interrupted (app switch, background
@@ -83,18 +83,43 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   const [gpsBusy, setGpsBusy] = useState(false)
   const [sending, setSending] = useState(false) // blocks double-submit
   const [gpsFailed, setGpsFailed] = useState(false)
-  // #1 Order date — default today; rep may change it (future dates allowed).
-  const [orderDate, setOrderDate] = useState(saved?.orderDate ?? new Date().toISOString().slice(0, 10))
+  // #1 Order date — always defaults to TODAY (in IST, not UTC — a rep working
+  // late evening should not get tomorrow's date, and vice versa near
+  // midnight). The rep can still deliberately pick a different date.
+  //
+  // A restored draft's own orderDate is only honoured if it's from TODAY —
+  // if the rep is resuming a draft from an earlier day (e.g. the app reloaded
+  // after being left open overnight), silently keeping yesterday's (or an
+  // older) date caused real orders to get filed under the wrong day without
+  // the rep noticing. Snapping back to today is the safer default; the rep
+  // can still change it deliberately either way.
+  const todayIST = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+  const [orderDate, setOrderDate] = useState(() => {
+    const today = todayIST()
+    return saved?.orderDate === today ? saved.orderDate : today
+  })
   // #2 Per-order route override — null means use the customer's default route.
   const [routeOverride, setRouteOverride] = useState(saved?.routeOverride ?? null)
+  // "Make this the customer's default route" — a rare, explicit action,
+  // separate from the normal per-order route override above. Confirmed via a
+  // popup before anything permanent changes; never touches historical orders,
+  // since each order already stores its own route independently.
+  const [showMakeDefaultConfirm, setShowMakeDefaultConfirm] = useState(false)
+  const [makingDefault, setMakingDefault] = useState(false)
   const [allRoutes, setAllRoutes] = useState([])
   const [unread, setUnread] = useState(0)
   const [showPrevOrders, setShowPrevOrders] = useState(false)
-  // Product ids that came from a loaded previous order (the "original").
-  // Anything ordered on top of these becomes an ADD-ON in the message.
-  const [originalIds, setOriginalIds] = useState(
-    saved?.originalIds ? new Set(saved.originalIds) : null
-  )
+  // Product ids that came from a loaded previous order, mapped to their
+  // ORIGINAL quantity (not just presence/absence). This is what lets an
+  // increased quantity on an already-present product (e.g. 5 -> 6) be split
+  // into "5 original + 1 add-on" instead of silently becoming one merged
+  // quantity of 6 with no add-on record at all — which was the real bug:
+  // a Set only ever answered "is this product new to the order", never
+  // "did this product's quantity increase since the original".
+  const [originalQtyById, setOriginalQtyById] = useState(() => {
+    if (!saved?.originalQtyById) return null
+    return new Map(Object.entries(saved.originalQtyById).map(([k, v]) => [k, Number(v)]))
+  })
 
   // Continuously persist the working session so nothing is lost if the browser
   // reloads the page after returning from another app.
@@ -105,12 +130,12 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
       units,
       visitStatus,
       visitRemark,
-      originalIds: originalIds ? Array.from(originalIds) : null,
+      originalQtyById: originalQtyById ? Object.fromEntries(originalQtyById) : null,
       priceOverrides,
       orderDate,
       routeOverride
     })
-  }, [customer, quantities, units, visitStatus, visitRemark, originalIds, priceOverrides, orderDate, routeOverride])
+  }, [customer, quantities, units, visitStatus, visitRemark, originalQtyById, priceOverrides, orderDate, routeOverride])
 
   const debounced = useDebounce(query, 120)
   const searching = debounced.trim().length > 0
@@ -198,7 +223,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
       })
       setQuantities(nextQ)
       setUnits(nextU)
-      setOriginalIds(new Set(Object.keys(nextQ)))
+      setOriginalQtyById(new Map(Object.entries(nextQ).map(([id, qty]) => [id, qty])))
       setShowPrevOrders(false)
       const loaded = Object.keys(nextQ).length
       setToast(
@@ -225,6 +250,34 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
     setPriceOverrides((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }))
   }, [])
 
+  // Permanent route change — rare, explicit, confirmed. Updates the cloud
+  // customer row's default route, then the local cache, so every future
+  // order (from any device) starts from the new default. The CURRENT order
+  // keeps using routeOverride exactly as already selected — this never
+  // resets it, it only makes that same choice the customer's new default.
+  const onConfirmMakeDefaultRoute = useCallback(async () => {
+    if (!customer || !routeOverride) return
+    setMakingDefault(true)
+    try {
+      const uid = (await currentUserId()) || user.id
+      // Resolve the customer's CURRENT cloud row (matched on their existing
+      // shop_name + route) before changing it, so we update the right row.
+      const cloudId = await ensureCloudCustomer(customer, uid)
+      await updateCustomerDefaultRoute(cloudId, routeOverride)
+      // Keep the local device cache in sync so this rep's own customer list
+      // reflects the new default immediately too.
+      await updateCustomer(customer.id, { route: routeOverride })
+      setCustomer((c) => (c ? { ...c, route: routeOverride } : c))
+      setToast(`Default route updated to ${routeOverride}`)
+    } catch (e) {
+      console.error('make default route failed', e)
+      setToast('Could not update default route. Try again.')
+    } finally {
+      setMakingDefault(false)
+      setShowMakeDefaultConfirm(false)
+    }
+  }, [customer, routeOverride, user, updateCustomer])
+
   const onUnit = useCallback((id, val) => {
     setUnits((prev) => ({ ...prev, [id]: val }))
   }, [])
@@ -232,17 +285,13 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   const items = useMemo(
     () =>
       Object.keys(quantities)
-        .map((id) => {
+        .flatMap((id) => {
           const p = productMap.get(id)
-          if (!p) return null
-          return {
-            id,
-            name: p.name,
-            qty: quantities[id],
-            unit: units[id] || 'Piece',
+          if (!p) return []
+          const qty = quantities[id]
+          const unit = units[id] || 'Piece'
+          const priceFields = {
             slabs: p.slabs,
-            // Add-on = added after loading a previous order.
-            isAddon: originalIds ? !originalIds.has(id) : false,
             retail: priceOverrides[id]?.retail != null ? priceOverrides[id].retail : p.retail,
             wholesale: priceOverrides[id]?.wholesale != null ? priceOverrides[id].wholesale : p.wholesale,
             base: priceOverrides[id]?.base != null ? priceOverrides[id].base : p.base,
@@ -255,16 +304,61 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
               priceOverrides[id]?.retail != null ||
               priceOverrides[id]?.wholesale != null ||
               priceOverrides[id]?.base != null ||
-              priceOverrides[id]?.net != null
+              priceOverrides[id]?.net != null,
+            // Final Selling Price — the exact rule: if the rep manually
+            // edited ANY price field (retail, wholesale, base, or net),
+            // THAT edited value is the real price, full stop. Never fall
+            // back to retail once an edit exists, and never substitute
+            // wholesale automatically just because of customer category.
+            // Only when nothing was edited does it default to Retail Price.
+            // Checked in a fixed, deliberate order (net > base > wholesale >
+            // retail) purely to pick ONE edited value when the rep touched
+            // more than one field — not a "prefer this price type" ranking.
+            finalSellingPrice:
+              priceOverrides[id]?.net != null ? priceOverrides[id].net :
+              priceOverrides[id]?.base != null ? priceOverrides[id].base :
+              priceOverrides[id]?.wholesale != null ? priceOverrides[id].wholesale :
+              priceOverrides[id]?.retail != null ? priceOverrides[id].retail :
+              (p.retail != null ? p.retail : null),
+            // The catalogue's own Retail Price, always — this is the
+            // "Default Retail Price" Billing compares the Final Selling
+            // Price against to decide whether to show SPECIAL PRICE.
+            normalPrice: p.retail != null ? p.retail : null,
+            // Per-line scheme exception — defaults true (ON), only ever set
+            // false when the rep explicitly toggles it for this order/line.
+            schemeEnabled: priceOverrides[id]?.schemeEnabled !== false
           }
-        })
-        .filter(Boolean),
-    [quantities, units, productMap, originalIds, priceOverrides]
+
+          const originalQty = originalQtyById?.get(id)
+
+          if (originalQty == null) {
+            // Product was never part of the loaded previous order at all —
+            // a genuinely brand-new product. Whole line is the add-on (or,
+            // if no previous order was loaded, just a normal line).
+            return [{ id, name: p.name, qty, unit, isAddon: !!originalQtyById, ...priceFields }]
+          }
+
+          if (qty > originalQty) {
+            // Quantity increased on a product that was already in the
+            // original order — split into an unchanged ORIGINAL line and a
+            // separate ADD-ON line for just the delta. This is what keeps
+            // "5 original + 1 add-on" from silently becoming "6", and keeps
+            // the add-on's delta out of the original's scheme calculation.
+            return [
+              { id, name: p.name, qty: originalQty, unit, isAddon: false, ...priceFields },
+              { id: `${id}__addon`, baseId: id, name: p.name, qty: qty - originalQty, unit, isAddon: true, ...priceFields }
+            ]
+          }
+
+          // Quantity unchanged or reduced from the original — not an add-on.
+          return [{ id, name: p.name, qty, unit, isAddon: false, ...priceFields }]
+        }),
+    [quantities, units, productMap, originalQtyById, priceOverrides]
   )
 
   // Only treat as an add-on order if a previous order was loaded AND at least
   // one new item was added on top of it.
-  const hasAddons = !!originalIds && items.some((i) => i.isAddon)
+  const hasAddons = !!originalQtyById && items.some((i) => i.isAddon)
 
   const totalQty = items.reduce((s, i) => s + i.qty, 0)
   const isVisit = !!visitStatus
@@ -286,7 +380,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
     setQuantities({})
     setUnits({})
     setPriceOverrides({})
-    setOriginalIds(null)
+    setOriginalQtyById(null)
     setVisitStatus('')
     setVisitRemark('')
     setCustomer(c)
@@ -455,7 +549,16 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
           items,
           location: ok ? loc : null,
           orderDate,
-          route: routeOverride
+          route: routeOverride,
+          // The customer's first order only — this is what makes Billing's
+          // NEW CUSTOMER tag and the one-time intro details appear. Reuses
+          // the SAME first-order detection (isIntroPending) already driving
+          // the WhatsApp intro message, so there's one source of truth for
+          // "is this genuinely their first order" — not two competing ones.
+          isNewCustomer: showIntro,
+          introDetails: showIntro
+            ? { phone: customer.phone, gstn: customer.gstn, creditDays: customer.creditDays, email: customer.email }
+            : null
         })
       } catch (e) {
         console.error('cloud order save failed', e)
@@ -556,6 +659,20 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
                 )}
                 {allRoutes.map((r) => <option key={r} value={r}>{r}</option>)}
               </select>
+              {/* Only shown when the order's route genuinely differs from the
+                  customer's current default — keeps the normal ordering flow
+                  clean, and makes a permanent change an intentional, rare,
+                  secondary action rather than something that can happen by
+                  just picking a different route for one order. */}
+              {routeOverride && routeOverride !== customer.route && (
+                <button
+                  type="button"
+                  onClick={() => setShowMakeDefaultConfirm(true)}
+                  className="mt-1.5 text-[11px] font-semibold text-brand-600 hover:text-brand-700"
+                >
+                  ↻ Make this the customer's default route
+                </button>
+              )}
             </div>
           </div>
         )}
@@ -568,7 +685,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
           </div>
         )}
 
-        {originalIds && (
+        {originalQtyById && (
           <div className="rounded-xl bg-indigo-50 border border-indigo-200 px-3 py-2">
             <p className="text-[12px] text-indigo-800 font-medium">
               📋 Editing a loaded order. New items you add will be sent under an <b>ADD-ONS</b> section.
@@ -667,6 +784,35 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
       {toast && (
         <div className="fixed bottom-44 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-sm px-4 py-2.5 rounded-full shadow-pop z-50">
           {toast}
+        </div>
+      )}
+
+      {showMakeDefaultConfirm && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center">
+          <div className="bg-white w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl p-5">
+            <p className="text-lg font-bold text-slate-800 mb-1">Make Route Permanent?</p>
+            <p className="text-sm text-slate-500 mb-4">
+              Are you sure you want to change this customer's default route to{' '}
+              <b className="text-slate-700">{routeOverride}</b>? This route will be used automatically
+              for this customer in future orders. Past orders will keep the route they already had.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setShowMakeDefaultConfirm(false)}
+                disabled={makingDefault}
+                className="flex-1 rounded-xl border border-slate-200 py-3 font-semibold text-slate-600 disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={onConfirmMakeDefaultRoute}
+                disabled={makingDefault}
+                className="flex-1 rounded-xl bg-brand-600 text-white py-3 font-bold active:bg-brand-700 disabled:opacity-50"
+              >
+                {makingDefault ? 'Updating…' : 'Confirm'}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

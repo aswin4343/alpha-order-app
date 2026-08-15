@@ -165,7 +165,12 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
   const [orders, setOrders] = useState(null)
   const [type, setType] = useState('All')
   const [status, setStatus] = useState('pending') // 'pending' | 'verified'
-  const [dateStr, setDateStr] = useState(() => new Date().toISOString().slice(0, 10)) // default today
+  // 'today' must be the IST calendar day, not UTC — new Date().toISOString()
+  // returns the UTC date, which drifts a day off for part of every evening in
+  // India. This caused billing's default date filter to occasionally not
+  // match what reps actually meant by "today".
+  const todayIST = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+  const [dateStr, setDateStr] = useState(() => todayIST()) // default today
   const [expressRoute, setExpressRoute] = useState('') // '' = all express
   const [error, setError] = useState(false)
   const [counts, setCounts] = useState(null) // { all, express, standard, addons }
@@ -235,7 +240,7 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
       <div className="px-3 pt-3 flex items-center gap-2">
         <input type="date" value={dateStr} onChange={(e) => setDateStr(e.target.value)}
           className="flex-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-xs outline-none focus:border-brand-500" />
-        <button onClick={() => setDateStr(new Date().toISOString().slice(0,10))}
+        <button onClick={() => setDateStr(todayIST())}
           className="text-xs font-semibold text-brand-700 px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50">Today</button>
       </div>
       <div className="grid grid-cols-4 gap-1.5 p-3 pb-2 border-b border-slate-50">
@@ -343,13 +348,32 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
         <div className="sticky top-0 bg-white border-b border-slate-200 p-4 flex items-start gap-2 z-10">
           <button onClick={onBackToOrders} className="lg:hidden h-8 w-8 rounded-full flex items-center justify-center text-slate-600 hover:bg-slate-100 text-lg mt-0.5">‹</button>
           <div className="min-w-0 flex-1">
-            <h2 className="text-lg font-bold text-slate-800 truncate">{order.shop_name}</h2>
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <h2 className="text-lg font-bold text-slate-800 truncate">{order.shop_name}</h2>
+              {order.original?.is_new_customer && (
+                <span className="text-[10px] font-extrabold text-blue-700 bg-blue-100 px-2 py-0.5 rounded-full shrink-0">NEW CUSTOMER</span>
+              )}
+            </div>
             <p className="text-xs text-slate-500 mt-0.5">{order.route || 'No route'} · {fmt(order.created_at)}</p>
           </div>
         </div>
       )}
 
       <div className="p-4 lg:p-6 max-w-3xl w-full mx-auto flex-1 pb-6">
+        {order.original?.is_new_customer && (
+          <div className="rounded-xl bg-blue-50 border border-blue-100 px-3 py-2.5 mb-3">
+            <p className="text-[11px] font-bold text-blue-700 uppercase tracking-wide mb-1">New Customer — First Order</p>
+            <div className="text-[12px] text-blue-900 space-y-0.5">
+              {order.original.intro_phone && <p>Phone: {order.original.intro_phone}</p>}
+              {order.original.intro_gstn && <p>GST: {order.original.intro_gstn}</p>}
+              {order.original.intro_credit_days && <p>Credit Days: {order.original.intro_credit_days}</p>}
+              {order.original.intro_email && <p>Email: {order.original.intro_email}</p>}
+              {!order.original.intro_phone && !order.original.intro_gstn && !order.original.intro_email && (
+                <p className="text-blue-500">No additional details entered at creation.</p>
+              )}
+            </div>
+          </div>
+        )}
         {error && <p className="text-center text-sm text-red-500 py-6">Could not load items.</p>}
         {!items && !error && (<div className="py-10 flex justify-center"><div className="h-6 w-6 rounded-full border-4 border-brand-100 border-t-brand-600 animate-spin" /></div>)}
         {items && (
@@ -393,7 +417,18 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
                         {it.removed && (
                           <span className="text-[10px] bg-red-50 text-red-600 px-1.5 py-0.5 rounded">removed</span>
                         )}
+                        {it.is_special_price && (
+                          <span className="text-[10px] font-bold bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded">SPECIAL PRICE</span>
+                        )}
+                        {it.scheme_enabled === false && (
+                          <span className="text-[10px] font-bold bg-slate-100 text-slate-500 px-1.5 py-0.5 rounded">SCHEME OFF</span>
+                        )}
                       </div>
+                      {it.is_special_price && (
+                        <p className="text-[11px] text-purple-600 ml-6 mt-0.5">
+                          Normal ₹{it.normal_price} → Special ₹{it.unit_price}
+                        </p>
+                      )}
                       {it.change_reason && (
                         <p className="text-[10px] text-slate-400 ml-6 mt-0.5">Reason: {it.change_reason}</p>
                       )}
