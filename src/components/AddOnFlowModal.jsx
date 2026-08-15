@@ -162,8 +162,8 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
                 product={p}
                 qty={quantities[p.id] || 0}
                 unit={units[p.id] || 'Piece'}
-                onQty={(v) => onQty(p.id, v)}
-                onUnit={(v) => onUnit(p.id, v)}
+                onQty={onQty}
+                onUnit={onUnit}
                 override={priceOverrides[p.id]}
                 onOverride={onOverride}
               />
