@@ -129,6 +129,8 @@ export async function importFullProducts(file) {
     const buy = numOrNull(['buy', 'Buy'])
     const free = numOrNull(['free', 'Free'])
     const net = numOrNull(['netAfterTax', 'Net', 'Net Rate', 'NR'])
+    const gst = numOrNull(['GST', 'GST%', 'GST %', 'Tax', 'Tax %', 'Tax Rate'])
+    const hsn = pick(row, ['HSN', 'HSN Code', 'HSN CODE', 'HSNCode'])
 
     const key = name.trim().toUpperCase()
     let prod = byName.get(key)
@@ -141,6 +143,8 @@ export async function importFullProducts(file) {
         mrp: mrp ?? null,
         retail: retail ?? null,
         wholesale: wholesale ?? null,
+        gst: gst ?? null,
+        hsn: hsn || null,
         net: []
       }
       byName.set(key, prod)
@@ -151,6 +155,8 @@ export async function importFullProducts(file) {
       if (prod.retail == null && retail != null) prod.retail = retail
       if (prod.wholesale == null && wholesale != null) prod.wholesale = wholesale
       if (prod.base == null && base != null) prod.base = base
+      if (prod.gst == null && gst != null) prod.gst = gst
+      if (prod.hsn == null && hsn) prod.hsn = hsn
     }
 
     // Append this row's scheme (if it has one) to the product's slab list.

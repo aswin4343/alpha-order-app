@@ -82,6 +82,103 @@ function EditableTag({ label, value, overridden, onChange, accent }) {
 }
 
 /**
+ * Click-to-select selling price: MRP / Retail / Wholesale, one always active
+ * (Wholesale by default — per spec section 1). Tapping a pill selects that
+ * price type as the Final Selling Rate for this order line; tapping the
+ * pencil lets the rep type a one-off CUSTOM rate instead. This never touches
+ * the product's own MRP/Retail/Wholesale master values — only the order
+ * line's own priceType + finalRate (stored in `override`), so the master
+ * catalogue is completely unaffected by a rep's per-order choice.
+ */
+function PriceSelector({ product, override, onOverride }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+
+  const options = [
+    { type: 'MRP', value: product.mrp },
+    { type: 'RETAIL', value: product.retail },
+    { type: 'WHOLESALE', value: product.wholesale }
+  ].filter((o) => o.value != null && o.value !== '')
+
+  if (options.length === 0) return null
+
+  // Default selection: WHOLESALE if available, else whatever's first —
+  // matches "Wholesale Price should be the default selected selling price".
+  const defaultType = options.some((o) => o.type === 'WHOLESALE') ? 'WHOLESALE' : options[0].type
+  const activeType = override?.priceType || defaultType
+  const isCustom = activeType === 'CUSTOM'
+  const activeOption = options.find((o) => o.type === activeType)
+  const finalRate = isCustom
+    ? (override?.finalRate ?? activeOption?.value)
+    : (activeOption?.value ?? options[0].value)
+
+  const selectType = (type) => {
+    const opt = options.find((o) => o.type === type)
+    onOverride(product.id, { priceType: type, finalRate: opt?.value ?? null })
+  }
+  const startEdit = () => {
+    setDraft(String(finalRate ?? ''))
+    setEditing(true)
+  }
+  const commitEdit = () => {
+    const n = parseFloat(String(draft).replace(/[^0-9.]/g, ''))
+    if (!isNaN(n) && n > 0) onOverride(product.id, { priceType: 'CUSTOM', finalRate: n })
+    setEditing(false)
+  }
+
+  if (editing) {
+    return (
+      <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-1 rounded-md border bg-white border-brand-300">
+        <span className="opacity-70">₹</span>
+        <input
+          autoFocus
+          type="number"
+          inputMode="decimal"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commitEdit}
+          onKeyDown={(e) => e.key === 'Enter' && commitEdit()}
+          className="w-14 text-[11px] outline-none border-b border-brand-300"
+        />
+      </span>
+    )
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {options.map((o) => {
+        const isActive = !isCustom && activeType === o.type
+        return (
+          <button
+            key={o.type}
+            type="button"
+            onClick={() => selectType(o.type)}
+            className={`text-[10px] leading-none font-semibold px-1.5 py-1 rounded-md border ${
+              isActive
+                ? 'bg-brand-600 border-brand-600 text-white'
+                : 'bg-slate-50 border-slate-200 text-slate-600'
+            }`}
+          >
+            {o.type === 'WHOLESALE' ? 'WP' : o.type === 'RETAIL' ? 'RP' : 'MRP'} ₹{o.value}
+          </button>
+        )
+      })}
+      <button
+        type="button"
+        onClick={startEdit}
+        className={`text-[10px] leading-none font-semibold px-1.5 py-1 rounded-md border ${
+          isCustom
+            ? 'bg-amber-50 border-amber-300 text-amber-800'
+            : 'bg-white border-dashed border-slate-300 text-slate-400'
+        }`}
+      >
+        {isCustom ? `✎ ₹${finalRate}` : '✎ Custom'}
+      </button>
+    </div>
+  )
+}
+
+/**
  * Product row. Scheme products show BR/NR; all others show RP/WP.
  * Layout is tuned for one-hand use on a phone.
  */
@@ -96,9 +193,6 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride }
   const result = selected && !schemeOff ? calculateScheme(qty, product.slabs) : null
 
   // Effective prices: use a one-time override if the rep set one for this order.
-  const effRetail = override?.retail != null ? override.retail : product.retail
-  const effWholesale = override?.wholesale != null ? override.wholesale : product.wholesale
-
   const currentNet =
     result?.slab && product.base
       ? netRate(product.base, result.slab.buy, result.slab.free)
@@ -143,20 +237,7 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride }
             />
           </>
         ) : (
-          <>
-            <EditableTag
-              label="RP"
-              value={effRetail}
-              overridden={override?.retail != null}
-              onChange={(v) => onOverride(product.id, { retail: v })}
-            />
-            <EditableTag
-              label="WP"
-              value={effWholesale}
-              overridden={override?.wholesale != null}
-              onChange={(v) => onOverride(product.id, { wholesale: v })}
-            />
-          </>
+          <PriceSelector product={product} override={override} onOverride={onOverride} />
         )}
       </div>
 

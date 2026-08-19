@@ -14,6 +14,32 @@ import {
   loadBillingCounts
 } from '../utils/cloudSync.js'
 import appIcon from '../assets/app_icon.png'
+import PickerBill, { orderRefFrom } from '../components/PickerBill.jsx'
+import FullBill from '../components/FullBill.jsx'
+
+/**
+ * Maps raw billing order_items rows into the full field set BOTH bill views
+ * need. MRP falls back to the live catalogue by product name only for orders
+ * placed before the mrp/gst_percent/hsn snapshot columns existed — anything
+ * placed after always has these frozen at order time already.
+ */
+function mapBillItems(rawItems, products) {
+  return (rawItems || []).filter((i) => !i.removed).map((i) => {
+    const liveProduct = i.mrp == null
+      ? (products || []).find((p) => (p.name || '').trim().toUpperCase() === (i.product_name || '').trim().toUpperCase())
+      : null
+    return {
+      name: i.product_name,
+      hsn: i.hsn ?? liveProduct?.hsn ?? null,
+      mrp: i.mrp ?? liveProduct?.mrp ?? null,
+      unit: i.unit,
+      qty: i.qty,
+      unit_price: i.unit_price,
+      gst_percent: i.gst_percent ?? liveProduct?.gst ?? null,
+      free_qty: i.free_qty || 0
+    }
+  })
+}
 
 const CHANGE_REASONS = [
   'Stock Out',
@@ -138,11 +164,11 @@ export default function BillingDashboard() {
 
         {openOrder && (
           openOrder.hasAddon ? (
-            <AddonAwareDetailPanel order={openOrder}
+            <AddonAwareDetailPanel order={openOrder} repName={selectedRep?.name}
               onBackToOrders={() => setOpenOrder(null)}
               onVerified={() => { setOpenOrder(null); loadReps() }} />
           ) : (
-            <OrderDetailPanel order={openOrder}
+            <OrderDetailPanel order={openOrder} repName={selectedRep?.name}
               onBackToOrders={() => setOpenOrder(null)}
               onVerified={() => { setOpenOrder(null); loadReps() }} />
           )
@@ -285,7 +311,7 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
   )
 }
 
-function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, embedded, onlyAddonItems }) {
+function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, embedded, onlyAddonItems, repName }) {
   const { products } = useApp()
   const [items, setItems] = useState(null)
   const [busy, setBusy] = useState(false)
@@ -294,6 +320,8 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
   const [editItem, setEditItem] = useState(null)   // item being qty-edited
   const [reasonModal, setReasonModal] = useState(null) // {mode:'remove'|'replace', item, newProduct?}
   const [replaceItemTarget, setReplaceItemTarget] = useState(null) // item being replaced
+  const [showPickerBill, setShowPickerBill] = useState(false)
+  const [showFullBill, setShowFullBill] = useState(false)
 
   // When singleOrderId is given (independent Original/Add-on verification),
   // every item/verify action is scoped to JUST that one order id — never the
@@ -454,6 +482,28 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
               ))}
             </div>
 
+            {/* Picker Bill — print-ready picking sheet for warehouse staff.
+                Only shown in the plain (non-embedded) single-order view; when
+                a shop has add-ons, AddonAwareDetailPanel renders its own
+                consolidated Picker Bill button covering ALL sub-orders — this
+                per-panel one would otherwise only see ITS OWN slice of items. */}
+            {!embedded && (
+              <div className="flex gap-2 mt-3">
+                <button
+                  onClick={() => setShowFullBill(true)}
+                  className="flex-1 rounded-xl border-2 border-brand-600 text-brand-700 py-3 font-bold hover:bg-brand-50"
+                >
+                  🧾 Full Bill
+                </button>
+                <button
+                  onClick={() => setShowPickerBill(true)}
+                  className="flex-1 rounded-xl border-2 border-slate-800 text-slate-800 py-3 font-bold hover:bg-slate-50"
+                >
+                  🖨️ Picker Bill
+                </button>
+              </div>
+            )}
+
             {/* Verify button — immediately below the last product */}
             <div className="mt-4">
               {order._status === 'verified' ? (
@@ -470,6 +520,34 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
           </>
         )}
       </div>
+
+      {showPickerBill && (
+        <PickerBillModal
+          onClose={() => setShowPickerBill(false)}
+          brand={order.brand}
+          shopName={order.shop_name}
+          route={order.route}
+          repName={repName}
+          orderDate={order.created_at}
+          orderRef={orderRefFrom(order.id)}
+          items={mapBillItems(displayItems, products)}
+        />
+      )}
+
+      {showFullBill && (
+        <FullBillModal
+          onClose={() => setShowFullBill(false)}
+          brand={order.brand}
+          shopName={order.shop_name}
+          route={order.route}
+          repName={repName}
+          orderDate={order.created_at}
+          orderRef={orderRefFrom(order.id)}
+          items={mapBillItems(displayItems, products)}
+        />
+      )}
+        />
+      )}
 
       {/* Qty edit modal */}
       {editItem && (
@@ -610,6 +688,75 @@ function Modal({ title, children, onClose }) {
 }
 
 /**
+ * Fullscreen Picker Bill preview + print. `.no-print` hides everything except
+ * the bill itself when window.print() is called — the printed sheet is a
+ * dedicated layout, not a screenshot of the app UI (per the requirement).
+ */
+function PickerBillModal({ onClose, items, ...billProps }) {
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 overflow-y-auto">
+      <div className="min-h-full flex flex-col items-center py-4 px-2">
+        <div className="no-print w-full max-w-2xl flex items-center justify-between mb-3 sticky top-0">
+          <button onClick={onClose} className="rounded-xl bg-white px-4 py-2 text-sm font-bold text-slate-700 shadow hover:bg-slate-50">
+            ← Close
+          </button>
+          <button
+            onClick={() => window.print()}
+            disabled={items == null}
+            className="rounded-xl bg-slate-900 text-white px-5 py-2.5 text-sm font-bold shadow hover:bg-slate-800 disabled:bg-slate-400"
+          >
+            🖨️ Print
+          </button>
+        </div>
+        {items == null ? (
+          <div className="bg-white rounded-2xl w-full max-w-2xl py-16 flex justify-center">
+            <div className="h-6 w-6 rounded-full border-4 border-slate-200 border-t-slate-800 animate-spin" />
+          </div>
+        ) : (
+          <div className="w-full max-w-2xl rounded-2xl overflow-hidden shadow-2xl">
+            <PickerBill {...billProps} items={items} />
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Same fullscreen preview+print shell as PickerBillModal, wider (max-w-4xl)
+ * to fit the GST table's extra columns without cramming.
+ */
+function FullBillModal({ onClose, items, ...billProps }) {
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 overflow-y-auto">
+      <div className="min-h-full flex flex-col items-center py-4 px-2">
+        <div className="no-print w-full max-w-4xl flex items-center justify-between mb-3 sticky top-0">
+          <button onClick={onClose} className="rounded-xl bg-white px-4 py-2 text-sm font-bold text-slate-700 shadow hover:bg-slate-50">
+            ← Close
+          </button>
+          <button
+            onClick={() => window.print()}
+            disabled={items == null}
+            className="rounded-xl bg-slate-900 text-white px-5 py-2.5 text-sm font-bold shadow hover:bg-slate-800 disabled:bg-slate-400"
+          >
+            🖨️ Print
+          </button>
+        </div>
+        {items == null ? (
+          <div className="bg-white rounded-2xl w-full max-w-4xl py-16 flex justify-center">
+            <div className="h-6 w-6 rounded-full border-4 border-slate-200 border-t-slate-800 animate-spin" />
+          </div>
+        ) : (
+          <div className="w-full max-w-4xl rounded-2xl overflow-hidden shadow-2xl">
+            <FullBill {...billProps} items={items} />
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
  * Read-only audit view of orders sales reps deleted after they'd already
  * reached (or were sitting in) Billing's queue. Deliberately separate from
  * the Pending/Verified rep-scoped panels — this is a global history list,
@@ -694,13 +841,44 @@ function DeletedBillsModal({ onClose }) {
  * order. Per spec: verifying one section must NEVER affect the other's
  * billing_status, and a Verified section shows fully but at reduced opacity.
  */
-function AddonAwareDetailPanel({ order, onBackToOrders, onVerified }) {
+function AddonAwareDetailPanel({ order, onBackToOrders, onVerified, repName }) {
   // order.addons is oldest→newest among the add-ons; per spec we treat the
   // combined "Add-on" section as verified only once ALL add-on orders in the
   // group are verified (mirrors how "Original" is a single order today —
   // most groups will have exactly one add-on order in practice).
   const original = order.original
   const addons = order.addons
+  const { products } = useApp()
+  const [showPickerBill, setShowPickerBill] = useState(false)
+  const [pickerItems, setPickerItems] = useState(null)
+  const [showFullBill, setShowFullBill] = useState(false)
+  const [fullBillItems, setFullBillItems] = useState(null)
+
+  // Consolidated Picker Bill / Full Bill: merges ORIGINAL + every add-on's
+  // items into one list, exactly like the main (no-addon) panel already does
+  // via loadBillingOrderItemsFull(order.orderIds) — this is the single-shop
+  // bill the requirement asks for, regardless of how many separate billing
+  // sub-orders make it up.
+  const openPickerBill = async () => {
+    setShowPickerBill(true)
+    try {
+      const full = await loadBillingOrderItemsFull(order.orderIds || [order.id])
+      setPickerItems(full)
+    } catch (e) {
+      console.error('picker bill load failed', e)
+      setPickerItems([])
+    }
+  }
+  const openFullBill = async () => {
+    setShowFullBill(true)
+    try {
+      const full = await loadBillingOrderItemsFull(order.orderIds || [order.id])
+      setFullBillItems(full)
+    } catch (e) {
+      console.error('full bill load failed', e)
+      setFullBillItems([])
+    }
+  }
 
   const fmt = (iso) => new Date(iso).toLocaleString('en-IN', { day:'numeric', month:'short', year:'numeric', hour:'numeric', minute:'2-digit', hour12:true })
 
@@ -712,7 +890,45 @@ function AddonAwareDetailPanel({ order, onBackToOrders, onVerified }) {
           <h2 className="text-lg font-bold text-slate-800 truncate">{order.shop_name}</h2>
           <p className="text-xs text-slate-500 mt-0.5">{order.route || 'No route'} · {addons.length} add-on{addons.length === 1 ? '' : 's'}</p>
         </div>
+        <button
+          onClick={openFullBill}
+          className="shrink-0 rounded-xl border-2 border-brand-600 text-brand-700 px-3 py-2 text-xs font-bold hover:bg-brand-50"
+        >
+          🧾 Full Bill
+        </button>
+        <button
+          onClick={openPickerBill}
+          className="shrink-0 rounded-xl border-2 border-slate-800 text-slate-800 px-3 py-2 text-xs font-bold hover:bg-slate-50"
+        >
+          🖨️ Picker Bill
+        </button>
       </div>
+
+      {showPickerBill && (
+        <PickerBillModal
+          onClose={() => { setShowPickerBill(false); setPickerItems(null) }}
+          brand={order.brand}
+          shopName={order.shop_name}
+          route={order.route}
+          repName={repName}
+          orderDate={order.created_at}
+          orderRef={orderRefFrom(order.id)}
+          items={pickerItems == null ? null : mapBillItems(pickerItems, products)}
+        />
+      )}
+
+      {showFullBill && (
+        <FullBillModal
+          onClose={() => { setShowFullBill(false); setFullBillItems(null) }}
+          brand={order.brand}
+          shopName={order.shop_name}
+          route={order.route}
+          repName={repName}
+          orderDate={order.created_at}
+          orderRef={orderRefFrom(order.id)}
+          items={fullBillItems == null ? null : mapBillItems(fullBillItems, products)}
+        />
+      )}
 
       <div className="p-4 lg:p-6 max-w-3xl w-full mx-auto flex-1 pb-6 space-y-4">
         {/* ADD-ON section(s) — shown first/prominently, per spec. Each add-on
@@ -735,6 +951,7 @@ function AddonAwareDetailPanel({ order, onBackToOrders, onVerified }) {
                   order={order}
                   singleOrderId={a.id}
                   onlyAddonItems
+                  repName={repName}
                   onBackToOrders={onBackToOrders}
                   onVerified={onVerified}
                   embedded
@@ -758,6 +975,7 @@ function AddonAwareDetailPanel({ order, onBackToOrders, onVerified }) {
             <OrderDetailPanel
               order={order}
               singleOrderId={original.id}
+              repName={repName}
               onBackToOrders={onBackToOrders}
               onVerified={onVerified}
               embedded

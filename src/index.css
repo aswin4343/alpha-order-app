@@ -29,3 +29,24 @@ input[type=number] { -moz-appearance: textfield; }
 
 /* Smooth momentum scrolling on lists */
 .scroll-area { -webkit-overflow-scrolling: touch; }
+
+/* -----------------------------------------------------------------------
+   Print isolation for the Picker Bill (and any future dedicated print view).
+   Robust cross-browser technique: hide EVERYTHING via visibility, then make
+   only the print target visible and repositioned — this reliably prints just
+   the bill, never a screenshot of the surrounding app chrome, regardless of
+   what else is in the DOM (sidebars, modals, sticky headers, etc.).
+   ----------------------------------------------------------------------- */
+@media print {
+  body * { visibility: hidden; }
+  .picker-bill-print, .picker-bill-print *,
+  .full-bill-print, .full-bill-print * { visibility: visible; }
+  .picker-bill-print, .full-bill-print {
+    position: absolute;
+    left: 0;
+    top: 0;
+    width: 100%;
+    margin: 0;
+  }
+  .no-print { display: none !important; }
+}

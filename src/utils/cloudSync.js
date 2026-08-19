@@ -1,5 +1,6 @@
 import { supabase } from './supabase.js'
 import { schemeText } from './productDiff.js'
+import { calculateScheme } from './schemes.js'
 
 /**
  * Always fetch the CURRENT authenticated user id straight from Supabase at the
@@ -177,6 +178,14 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     // a price field happens to be populated.
     const isSpecial = i.normalPrice != null && effectivePrice != null && effectivePrice !== i.normalPrice
     const schemeSnapshot = i.schemeEnabled === false ? null : schemeText(i)
+    // The ACTUAL free quantity that applied to this order line, captured NOW
+    // — never recomputed later from the product's current slabs, which can
+    // change. Without this, an invoice generated after the product's scheme
+    // changes (or the product is edited) would show the WRONG free quantity
+    // for an old order. Respects the per-line Scheme Off toggle: off means
+    // zero free units, exactly like every other scheme-aware calculation in
+    // this app already does.
+    const schemeResult = i.schemeEnabled === false ? { free: 0 } : calculateScheme(i.qty, i.slabs)
     return {
       order_id: order.id,
       product_name: i.name,
@@ -187,7 +196,21 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
       scheme_applied: schemeSnapshot === 'No scheme' ? null : schemeSnapshot,
       normal_price: i.normalPrice ?? null,
       is_special_price: isSpecial,
-      scheme_enabled: i.schemeEnabled !== false
+      scheme_enabled: i.schemeEnabled !== false,
+      // Selected Price Type (WHOLESALE | RETAIL | MRP | CUSTOM) alongside the
+      // Final Rate above (unit_price) — stored together so Billing/invoicing
+      // never needs to re-derive which price type was actually charged.
+      price_type: i.priceType || null,
+      // Real free quantity for THIS order line, frozen at order time — the
+      // invoice's FQTY column reads this directly, never recalculated later.
+      free_qty: schemeResult.free || 0,
+      // Billing snapshot — MRP/GST%/HSN as they were on the product when this
+      // order was placed. Never re-derived from the live catalogue later, so
+      // a subsequent price/GST update never rewrites an already-placed order's
+      // bill (same reasoning as normal_price/scheme_applied above).
+      mrp: i.mrp ?? null,
+      gst_percent: i.gst ?? null,
+      hsn: i.hsn ?? null
     }
   })
   const { error: itemsErr } = await supabase.from('order_items').insert(rows)
@@ -745,7 +768,9 @@ export async function fetchAllCloudProducts() {
     mrp: p.mrp,
     retail: p.retail,
     wholesale: p.wholesale,
-    net: p.net || []
+    net: p.net || [],
+    gst: p.gst,
+    hsn: p.hsn
   }))
 }
 
@@ -769,6 +794,8 @@ export async function replaceAllCloudProducts(products, fileName) {
     retail: p.retail ?? null,
     wholesale: p.wholesale ?? null,
     net: p.net || [],
+    gst: p.gst ?? null,
+    hsn: p.hsn || null,
     sort_order: idx
   }))
   const chunk = 500
@@ -1674,7 +1701,7 @@ export async function loadBillingOrders(repId, deliveryType, status = 'pending',
   // reverse). Filtering happens after grouping, based on the tab selected.
   const data = await fetchAllPaged(
     'orders',
-    'id, shop_name, route, total_quantity, total_value, created_at, order_date, sales_rep_id, billing_status, billing_verified_at, is_new_customer, intro_phone, intro_gstn, intro_credit_days, intro_email',
+    'id, shop_name, route, total_quantity, total_value, created_at, order_date, sales_rep_id, billing_status, billing_verified_at, is_new_customer, intro_phone, intro_gstn, intro_credit_days, intro_email, brand',
     (q) => {
       q = q.eq('sales_rep_id', repId).eq('hidden', false).order('created_at', { ascending: true }) // oldest first
       if (dateStr) q = q.eq('order_date', dateStr)
@@ -1704,6 +1731,7 @@ export async function loadBillingOrders(repId, deliveryType, status = 'pending',
         orders: [o], // oldest → newest; orders[0] is the ORIGINAL
         shop_name: o.shop_name,
         route: o.route,
+        brand: o.brand,
         created_at: o.created_at,
         orderCount: 1
       }
@@ -1841,7 +1869,7 @@ export async function loadBillingOrderItemsFull(orderIdOrIds) {
   const ids = Array.isArray(orderIdOrIds) ? orderIdOrIds : [orderIdOrIds]
   const { data, error } = await supabase
     .from('order_items')
-    .select('id, order_id, product_name, qty, unit, is_addon, available, original_qty, change_type, change_reason, original_product_name, removed, normal_price, is_special_price, scheme_enabled, unit_price')
+    .select('id, order_id, product_name, qty, unit, is_addon, available, original_qty, change_type, change_reason, original_product_name, removed, normal_price, is_special_price, scheme_enabled, unit_price, mrp, gst_percent, hsn, free_qty, price_type')
     .in('order_id', ids)
     .order('removed', { ascending: true })
   if (error) throw error

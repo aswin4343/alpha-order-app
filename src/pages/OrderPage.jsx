@@ -328,30 +328,46 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
             wholesaleOverridden: priceOverrides[id]?.wholesale != null,
             baseOverridden: priceOverrides[id]?.base != null,
             netOverridden: priceOverrides[id]?.net != null,
+            // Billing snapshot fields — MRP, GST% and HSN are captured from the
+            // product AT ORDER TIME (never re-derived later), same reasoning as
+            // normalPrice/schemeSnapshot above: the catalogue can change after
+            // the order is placed, but the bill must reflect what applied then.
+            mrp: p.mrp ?? null,
+            gst: p.gst ?? null,
+            hsn: p.hsn ?? null,
             priceOverridden:
               priceOverrides[id]?.retail != null ||
               priceOverrides[id]?.wholesale != null ||
               priceOverrides[id]?.base != null ||
               priceOverrides[id]?.net != null,
-            // Final Selling Price — the exact rule: if the rep manually
-            // edited ANY price field (retail, wholesale, base, or net),
-            // THAT edited value is the real price, full stop. Never fall
-            // back to retail once an edit exists, and never substitute
-            // wholesale automatically just because of customer category.
-            // Only when nothing was edited does it default to Retail Price.
-            // Checked in a fixed, deliberate order (net > base > wholesale >
-            // retail) purely to pick ONE edited value when the rep touched
-            // more than one field — not a "prefer this price type" ranking.
+            // Selected Price Type + Final Selling Rate — the click-to-select
+            // MRP/Retail/Wholesale/Custom control on the product card
+            // (PriceSelector) is the primary source for any non-scheme
+            // product: it always sets BOTH priceType and finalRate together,
+            // and defaults to WHOLESALE (not Retail) per this feature's
+            // explicit requirement. Scheme products (BR/NR editable tags)
+            // don't go through PriceSelector at all, so they fall back to the
+            // older base/net/wholesale/retail chain, unaffected by this change.
+            priceType: priceOverrides[id]?.priceType || (priceOverrides[id]
+              ? null // legacy override present (base/net/etc, e.g. a scheme product) — no explicit type
+              : (p.wholesale != null ? 'WHOLESALE' : p.retail != null ? 'RETAIL' : p.mrp != null ? 'MRP' : null)),
             finalSellingPrice:
+              priceOverrides[id]?.finalRate != null ? priceOverrides[id].finalRate :
               priceOverrides[id]?.net != null ? priceOverrides[id].net :
               priceOverrides[id]?.base != null ? priceOverrides[id].base :
               priceOverrides[id]?.wholesale != null ? priceOverrides[id].wholesale :
               priceOverrides[id]?.retail != null ? priceOverrides[id].retail :
-              (p.retail != null ? p.retail : null),
-            // The catalogue's own Retail Price, always — this is the
-            // "Default Retail Price" Billing compares the Final Selling
-            // Price against to decide whether to show SPECIAL PRICE.
-            normalPrice: p.retail != null ? p.retail : null,
+              // No selection made at all yet (shouldn't normally happen once
+              // PriceSelector renders, but keeps old behaviour as a fallback):
+              // Wholesale first, matching the new default, then Retail.
+              (p.wholesale != null ? p.wholesale : p.retail != null ? p.retail : null),
+            // The price the system would use with NO selection at all — i.e.
+            // the true default (Wholesale-first, per this feature). This is
+            // what Billing's SPECIAL PRICE detection compares against now;
+            // it must NOT stay hardcoded to Retail, or every ordinary order
+            // using the new Wholesale default would be falsely flagged as a
+            // special price the moment this feature shipped.
+            normalPrice: p.wholesale != null ? p.wholesale : p.retail != null ? p.retail : null,
             // Per-line scheme exception — defaults true (ON), only ever set
             // false when the rep explicitly toggles it for this order/line.
             schemeEnabled: priceOverrides[id]?.schemeEnabled !== false
