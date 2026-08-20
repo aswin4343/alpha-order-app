@@ -167,7 +167,15 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     return null
   }
 
-  const rows = items.map((i) => {
+  // Build the item rows. This is wrapped in try/catch because it runs AFTER
+  // the orders row is already committed — if anything here throws (e.g. a
+  // malformed item), we must NOT leave an orphan order with no items. Any
+  // failure rolls back the order row and re-throws so the caller can tell the
+  // rep the order did not save, instead of silently producing an empty order
+  // that only surfaces later in Billing as "0 items".
+  let rows
+  try {
+    rows = items.map((i) => {
     // Final Selling Price — see the exact priority rule computed once in
     // OrderPage: manually edited price (any field) wins; otherwise Retail
     // Price. Captured AT ORDER TIME so future product price/scheme changes
@@ -212,9 +220,26 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
       gst_percent: i.gst ?? null,
       hsn: i.hsn ?? null
     }
-  })
+    })
+  } catch (buildErr) {
+    // Building the item rows threw AFTER the order was committed. Roll back
+    // the orphan order row so it can never appear in Billing with 0 items,
+    // then re-throw so the caller shows the rep a real failure.
+    console.error('cloud order_items build failed — rolling back order', buildErr)
+    await supabase.from('orders').delete().eq('id', order.id)
+    throw buildErr
+  }
+
   const { error: itemsErr } = await supabase.from('order_items').insert(rows)
-  if (itemsErr) console.error('cloud order_items insert failed', itemsErr)
+  if (itemsErr) {
+    // The order row committed but its items did NOT. Previously this only
+    // logged and returned order.id, so the rep saw success while Billing later
+    // found an empty order. Instead: delete the orphan order row and throw, so
+    // the order fails cleanly and the rep is prompted to retry.
+    console.error('cloud order_items insert failed — rolling back order', itemsErr)
+    await supabase.from('orders').delete().eq('id', order.id)
+    throw new Error('order_items insert failed: ' + (itemsErr.message || 'unknown error'))
+  }
 
   return order.id
 }
@@ -822,10 +847,101 @@ export async function replaceAllCloudProducts(products, fileName) {
   return { count: rows.length, version: nextVersion }
 }
 
-// ---------------------------------------------------------------------------
-// SALESPERSON MANAGEMENT (admin) — rename display names.
-// Login id/password are unchanged; only the shown name updates.
-// ---------------------------------------------------------------------------
+/**
+ * NON-DESTRUCTIVE MERGE upload (admin only).
+ *
+ * Unlike replaceAllCloudProducts (which wipes and re-inserts the whole table),
+ * this matches the uploaded products against the EXISTING catalogue by name and
+ * updates ONLY the fields the Excel provides a valid value for. It never
+ * deletes a product, never blanks an existing value, and never invents data.
+ *
+ * Per-product rules (implementing the admin spec exactly):
+ *  • Match key = product name, trimmed + upper-cased (same key used everywhere
+ *    else in the app).
+ *  • For each matched product, a field is updated ONLY when the Excel has a
+ *    genuinely valid (non-null) value for it. A blank Excel cell leaves the
+ *    existing value exactly as it was — it never overwrites with null.
+ *  • Products in the Excel with NO valid data at all → skipped (untouched).
+ *  • Products in the catalogue but NOT in the Excel → untouched.
+ *  • Products in the Excel with NO name-match in the catalogue → ignored
+ *    (reported back so the admin can review near-miss names). Never inserted.
+ *  • GST%/HSN are applied even when a product still has no price — this is
+ *    intentional (admin decision): it lets GST attach now, and the product
+ *    simply keeps behaving as before until a price is also confirmed.
+ *
+ * Returns a summary: { updated, skippedNoData, unmatched:[names], version }.
+ */
+export async function mergeUpdateCloudProducts(uploadedList, fileName) {
+  // 1. Fetch the current live catalogue (all pages).
+  const existing = await fetchAllCloudProducts()
+  const byKey = new Map()
+  for (const p of existing) {
+    byKey.set((p.name || '').trim().toUpperCase(), p)
+  }
+
+  // 2. Walk the uploaded list; build a targeted update for each match.
+  const updates = []          // { id, patch }
+  const unmatched = []        // Excel names with no catalogue match
+  let skippedNoData = 0
+
+  const hasVal = (v) => v !== null && v !== undefined && v !== ''
+
+  for (const u of uploadedList) {
+    const key = (u.name || '').trim().toUpperCase()
+    if (!key) continue
+    const target = byKey.get(key)
+    if (!target) { unmatched.push(u.name); continue }
+
+    // Only include fields the Excel actually provides. Never write a null over
+    // an existing value.
+    const patch = {}
+    if (hasVal(u.mrp)) patch.mrp = u.mrp
+    if (hasVal(u.retail)) patch.retail = u.retail
+    if (hasVal(u.wholesale)) patch.wholesale = u.wholesale
+    if (hasVal(u.base)) patch.base = u.base
+    if (hasVal(u.gst)) patch.gst = u.gst
+    if (hasVal(u.hsn)) patch.hsn = u.hsn
+    // Scheme slabs: only replace when the Excel genuinely carried scheme rows
+    // for this product (non-empty). An empty slabs array means "no scheme info
+    // in this file" — NOT "clear the existing scheme".
+    if (Array.isArray(u.slabs) && u.slabs.length > 0) {
+      patch.slabs = u.slabs
+      if (Array.isArray(u.net) && u.net.length > 0) patch.net = u.net
+    }
+
+    if (Object.keys(patch).length === 0) { skippedNoData++; continue }
+    updates.push({ id: target.id, patch })
+  }
+
+  // 3. Apply updates one product at a time (each is a scoped update by id, so a
+  // single bad row can never affect the rest). Supabase has no bulk-different-
+  // values update, so we loop; the catalogue is <1000 rows so this is fine.
+  let updated = 0
+  for (const { id, patch } of updates) {
+    const { error } = await supabase.from('products').update(patch).eq('id', id)
+    if (error) {
+      console.error('merge update failed for product', id, error)
+      throw new Error('Merge failed while updating a product: ' + (error.message || 'unknown'))
+    }
+    updated++
+  }
+
+  // 4. Bump catalogue version so reps re-download the enriched data.
+  const meta = await getCatalogueMeta()
+  const nextVersion = (meta?.version || 0) + 1
+  const { error: metaErr } = await supabase
+    .from('catalogue_meta')
+    .update({
+      version: nextVersion,
+      file_name: fileName ? `${fileName} (merge)` : null,
+      uploaded_at: new Date().toISOString(),
+      updated_at: new Date().toISOString()
+    })
+    .eq('id', 1)
+  if (metaErr) throw metaErr
+
+  return { updated, skippedNoData, unmatched, version: nextVersion }
+}
 
 /** List all salespeople (admin only). */
 export async function listSalespeople() {

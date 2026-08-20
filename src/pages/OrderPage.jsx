@@ -622,6 +622,14 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
 
       // Persist the order to Supabase (rep-attributed; PII stays local).
       // Use the FRESH authenticated id at save time to avoid stale attribution.
+      //
+      // CRITICAL: if the save fails we must NOT pretend the order went through.
+      // Previously this caught the error, logged it, and then carried on to
+      // copy/open WhatsApp and clear the session — so the rep saw "Order
+      // copied"/WhatsApp opened and believed it saved, while the database had
+      // an empty (or missing) order. Billing then found "0 items" days later.
+      // Now: on failure we STOP here, keep the order on screen so nothing is
+      // lost, and tell the rep to retry.
       try {
         const uid = (await currentUserId()) || user.id
         await saveCloudOrder({
@@ -644,6 +652,13 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
         })
       } catch (e) {
         console.error('cloud order save failed', e)
+        // Abort the whole dispatch: do not copy, do not open WhatsApp, do not
+        // clear the session. Surface a clear, persistent error so the rep knows
+        // the order was NOT saved and can try again with everything intact.
+        setToast('⚠ Order NOT saved — please try again')
+        setTimeout(() => setToast(''), 5000)
+        setSending(false)
+        return
       }
       if (viaCopy) {
         try {
