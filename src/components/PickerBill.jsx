@@ -186,6 +186,7 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
           {p === pages.length - 1 && (
             <div className="mt-3 text-[10px] text-slate-400 text-center">
               {all.length} product line(s) · QTY {totQ} · F QTY {totF} · TOTAL QTY {totT}
+              <span className="ml-2 opacity-60">· build v20 · {ROWS_PER_PAGE}/page</span>
             </div>
           )}
         </div>

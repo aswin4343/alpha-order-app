@@ -7,7 +7,12 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: 'prompt',
+      // autoUpdate: a new deploy activates on the next load automatically —
+      // no prompt, no stale bundle held by the old service worker. This is
+      // essential for a frequently-deployed business app; 'prompt' previously
+      // left users on an old cached JS bundle indefinitely (the "I deployed but
+      // it's still showing the old version" problem).
+      registerType: 'autoUpdate',
       // Custom service worker (injectManifest) so we can add Web Push handlers
       // for the QC notifications while keeping full offline precaching.
       strategies: 'injectManifest',

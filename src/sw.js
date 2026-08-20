@@ -7,10 +7,13 @@
 // browser granting notification permission).
 // ============================================================================
 
-import { precacheAndRoute } from 'workbox-precaching'
+import { precacheAndRoute, cleanupOutdatedCaches } from 'workbox-precaching'
 
 // Injected at build time with the list of precached assets (app shell etc.).
 precacheAndRoute(self.__WB_MANIFEST || [])
+// Purge precaches from previous builds so a new deploy never serves a stale
+// JS bundle (root cause of the "still showing old version" problem).
+cleanupOutdatedCaches()
 
 // Activate immediately so push works right after the first install.
 self.addEventListener('install', () => self.skipWaiting())

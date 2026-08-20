@@ -6,7 +6,8 @@ import { AppProvider } from './context/AppContext.jsx'
 import './index.css'
 
 // Register the service worker (enables offline caching AND Web Push for QC).
-// Auto-update: when a new version is available, it activates on next load.
+// autoUpdate mode: a new deploy is fetched and activated on the next load,
+// so users always get the latest code without a manual prompt or cache clear.
 import { registerSW } from 'virtual:pwa-register'
 registerSW({ immediate: true })
 
