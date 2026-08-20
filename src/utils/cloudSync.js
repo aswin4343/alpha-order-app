@@ -295,6 +295,51 @@ export async function loadPreviousOrders(shopName, route) {
 }
 
 /**
+ * Customer-specific "last sold price" map, for the price-consistency indicator
+ * on product cards.
+ *
+ * Returns an object: { [PRODUCT_NAME_UPPERCASED]: lastUnitPrice } holding the
+ * most-recent price this specific customer was charged for each product they've
+ * bought before. Used only as a reference badge ("Last ₹705") — it never
+ * changes the rep's price selection.
+ *
+ * Keyed by shop_name + route (the same identity key loadPreviousOrders uses),
+ * so it works whether or not the customer has a cloud customer_id yet. Counts
+ * ANY past order to this customer (admin choice), excluding hidden/deleted ones.
+ * "Most recent" = latest order created_at; when a product appears in multiple
+ * orders, the newest order's unit_price wins.
+ */
+export async function loadCustomerLastPrices(shopName, route) {
+  if (!shopName) return {}
+  const { data, error } = await supabase
+    .from('orders')
+    .select('created_at, order_items(product_name, unit_price)')
+    .eq('shop_name', shopName)
+    .eq('route', route || '')
+    .eq('hidden', false)
+    .order('created_at', { ascending: false })
+    .limit(50)
+  if (error) {
+    console.error('load customer last prices failed', error)
+    return {}
+  }
+  // Orders come newest-first. Walk them in that order and take the FIRST
+  // (i.e. most recent) unit_price we see for each product; later/older orders
+  // don't overwrite it. Skip rows with no usable price.
+  const out = {}
+  for (const o of data || []) {
+    for (const it of o.order_items || []) {
+      const key = (it.product_name || '').trim().toUpperCase()
+      if (!key) continue
+      if (out[key] != null) continue // already have a newer price for this product
+      if (it.unit_price == null) continue
+      out[key] = it.unit_price
+    }
+  }
+  return out
+}
+
+/**
  * Personal performance counts for the logged-in rep.
  * Returns orders + visits totals for today / this week / this month.
  */

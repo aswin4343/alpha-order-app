@@ -182,7 +182,7 @@ function PriceSelector({ product, override, onOverride }) {
  * Product row. Scheme products show BR/NR; all others show RP/WP.
  * Layout is tuned for one-hand use on a phone.
  */
-function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride }) {
+function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, lastPrice }) {
   const selected = qty > 0
   const badge = schemeBadge(product.slabs)
   const hasScheme = !!badge
@@ -204,10 +204,24 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride }
         selected ? 'border-brand-500' : 'border-transparent'
       }`}
     >
-      {/* Name */}
-      <p className="text-[14px] leading-snug font-medium text-slate-800 break-words">
-        {product.name}
-      </p>
+      {/* Name + customer-specific last-sold-price reference badge.
+          The badge is INFORMATION ONLY — it shows what this customer last paid
+          for this product, to help reps keep pricing consistent. It never
+          changes the selected price. Shown only when a price is known for this
+          customer+product (undefined = no customer selected or never bought). */}
+      <div className="flex items-start justify-between gap-2">
+        <p className="text-[14px] leading-snug font-medium text-slate-800 break-words min-w-0">
+          {product.name}
+        </p>
+        {lastPrice != null && (
+          <span
+            title="Last price this customer paid for this product"
+            className="shrink-0 text-[10px] leading-none font-semibold text-slate-500 bg-slate-100 border border-slate-200 px-1.5 py-1 rounded-md whitespace-nowrap"
+          >
+            Last ₹{lastPrice}
+          </span>
+        )}
+      </div>
 
       {/* Brand + scheme + price tags, all compact */}
       <div className="flex flex-wrap items-center gap-1 mt-1.5">

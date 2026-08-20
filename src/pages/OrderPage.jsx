@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
-import { saveCloudOrder, currentUserId, countUnreadAnnouncements, listAllRoutes, ensureCloudCustomer, updateCustomerDefaultRoute } from '../utils/cloudSync.js'
+import { saveCloudOrder, currentUserId, countUnreadAnnouncements, listAllRoutes, ensureCloudCustomer, updateCustomerDefaultRoute, loadCustomerLastPrices } from '../utils/cloudSync.js'
 import PreviousOrdersModal from '../components/PreviousOrdersModal.jsx'
 import OrderSummaryModal from '../components/OrderSummaryModal.jsx'
 import { useSearch } from '../hooks/useSearch.js'
@@ -78,6 +78,10 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   // One-time price overrides for THIS order only: { id: { retail?, wholesale? } }
   // Cleared on reset / new order / customer switch — never touches the DB.
   const [priceOverrides, setPriceOverrides] = useState(saved?.priceOverrides ?? {})
+  // Customer-specific "last sold price" map { PRODUCT_NAME_UPPER: price }, used
+  // only to show a subtle "Last ₹X" reference badge on product cards. Never
+  // affects price selection. Refetched whenever the selected customer changes.
+  const [lastPrices, setLastPrices] = useState({})
   const [toast, setToast] = useState('')
   const [visitStatus, setVisitStatus] = useState(saved?.visitStatus ?? '')
   const [visitRemark, setVisitRemark] = useState(saved?.visitRemark ?? '')
@@ -563,6 +567,19 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   const [visitAlreadySaved, setVisitAlreadySaved] = useState(false)
   useEffect(() => { setVisitAlreadySaved(false) }, [customer?.id, visitStatus, visitRemark])
 
+  // Load this customer's last-sold prices whenever the selected customer
+  // changes. One query covers every product (returns a name→price map), so all
+  // 872 cards can look up their badge without per-card fetches. Cleared to {}
+  // when no customer is selected, so the badge disappears (display rule #1).
+  useEffect(() => {
+    let cancelled = false
+    if (!customer?.name) { setLastPrices({}); return }
+    loadCustomerLastPrices(customer.name, customer.route)
+      .then((map) => { if (!cancelled) setLastPrices(map || {}) })
+      .catch((e) => { console.error('last prices load failed', e); if (!cancelled) setLastPrices({}) })
+    return () => { cancelled = true }
+  }, [customer?.name, customer?.route])
+
   const handleCopyVisit = async () => {
     if (!customer || !visitReady) return
     if (visitBusy) return // already saving — ignore double-tap
@@ -840,6 +857,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
               unit={units[p.id] || 'Piece'}
               onQty={onQty}
               onUnit={onUnit}
+              lastPrice={customer ? lastPrices[(p.name || '').trim().toUpperCase()] : undefined}
             />
           ))}
 

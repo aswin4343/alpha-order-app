@@ -384,6 +384,18 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
             </div>
             <p className="text-xs text-slate-500 mt-0.5">{order.route || 'No route'} · {fmt(order.created_at)}</p>
           </div>
+          <button
+            onClick={() => setShowFullBill(true)}
+            className="shrink-0 rounded-xl border-2 border-brand-600 text-brand-700 px-3 py-2 text-xs font-bold hover:bg-brand-50"
+          >
+            🧾 Full Bill
+          </button>
+          <button
+            onClick={() => setShowPickerBill(true)}
+            className="shrink-0 rounded-xl border-2 border-slate-800 text-slate-800 px-3 py-2 text-xs font-bold hover:bg-slate-50"
+          >
+            🖨️ Picker Bill
+          </button>
         </div>
       )}
 
@@ -482,28 +494,6 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
               ))}
             </div>
 
-            {/* Picker Bill — print-ready picking sheet for warehouse staff.
-                Only shown in the plain (non-embedded) single-order view; when
-                a shop has add-ons, AddonAwareDetailPanel renders its own
-                consolidated Picker Bill button covering ALL sub-orders — this
-                per-panel one would otherwise only see ITS OWN slice of items. */}
-            {!embedded && (
-              <div className="flex gap-2 mt-3">
-                <button
-                  onClick={() => setShowFullBill(true)}
-                  className="flex-1 rounded-xl border-2 border-brand-600 text-brand-700 py-3 font-bold hover:bg-brand-50"
-                >
-                  🧾 Full Bill
-                </button>
-                <button
-                  onClick={() => setShowPickerBill(true)}
-                  className="flex-1 rounded-xl border-2 border-slate-800 text-slate-800 py-3 font-bold hover:bg-slate-50"
-                >
-                  🖨️ Picker Bill
-                </button>
-              </div>
-            )}
-
             {/* Verify button — immediately below the last product */}
             <div className="mt-4">
               {order._status === 'verified' ? (
@@ -544,8 +534,6 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
           orderDate={order.created_at}
           orderRef={orderRefFrom(order.id)}
           items={mapBillItems(displayItems, products)}
-        />
-      )}
         />
       )}
 
