@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { computeBill, numberToWordsIndian } from '../utils/billingCalc.js'
-import { companyFor } from './PickerBill.jsx'
-import { ALPHA_LOGO, ZEDGO_LOGO } from '../assets/logos.js'
+import { companyFor, brandLogoFor } from './PickerBill.jsx'
 
 const rupee = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
@@ -37,6 +36,7 @@ function CopyableName({ name }) {
  */
 export default function FullBill({ brand, shopName, route, salesRepName, orderDate, orderRef, items }) {
   const company = companyFor(brand)
+  const brandLogo = brandLogoFor(brand)
   const bill = computeBill(items || [])
 
   const prettyDate = (() => {
@@ -63,13 +63,10 @@ export default function FullBill({ brand, shopName, route, salesRepName, orderDa
       `}</style>
 
       <div className="full-bill-print p-4 sm:p-6 max-w-4xl mx-auto text-[12px]">
-        {/* Letterhead — Alpha logo left, Zedgo right, name centered. Logos keep
-            aspect ratio (fixed height, auto width) and are base64-embedded so
-            they print/PDF reliably. */}
+        {/* Letterhead — ONE brand-correct logo (never both). */}
         <div className="border-b-2 border-slate-800 pb-2 mb-2">
           <div className="flex items-center justify-between gap-3">
-            <img src={ALPHA_LOGO} alt="Alpha Trade Links" className="h-10 w-auto object-contain shrink-0" style={{ printColorAdjust: 'exact', WebkitPrintColorAdjust: 'exact' }} />
-            <div className="text-center min-w-0">
+            <div className="text-left min-w-0">
               <h1 className="text-xl font-black tracking-wide text-slate-900 leading-tight">{company.name}</h1>
               <p className="text-xs text-slate-600">{company.tagline}</p>
               <p className="text-[11px] text-slate-500">{company.address}</p>
@@ -77,7 +74,7 @@ export default function FullBill({ brand, shopName, route, salesRepName, orderDa
                 {company.gstin ? `GSTIN: ${company.gstin}` : ''}{company.fssai ? `  ·  FSSAI: ${company.fssai}` : ''}
               </p>
             </div>
-            <img src={ZEDGO_LOGO} alt="Zedgo" className="h-10 w-auto object-contain shrink-0" style={{ printColorAdjust: 'exact', WebkitPrintColorAdjust: 'exact' }} />
+            <img src={brandLogo.src} alt={brandLogo.alt} className="h-12 w-auto object-contain shrink-0" style={{ printColorAdjust: 'exact', WebkitPrintColorAdjust: 'exact' }} />
           </div>
         </div>
 
