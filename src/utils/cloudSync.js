@@ -2094,9 +2094,52 @@ function idsOf(itemOrId) {
   return [itemOrId.id]
 }
 
+/**
+ * Append ONE immutable audit record for a billing modification.
+ * Never updates/deletes — each call is a permanent row. Failures are logged
+ * but do NOT block the edit itself (the edit is the primary action; a missing
+ * audit row is better than a blocked verification). Callers pass an `audit`
+ * context object with order/shop/rep/user info gathered in the UI.
+ */
+export async function logBillingAudit(rec) {
+  try {
+    const { error } = await supabase.from('billing_audit_log').insert({
+      order_id: rec.orderId ?? null,
+      order_item_id: rec.orderItemId ?? null,
+      order_ref: rec.orderRef ?? null,
+      shop_name: rec.shopName ?? null,
+      route: rec.route ?? null,
+      sales_rep_name: rec.salesRepName ?? null,
+      edited_by: rec.editedBy ?? null,
+      edited_by_id: rec.editedById ?? null,
+      action_type: rec.actionType,
+      product_name: rec.productName ?? null,
+      original_product_name: rec.originalProductName ?? null,
+      replacement_product_name: rec.replacementProductName ?? null,
+      original_qty: rec.originalQty ?? null,
+      new_qty: rec.newQty ?? null,
+      reason: rec.reason
+    })
+    if (error) console.error('billing audit log insert failed', error)
+  } catch (e) {
+    console.error('billing audit log threw', e)
+  }
+}
+
+/** Load billing audit records within a date range (inclusive), newest first. */
+export async function loadBillingAudit(fromISO, toISO) {
+  let q = supabase.from('billing_audit_log').select('*').order('created_at', { ascending: false })
+  if (fromISO) q = q.gte('created_at', fromISO)
+  if (toISO) q = q.lte('created_at', toISO)
+  const { data, error } = await q
+  if (error) { console.error('load billing audit failed', error); return [] }
+  return data || []
+}
+
 /** Edit a product's quantity (keeps original_qty the first time it changes). */
-export async function editItemQty(item, newQty, reason) {
+export async function editItemQty(item, newQty, reason, audit) {
   const ids = idsOf(item)
+  const originalQty = item.original_qty != null ? item.original_qty : item.qty
   const patch = {
     qty: newQty,
     change_type: 'qty',
@@ -2114,10 +2157,23 @@ export async function editItemQty(item, newQty, reason) {
       .update({ qty: 0, change_type: 'qty', edited_at: new Date().toISOString() })
       .in('id', rest)
   }
+  // Immutable audit — logs the qty BEFORE this edit → the new qty. A later edit
+  // appends its own row (5->4 after 6->5), never overwriting this one.
+  if (audit) {
+    await logBillingAudit({
+      ...audit,
+      orderItemId: first,
+      actionType: 'QUANTITY EDITED',
+      productName: item.product_name,
+      originalQty: item.qty,
+      newQty,
+      reason: reason || audit.reason || '—'
+    })
+  }
 }
 
 /** Remove a product from the order (mandatory reason). Keeps the row for audit. */
-export async function removeItem(item, reason) {
+export async function removeItem(item, reason, audit) {
   const ids = idsOf(item)
   const patch = {
     removed: true,
@@ -2129,10 +2185,21 @@ export async function removeItem(item, reason) {
   if (item.original_qty == null) patch.original_qty = item.qty
   const { error } = await supabase.from('order_items').update(patch).in('id', ids)
   if (error) throw error
+  if (audit) {
+    await logBillingAudit({
+      ...audit,
+      orderItemId: ids[0],
+      actionType: 'PRODUCT REMOVED',
+      productName: item.product_name,
+      originalQty: item.qty,
+      newQty: 0,
+      reason: reason || '—'
+    })
+  }
 }
 
 /** Replace a product with another (mandatory reason). Keeps original name for audit. */
-export async function replaceItem(item, newProductName, reason) {
+export async function replaceItem(item, newProductName, reason, audit) {
   const ids = idsOf(item)
   const patch = {
     product_name: newProductName,
@@ -2150,6 +2217,19 @@ export async function replaceItem(item, newProductName, reason) {
     await supabase.from('order_items')
       .update({ removed: true, available: false, change_type: 'removed', change_reason: 'Merged duplicate', edited_at: new Date().toISOString() })
       .in('id', rest)
+  }
+  if (audit) {
+    await logBillingAudit({
+      ...audit,
+      orderItemId: first,
+      actionType: 'PRODUCT REPLACED',
+      productName: newProductName,
+      originalProductName: item.original_product_name || item.product_name,
+      replacementProductName: newProductName,
+      originalQty: item.qty,
+      newQty: item.qty,
+      reason: reason || '—'
+    })
   }
 }
 

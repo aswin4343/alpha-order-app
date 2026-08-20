@@ -16,6 +16,7 @@ import {
 import appIcon from '../assets/app_icon.png'
 import PickerBill, { orderRefFrom } from '../components/PickerBill.jsx'
 import FullBill from '../components/FullBill.jsx'
+import AuditReport from '../components/AuditReport.jsx'
 
 /**
  * Maps raw billing order_items rows into the full field set BOTH bill views
@@ -110,6 +111,7 @@ export default function BillingDashboard() {
   }
 
   const [showDeleted, setShowDeleted] = useState(false)
+  const [showAudit, setShowAudit] = useState(false)
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
@@ -120,6 +122,9 @@ export default function BillingDashboard() {
             <h1 className="text-base font-bold text-slate-800 leading-tight">Billing Verification</h1>
             <p className="text-[11px] text-slate-400">{profile?.full_name || 'Billing Team'}</p>
           </div>
+          <button onClick={() => setShowAudit(true)} className="text-sm font-semibold text-slate-500 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 hidden sm:block">
+            Edit History
+          </button>
           <button onClick={() => setShowDeleted(true)} className="text-sm font-semibold text-slate-500 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 hidden sm:block">
             Deleted Bills
           </button>
@@ -183,6 +188,7 @@ export default function BillingDashboard() {
       </div>
 
       {showDeleted && <DeletedBillsModal onClose={() => setShowDeleted(false)} />}
+      {showAudit && <AuditReport onClose={() => setShowAudit(false)} />}
     </div>
   )
 }
@@ -313,6 +319,7 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
 
 function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, embedded, onlyAddonItems, repName }) {
   const { products } = useApp()
+  const { profile } = useAuth()
   const [items, setItems] = useState(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(false)
@@ -322,6 +329,19 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
   const [replaceItemTarget, setReplaceItemTarget] = useState(null) // item being replaced
   const [showPickerBill, setShowPickerBill] = useState(false)
   const [showFullBill, setShowFullBill] = useState(false)
+
+  // Shared audit context for every billing edit on this order. Threaded into
+  // the edit modals so each modification writes a complete, traceable,
+  // immutable record (order → shop → rep → billing user).
+  const auditCtx = {
+    orderId: singleOrderId || order.id,
+    orderRef: orderRefFrom(singleOrderId || order.id),
+    shopName: order.shop_name,
+    route: order.route,
+    salesRepName: repName,
+    editedBy: profile?.full_name || 'Billing Team',
+    editedById: profile?.id || null
+  }
 
   // When singleOrderId is given (independent Original/Add-on verification),
   // every item/verify action is scoped to JUST that one order id — never the
@@ -394,7 +414,7 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
             onClick={() => setShowPickerBill(true)}
             className="shrink-0 rounded-xl border-2 border-slate-800 text-slate-800 px-3 py-2 text-xs font-bold hover:bg-slate-50"
           >
-            🖨️ Picker Bill
+            🖨️ Warehouse Slip
           </button>
         </div>
       )}
@@ -539,7 +559,7 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
 
       {/* Qty edit modal */}
       {editItem && (
-        <QtyModal item={editItem} onClose={() => setEditItem(null)}
+        <QtyModal item={editItem} audit={auditCtx} onClose={() => setEditItem(null)}
           onSaved={() => { setEditItem(null); reload() }} />
       )}
 
@@ -552,7 +572,7 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
 
       {/* Reason modal (remove / replace) */}
       {reasonModal && (
-        <ReasonModal info={reasonModal} onClose={() => setReasonModal(null)}
+        <ReasonModal info={reasonModal} audit={auditCtx} onClose={() => setReasonModal(null)}
           onDone={() => { setReasonModal(null); reload() }} />
       )}
     </section>
@@ -560,26 +580,33 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
 }
 
 // --- Qty edit modal ---------------------------------------------------------
-function QtyModal({ item, onClose, onSaved }) {
+function QtyModal({ item, onClose, onSaved, audit }) {
   const [qty, setQty] = useState(String(item.qty))
+  const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
   const save = async () => {
     const n = Number(qty)
     if (!Number.isFinite(n) || n <= 0) { alert('Enter a valid quantity.'); return }
+    const finalReason = reason.trim()
+    if (!finalReason) { alert('Please enter a reason for the quantity change.'); return }
     setBusy(true)
-    try { await editItemQty(item, n, `Quantity ${item.qty} → ${n}`); onSaved() }
+    try { await editItemQty(item, n, finalReason, audit); onSaved() }
     catch (e) { console.error(e); alert('Could not save.'); setBusy(false) }
   }
   return (
     <Modal onClose={onClose} title="Edit Quantity">
       <p className="text-sm text-slate-600 mb-1">{item.product_name}</p>
       <p className="text-[11px] text-slate-400 mb-3">Ordered: {item.qty} {item.unit}</p>
+      <label className="block text-[11px] font-semibold text-slate-500 mb-1">New Quantity</label>
       <input type="number" inputMode="numeric" value={qty} onChange={(e) => setQty(e.target.value)}
         className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-lg font-semibold outline-none focus:border-brand-500" autoFocus />
+      <label className="block text-[11px] font-semibold text-slate-500 mt-3 mb-1">Reason <span className="text-red-500">*</span></label>
+      <input value={reason} onChange={(e) => setReason(e.target.value)} placeholder="e.g. Customer requested quantity change"
+        className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-brand-500" />
       <div className="flex gap-2 mt-4">
         <button onClick={onClose} className="flex-1 rounded-xl border border-slate-200 py-2.5 font-semibold text-slate-600">Cancel</button>
         <button onClick={save} disabled={busy} className="flex-1 rounded-xl bg-brand-600 text-white py-2.5 font-bold disabled:bg-slate-300">
-          {busy ? 'Saving…' : 'Save'}
+          {busy ? 'Saving…' : 'Save Change'}
         </button>
       </div>
     </Modal>
@@ -616,7 +643,7 @@ function ReplaceModal({ item, products, onClose, onPicked }) {
 }
 
 // --- Reason modal (remove / replace) ---------------------------------------
-function ReasonModal({ info, onClose, onDone }) {
+function ReasonModal({ info, onClose, onDone, audit }) {
   const [reason, setReason] = useState('')
   const [otherText, setOtherText] = useState('')
   const [busy, setBusy] = useState(false)
@@ -627,8 +654,8 @@ function ReasonModal({ info, onClose, onDone }) {
     if (!finalReason) { alert('Please choose a reason.'); return }
     setBusy(true)
     try {
-      if (isReplace) await replaceItem(info.item, info.newProduct, finalReason)
-      else await removeItem(info.item, finalReason)
+      if (isReplace) await replaceItem(info.item, info.newProduct, finalReason, audit)
+      else await removeItem(info.item, finalReason, audit)
       onDone()
     } catch (e) { console.error(e); alert('Could not save.'); setBusy(false) }
   }
@@ -888,7 +915,7 @@ function AddonAwareDetailPanel({ order, onBackToOrders, onVerified, repName }) {
           onClick={openPickerBill}
           className="shrink-0 rounded-xl border-2 border-slate-800 text-slate-800 px-3 py-2 text-xs font-bold hover:bg-slate-50"
         >
-          🖨️ Picker Bill
+          🖨️ Warehouse Slip
         </button>
       </div>
 

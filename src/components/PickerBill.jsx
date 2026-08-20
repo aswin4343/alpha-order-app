@@ -93,88 +93,113 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
     return d.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })
   })()
 
+  const all = items || []
+  // Split into pages of at most 5 product rows. Numbering is continuous across
+  // pages (page P starts at P*5 + 1). Header/meta print on page 1 only.
+  const ROWS_PER_PAGE = 5
+  const pages = []
+  for (let i = 0; i < all.length; i += ROWS_PER_PAGE) pages.push(all.slice(i, i + ROWS_PER_PAGE))
+  if (pages.length === 0) pages.push([])
+
+  const totQ = all.reduce((s, i) => s + (Number(i.qty) || 0), 0)
+  const totF = all.reduce((s, i) => s + (Number(i.free_qty) || 0), 0)
+  const totT = totQ + totF
+
+  const Header = () => (
+    <>
+      {/* Letterhead — ONE brand-correct logo (never both). Page 1 only. */}
+      <div className="border-b-2 border-slate-800 pb-2 mb-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-left min-w-0">
+            <h1 className="text-xl font-black tracking-wide text-slate-900 leading-tight">{company.name}</h1>
+            <p className="text-xs text-slate-600">{company.tagline}</p>
+            <p className="text-[11px] text-slate-500">{company.address}</p>
+            <p className="text-[10px] text-slate-400">
+              {company.gstin ? `GSTIN: ${company.gstin}` : ''}{company.fssai ? `  ·  FSSAI: ${company.fssai}` : ''}
+            </p>
+          </div>
+          <img src={brandLogo.src} alt={brandLogo.alt} className="h-12 w-auto object-contain shrink-0" style={{ printColorAdjust: 'exact', WebkitPrintColorAdjust: 'exact' }} />
+        </div>
+      </div>
+
+      <div className="text-center mb-3">
+        <span className="inline-block px-3 py-1 rounded-full bg-slate-900 text-white text-xs font-black tracking-widest">
+          WAREHOUSE SLIP
+        </span>
+      </div>
+
+      {/* Order meta */}
+      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs mb-4 border border-slate-200 rounded-lg p-3">
+        <div><span className="font-semibold text-slate-500">SHOP / BUYER:</span> <span className="font-bold text-slate-800">{shopName}{route ? `, ${route}` : ''}</span></div>
+        <div><span className="font-semibold text-slate-500">ORDER REF:</span> <span className="font-bold text-slate-800">{orderRef || '—'}</span></div>
+        <div><span className="font-semibold text-slate-500">SALES REPRESENTATIVE:</span> <span className="font-bold text-slate-800">{salesRepName || '—'}</span></div>
+        <div><span className="font-semibold text-slate-500">DATE:</span> <span className="font-bold text-slate-800">{prettyDate}</span> {orderTime ? <span className="ml-2"><span className="font-semibold text-slate-500">TIME:</span> <span className="font-bold text-slate-800">{orderTime}</span></span> : null}</div>
+      </div>
+    </>
+  )
+
+  const ProductTable = ({ rows, startIndex }) => (
+    <table className="w-full text-xs border-collapse">
+      <thead>
+        <tr className="bg-slate-900 text-white">
+          <th className="border border-slate-700 px-2 py-1.5 text-left w-8">SL</th>
+          <th className="border border-slate-700 px-2 py-1.5 text-left">PRODUCT NAME</th>
+          <th className="border border-slate-700 px-2 py-1.5 text-right w-16">MRP</th>
+          <th className="border border-slate-700 px-2 py-1.5 text-center w-14">UNIT</th>
+          <th className="border border-slate-700 px-2 py-1.5 text-center w-12">QTY</th>
+          <th className="border border-slate-700 px-2 py-1.5 text-center w-12">F QTY</th>
+          <th className="border border-slate-700 px-2 py-1.5 text-center w-16 text-sm font-black bg-slate-800">TOTAL QTY</th>
+          <th className="border border-slate-700 px-2 py-1.5 text-center w-14">CHECK</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((it, j) => {
+          const sl = startIndex + j + 1
+          return (
+            <tr key={sl} className={sl % 2 ? 'bg-white' : 'bg-slate-50'}>
+              <td className="border border-slate-300 px-2 py-2 text-slate-600">{sl}</td>
+              <td className="border border-slate-300 px-2 py-2"><CopyableProductName name={it.name} /></td>
+              <td className="border border-slate-300 px-2 py-2 text-right text-slate-700">{it.mrp != null ? `₹${it.mrp}` : '—'}</td>
+              <td className="border border-slate-300 px-2 py-2 text-center text-slate-700">{it.unit || '-'}</td>
+              <td className="border border-slate-300 px-2 py-2 text-center font-bold text-slate-900">{Number(it.qty) || 0}</td>
+              <td className="border border-slate-300 px-2 py-2 text-center font-bold text-emerald-700">{Number(it.free_qty) || 0}</td>
+              <td className="border-2 border-slate-800 px-2 py-2 text-center text-sm font-black text-slate-900 bg-slate-100">{(Number(it.qty) || 0) + (Number(it.free_qty) || 0)}</td>
+              <td className="border border-slate-300 px-2 py-2 text-center"><span className="inline-block h-5 w-5 border-2 border-slate-800 rounded-sm" /></td>
+            </tr>
+          )
+        })}
+      </tbody>
+    </table>
+  )
+
   return (
     <div className="bg-white">
       <style>{`
         @media print {
+          @page { size: A5 landscape; margin: 8mm; }
           .no-print-inline { display: none !important; }
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          .picker-bill-print { padding: 0 !important; box-shadow: none !important; }
+          .warehouse-slip-page { box-shadow: none !important; }
+          /* Each page prints on its own A5 sheet; never split a product row. */
+          .warehouse-slip-page { break-after: page; page-break-after: always; }
+          .warehouse-slip-page:last-child { break-after: auto; page-break-after: auto; }
+          .warehouse-slip-page tr { break-inside: avoid; page-break-inside: avoid; }
         }
       `}</style>
 
-      <div className="picker-bill-print p-4 sm:p-6 max-w-2xl mx-auto">
-        {/* Letterhead — ONE logo, chosen by the bill's brand (Zedgo bill → Zedgo
-            logo only; Alpha bill → Alpha logo only). Never both. Fixed height +
-            auto width preserves aspect ratio; base64-embedded so it prints. */}
-        <div className="border-b-2 border-slate-800 pb-2 mb-3">
-          <div className="flex items-center justify-between gap-3">
-            <div className="text-left min-w-0">
-              <h1 className="text-xl font-black tracking-wide text-slate-900 leading-tight">{company.name}</h1>
-              <p className="text-xs text-slate-600">{company.tagline}</p>
-              <p className="text-[11px] text-slate-500">{company.address}</p>
-              <p className="text-[10px] text-slate-400">
-                {company.gstin ? `GSTIN: ${company.gstin}` : ''}{company.fssai ? `  ·  FSSAI: ${company.fssai}` : ''}
-              </p>
+      {pages.map((rows, p) => (
+        <div key={p} className="warehouse-slip-page picker-bill-print p-4 sm:p-6 max-w-3xl mx-auto">
+          {p === 0 ? <Header /> : (
+            <div className="text-[10px] text-slate-400 mb-2">{company.name} · Warehouse Slip · {orderRef || ''} · page {p + 1}</div>
+          )}
+          <ProductTable rows={rows} startIndex={p * ROWS_PER_PAGE} />
+          {p === pages.length - 1 && (
+            <div className="mt-3 text-[10px] text-slate-400 text-center">
+              {all.length} product line(s) · QTY {totQ} · F QTY {totF} · TOTAL QTY {totT}
             </div>
-            <img src={brandLogo.src} alt={brandLogo.alt} className="h-12 w-auto object-contain shrink-0" style={{ printColorAdjust: 'exact', WebkitPrintColorAdjust: 'exact' }} />
-          </div>
+          )}
         </div>
-
-        <div className="text-center mb-3">
-          <span className="inline-block px-3 py-1 rounded-full bg-slate-900 text-white text-xs font-black tracking-widest">
-            PICKER BILL
-          </span>
-        </div>
-
-        {/* Order meta */}
-        <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs mb-4 border border-slate-200 rounded-lg p-3">
-          <div><span className="font-semibold text-slate-500">SHOP / BUYER:</span> <span className="font-bold text-slate-800">{shopName}{route ? `, ${route}` : ''}</span></div>
-          <div><span className="font-semibold text-slate-500">ORDER REF:</span> <span className="font-bold text-slate-800">{orderRef || '—'}</span></div>
-          <div><span className="font-semibold text-slate-500">SALES REPRESENTATIVE:</span> <span className="font-bold text-slate-800">{salesRepName || '—'}</span></div>
-          <div><span className="font-semibold text-slate-500">DATE:</span> <span className="font-bold text-slate-800">{prettyDate}</span> {orderTime ? <span className="ml-2"><span className="font-semibold text-slate-500">TIME:</span> <span className="font-bold text-slate-800">{orderTime}</span></span> : null}</div>
-        </div>
-
-        {/* Product table */}
-        <table className="w-full text-xs border-collapse">
-          <thead>
-            <tr className="bg-slate-900 text-white">
-              <th className="border border-slate-700 px-2 py-1.5 text-left w-8">SL</th>
-              <th className="border border-slate-700 px-2 py-1.5 text-left">PRODUCT NAME</th>
-              <th className="border border-slate-700 px-2 py-1.5 text-right w-16">MRP</th>
-              <th className="border border-slate-700 px-2 py-1.5 text-center w-14">UNIT</th>
-              <th className="border border-slate-700 px-2 py-1.5 text-center w-12">QTY</th>
-              <th className="border border-slate-700 px-2 py-1.5 text-center w-12">F QTY</th>
-              <th className="border border-slate-700 px-2 py-1.5 text-center w-16 text-sm font-black bg-slate-800">TOTAL QTY</th>
-              <th className="border border-slate-700 px-2 py-1.5 text-center w-14">CHECK</th>
-            </tr>
-          </thead>
-          <tbody>
-            {(items || []).map((it, idx) => (
-              <tr key={idx} className={idx % 2 ? 'bg-slate-50' : 'bg-white'}>
-                <td className="border border-slate-300 px-2 py-2 text-slate-600">{idx + 1}</td>
-                <td className="border border-slate-300 px-2 py-2">
-                  <CopyableProductName name={it.name} />
-                </td>
-                <td className="border border-slate-300 px-2 py-2 text-right text-slate-700">
-                  {it.mrp != null ? `₹${it.mrp}` : '—'}
-                </td>
-                <td className="border border-slate-300 px-2 py-2 text-center text-slate-700">{it.unit || '-'}</td>
-                <td className="border border-slate-300 px-2 py-2 text-center font-bold text-slate-900">{Number(it.qty) || 0}</td>
-                <td className="border border-slate-300 px-2 py-2 text-center font-bold text-emerald-700">{Number(it.free_qty) || 0}</td>
-                <td className="border-2 border-slate-800 px-2 py-2 text-center text-sm font-black text-slate-900 bg-slate-100">{(Number(it.qty) || 0) + (Number(it.free_qty) || 0)}</td>
-                <td className="border border-slate-300 px-2 py-2 text-center">
-                  <span className="inline-block h-5 w-5 border-2 border-slate-800 rounded-sm" />
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-
-        <div className="mt-3 text-[10px] text-slate-400 text-center">
-          {(items || []).length} product line(s) · QTY {(items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0)} · F QTY {(items || []).reduce((s, i) => s + (Number(i.free_qty) || 0), 0)} · TOTAL QTY {(items || []).reduce((s, i) => s + (Number(i.qty) || 0) + (Number(i.free_qty) || 0), 0)}
-        </div>
-      </div>
+      ))}
     </div>
   )
 }
