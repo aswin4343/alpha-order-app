@@ -517,7 +517,7 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
           brand={order.brand}
           shopName={order.shop_name}
           route={order.route}
-          repName={repName}
+          salesRepName={repName}
           orderDate={order.created_at}
           orderRef={orderRefFrom(order.id)}
           items={mapBillItems(displayItems, products)}
@@ -530,7 +530,7 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
           brand={order.brand}
           shopName={order.shop_name}
           route={order.route}
-          repName={repName}
+          salesRepName={repName}
           orderDate={order.created_at}
           orderRef={orderRefFrom(order.id)}
           items={mapBillItems(displayItems, products)}
@@ -898,7 +898,7 @@ function AddonAwareDetailPanel({ order, onBackToOrders, onVerified, repName }) {
           brand={order.brand}
           shopName={order.shop_name}
           route={order.route}
-          repName={repName}
+          salesRepName={repName}
           orderDate={order.created_at}
           orderRef={orderRefFrom(order.id)}
           items={pickerItems == null ? null : mapBillItems(pickerItems, products)}
@@ -911,7 +911,7 @@ function AddonAwareDetailPanel({ order, onBackToOrders, onVerified, repName }) {
           brand={order.brand}
           shopName={order.shop_name}
           route={order.route}
-          repName={repName}
+          salesRepName={repName}
           orderDate={order.created_at}
           orderRef={orderRefFrom(order.id)}
           items={fullBillItems == null ? null : mapBillItems(fullBillItems, products)}

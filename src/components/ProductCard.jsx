@@ -90,14 +90,20 @@ function EditableTag({ label, value, overridden, onChange, accent }) {
  * line's own priceType + finalRate (stored in `override`), so the master
  * catalogue is completely unaffected by a rep's per-order choice.
  */
-function PriceSelector({ product, override, onOverride }) {
+function PriceSelector({ product, override, onOverride, lastPrice }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
 
   const options = [
     { type: 'MRP', value: product.mrp },
     { type: 'RETAIL', value: product.retail },
-    { type: 'WHOLESALE', value: product.wholesale }
+    { type: 'WHOLESALE', value: product.wholesale },
+    // "Last Price" — this customer's most recent price for this product. Only
+    // present when a last price is known (undefined = no customer selected or
+    // never purchased), so it simply doesn't appear otherwise. It's a full
+    // selectable option like the rest: selecting it stores priceType 'LAST' +
+    // finalRate = lastPrice, which flows to Billing unchanged.
+    { type: 'LAST', value: lastPrice }
   ].filter((o) => o.value != null && o.value !== '')
 
   if (options.length === 0) return null
@@ -155,11 +161,15 @@ function PriceSelector({ product, override, onOverride }) {
             onClick={() => selectType(o.type)}
             className={`text-[10px] leading-none font-semibold px-1.5 py-1 rounded-md border ${
               isActive
-                ? 'bg-brand-600 border-brand-600 text-white'
-                : 'bg-slate-50 border-slate-200 text-slate-600'
+                ? (o.type === 'LAST'
+                    ? 'bg-emerald-600 border-emerald-600 text-white'
+                    : 'bg-brand-600 border-brand-600 text-white')
+                : (o.type === 'LAST'
+                    ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
+                    : 'bg-slate-50 border-slate-200 text-slate-600')
             }`}
           >
-            {o.type === 'WHOLESALE' ? 'WP' : o.type === 'RETAIL' ? 'RP' : 'MRP'} ₹{o.value}
+            {o.type === 'WHOLESALE' ? 'WP' : o.type === 'RETAIL' ? 'RP' : o.type === 'LAST' ? 'Last' : 'MRP'} ₹{o.value}
           </button>
         )
       })}
@@ -204,24 +214,10 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, 
         selected ? 'border-brand-500' : 'border-transparent'
       }`}
     >
-      {/* Name + customer-specific last-sold-price reference badge.
-          The badge is INFORMATION ONLY — it shows what this customer last paid
-          for this product, to help reps keep pricing consistent. It never
-          changes the selected price. Shown only when a price is known for this
-          customer+product (undefined = no customer selected or never bought). */}
-      <div className="flex items-start justify-between gap-2">
-        <p className="text-[14px] leading-snug font-medium text-slate-800 break-words min-w-0">
-          {product.name}
-        </p>
-        {lastPrice != null && (
-          <span
-            title="Last price this customer paid for this product"
-            className="shrink-0 text-[10px] leading-none font-semibold text-slate-500 bg-slate-100 border border-slate-200 px-1.5 py-1 rounded-md whitespace-nowrap"
-          >
-            Last ₹{lastPrice}
-          </span>
-        )}
-      </div>
+      {/* Name */}
+      <p className="text-[14px] leading-snug font-medium text-slate-800 break-words">
+        {product.name}
+      </p>
 
       {/* Brand + scheme + price tags, all compact */}
       <div className="flex flex-wrap items-center gap-1 mt-1.5">
@@ -251,7 +247,7 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, 
             />
           </>
         ) : (
-          <PriceSelector product={product} override={override} onOverride={onOverride} />
+          <PriceSelector product={product} override={override} onOverride={onOverride} lastPrice={lastPrice} />
         )}
       </div>
 

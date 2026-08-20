@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { computeBill, numberToWordsIndian } from '../utils/billingCalc.js'
 import { companyFor } from './PickerBill.jsx'
+import { ALPHA_LOGO, ZEDGO_LOGO } from '../assets/logos.js'
 
 const rupee = (n) => `₹${Number(n || 0).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
 
@@ -62,14 +63,22 @@ export default function FullBill({ brand, shopName, route, salesRepName, orderDa
       `}</style>
 
       <div className="full-bill-print p-4 sm:p-6 max-w-4xl mx-auto text-[12px]">
-        {/* Letterhead */}
-        <div className="text-center border-b-2 border-slate-800 pb-2 mb-2">
-          <h1 className="text-xl font-black tracking-wide text-slate-900">{company.name}</h1>
-          <p className="text-xs text-slate-600">{company.tagline}</p>
-          <p className="text-[11px] text-slate-500">{company.address}</p>
-          <p className="text-[10px] text-slate-400">
-            {company.gstin ? `GSTIN: ${company.gstin}` : ''}{company.fssai ? `  ·  FSSAI: ${company.fssai}` : ''}
-          </p>
+        {/* Letterhead — Alpha logo left, Zedgo right, name centered. Logos keep
+            aspect ratio (fixed height, auto width) and are base64-embedded so
+            they print/PDF reliably. */}
+        <div className="border-b-2 border-slate-800 pb-2 mb-2">
+          <div className="flex items-center justify-between gap-3">
+            <img src={ALPHA_LOGO} alt="Alpha Trade Links" className="h-10 w-auto object-contain shrink-0" style={{ printColorAdjust: 'exact', WebkitPrintColorAdjust: 'exact' }} />
+            <div className="text-center min-w-0">
+              <h1 className="text-xl font-black tracking-wide text-slate-900 leading-tight">{company.name}</h1>
+              <p className="text-xs text-slate-600">{company.tagline}</p>
+              <p className="text-[11px] text-slate-500">{company.address}</p>
+              <p className="text-[10px] text-slate-400">
+                {company.gstin ? `GSTIN: ${company.gstin}` : ''}{company.fssai ? `  ·  FSSAI: ${company.fssai}` : ''}
+              </p>
+            </div>
+            <img src={ZEDGO_LOGO} alt="Zedgo" className="h-10 w-auto object-contain shrink-0" style={{ printColorAdjust: 'exact', WebkitPrintColorAdjust: 'exact' }} />
+          </div>
         </div>
 
         <div className="text-center mb-2">
@@ -82,7 +91,7 @@ export default function FullBill({ brand, shopName, route, salesRepName, orderDa
         <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] mb-3 border border-slate-200 rounded-lg p-3">
           <div><span className="font-semibold text-slate-500">BUYER:</span> <span className="font-bold text-slate-800">{shopName}{route ? `, ${route}` : ''}</span></div>
           <div><span className="font-semibold text-slate-500">REF:</span> <span className="font-bold text-slate-800">{orderRef || '—'}</span></div>
-          <div><span className="font-semibold text-slate-500">SALES EXE:</span> <span className="font-bold text-slate-800">{salesRepName || '—'}</span></div>
+          <div><span className="font-semibold text-slate-500">SALES REP:</span> <span className="font-bold text-slate-800">{salesRepName || '—'}</span></div>
           <div>
             <span className="font-semibold text-slate-500">DATE:</span> <span className="font-bold text-slate-800">{prettyDate}</span>
             {prettyTime && <span className="ml-2"><span className="font-semibold text-slate-500">TIME:</span> <span className="font-bold text-slate-800">{prettyTime}</span></span>}

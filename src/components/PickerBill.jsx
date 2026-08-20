@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { ALPHA_LOGO, ZEDGO_LOGO } from '../assets/logos.js'
 
 // Placeholder company letterhead details — swap in real GSTIN/FSSAI/address
 // once available. Keyed by the exact `orders.brand` values already in use
@@ -89,14 +90,23 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
       `}</style>
 
       <div className="picker-bill-print p-4 sm:p-6 max-w-2xl mx-auto">
-        {/* Letterhead */}
-        <div className="text-center border-b-2 border-slate-800 pb-2 mb-3">
-          <h1 className="text-xl font-black tracking-wide text-slate-900">{company.name}</h1>
-          <p className="text-xs text-slate-600">{company.tagline}</p>
-          <p className="text-[11px] text-slate-500">{company.address}</p>
-          <p className="text-[10px] text-slate-400">
-            {company.gstin ? `GSTIN: ${company.gstin}` : ''}{company.fssai ? `  ·  FSSAI: ${company.fssai}` : ''}
-          </p>
+        {/* Letterhead — Alpha logo top-left, Zedgo top-right, company name
+            centered between them. Logos use fixed HEIGHT with width:auto so the
+            original aspect ratio is preserved (never stretched). Embedded as
+            base64 so they render in printed/PDF output, not just on screen. */}
+        <div className="border-b-2 border-slate-800 pb-2 mb-3">
+          <div className="flex items-center justify-between gap-3">
+            <img src={ALPHA_LOGO} alt="Alpha Trade Links" className="h-10 w-auto object-contain shrink-0" style={{ printColorAdjust: 'exact', WebkitPrintColorAdjust: 'exact' }} />
+            <div className="text-center min-w-0">
+              <h1 className="text-xl font-black tracking-wide text-slate-900 leading-tight">{company.name}</h1>
+              <p className="text-xs text-slate-600">{company.tagline}</p>
+              <p className="text-[11px] text-slate-500">{company.address}</p>
+              <p className="text-[10px] text-slate-400">
+                {company.gstin ? `GSTIN: ${company.gstin}` : ''}{company.fssai ? `  ·  FSSAI: ${company.fssai}` : ''}
+              </p>
+            </div>
+            <img src={ZEDGO_LOGO} alt="Zedgo" className="h-10 w-auto object-contain shrink-0" style={{ printColorAdjust: 'exact', WebkitPrintColorAdjust: 'exact' }} />
+          </div>
         </div>
 
         <div className="text-center mb-3">
@@ -121,7 +131,9 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
               <th className="border border-slate-700 px-2 py-1.5 text-left">PRODUCT NAME</th>
               <th className="border border-slate-700 px-2 py-1.5 text-right w-16">MRP</th>
               <th className="border border-slate-700 px-2 py-1.5 text-center w-14">UNIT</th>
-              <th className="border border-slate-700 px-2 py-1.5 text-center w-12">QTY</th>
+              <th className="border border-slate-700 px-2 py-1.5 text-center w-14">ORDERED</th>
+              <th className="border border-slate-700 px-2 py-1.5 text-center w-12">FREE</th>
+              <th className="border border-slate-700 px-2 py-1.5 text-center w-12">TOTAL</th>
               <th className="border border-slate-700 px-2 py-1.5 text-center w-14">CHECK</th>
             </tr>
           </thead>
@@ -136,7 +148,9 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
                   {it.mrp != null ? `₹${it.mrp}` : '—'}
                 </td>
                 <td className="border border-slate-300 px-2 py-2 text-center text-slate-700">{it.unit || '-'}</td>
-                <td className="border border-slate-300 px-2 py-2 text-center font-bold text-slate-900">{it.qty}</td>
+                <td className="border border-slate-300 px-2 py-2 text-center font-bold text-slate-900">{Number(it.qty) || 0}</td>
+                <td className="border border-slate-300 px-2 py-2 text-center font-bold text-emerald-700">{Number(it.free_qty) || 0}</td>
+                <td className="border border-slate-300 px-2 py-2 text-center font-black text-slate-900 bg-slate-50">{(Number(it.qty) || 0) + (Number(it.free_qty) || 0)}</td>
                 <td className="border border-slate-300 px-2 py-2 text-center">
                   <span className="inline-block h-5 w-5 border-2 border-slate-800 rounded-sm" />
                 </td>
@@ -146,7 +160,7 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
         </table>
 
         <div className="mt-3 text-[10px] text-slate-400 text-center">
-          {(items || []).length} product line(s) · Total qty {(items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0)}
+          {(items || []).length} product line(s) · Ordered {(items || []).reduce((s, i) => s + (Number(i.qty) || 0), 0)} · Free {(items || []).reduce((s, i) => s + (Number(i.free_qty) || 0), 0)} · Total to pick {(items || []).reduce((s, i) => s + (Number(i.qty) || 0) + (Number(i.free_qty) || 0), 0)}
         </div>
       </div>
     </div>
