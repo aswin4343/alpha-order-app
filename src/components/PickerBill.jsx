@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { createPortal } from 'react-dom'
 import { ALPHA_LOGO, ZEDGO_LOGO } from '../assets/logos.js'
 // (ALPHA_LOGO / ZEDGO_LOGO are used by brandLogoFor below.)
 
@@ -96,9 +97,9 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
   const all = (items || []).slice().sort((a, b) =>
     String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' })
   )
-  // Split into pages of at most 5 product rows. Numbering is continuous across
-  // pages (page P starts at P*5 + 1). Header/meta print on page 1 only.
-  const ROWS_PER_PAGE = 5
+  // Split into pages of at most 8 product rows. Numbering is continuous across
+  // pages (page P starts at P*8 + 1). Header/meta print on page 1 only.
+  const ROWS_PER_PAGE = 8
   const pages = []
   for (let i = 0; i < all.length; i += ROWS_PER_PAGE) pages.push(all.slice(i, i + ROWS_PER_PAGE))
   if (pages.length === 0) pages.push([])
@@ -174,39 +175,8 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
     </table>
   )
 
-  return (
-    <div className="bg-white warehouse-slip-root">
-      <style>{`
-        @media print {
-          @page { size: A5 landscape; margin: 6mm; }
-          html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-
-          /* Escape the modal: neutralise every fixed/flex/overflow ancestor so
-             the slip can paginate freely. Without this, the printable content
-             is trapped inside a position:fixed, min-h-full flex container and
-             the browser ignores @page size and page breaks. */
-          body * { visibility: hidden !important; }
-          .warehouse-slip-root, .warehouse-slip-root * { visibility: visible !important; }
-          .warehouse-slip-root {
-            position: absolute !important;
-            left: 0 !important; top: 0 !important; right: 0 !important;
-            width: 100% !important; margin: 0 !important; padding: 0 !important;
-          }
-          /* Any fixed/overflow modal ancestors: strip positioning + scroll so
-             they don't clip or re-anchor the printed pages. */
-          .wh-print-ancestor { position: static !important; overflow: visible !important; height: auto !important; min-height: 0 !important; display: block !important; background: none !important; }
-
-          .no-print, .no-print-inline { display: none !important; }
-
-          /* One A5 landscape sheet per page group; never split a product row. */
-          .warehouse-slip-page { break-after: page; page-break-after: always; box-shadow: none !important; padding: 0 !important; margin: 0 !important; }
-          .warehouse-slip-page:last-child { break-after: auto; page-break-after: auto; }
-          .warehouse-slip-page table { break-inside: auto; }
-          .warehouse-slip-page tr { break-inside: avoid !important; page-break-inside: avoid !important; }
-          .warehouse-slip-page thead { display: table-header-group; }
-        }
-      `}</style>
-
+  const pagesContent = (
+    <>
       {pages.map((rows, p) => (
         <div key={p} className="warehouse-slip-page picker-bill-print p-4 sm:p-6 max-w-3xl mx-auto">
           {p === 0 ? <Header /> : (
@@ -220,6 +190,44 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
           )}
         </div>
       ))}
+    </>
+  )
+
+  return (
+    <div className="bg-white">
+      <style>{`
+        @media print {
+          @page { size: A5 landscape; margin: 6mm; }
+          html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+
+          /* PRINT ISOLATION: hide the entire app (#root) and show ONLY the
+             body-level print portal. Because the portal is a direct child of
+             <body> — not trapped inside the modal's position:fixed/overflow
+             box — there is no ghost double-paint and @page/page-breaks apply
+             cleanly. The on-screen copy inside the modal lives under #root and
+             is hidden during print. */
+          #root { display: none !important; }
+          .wh-print-portal { display: block !important; }
+          .no-print, .no-print-inline { display: none !important; }
+
+          .warehouse-slip-page { break-after: page; page-break-after: always; box-shadow: none !important; }
+          .warehouse-slip-page:last-child { break-after: auto; page-break-after: auto; }
+          .warehouse-slip-page table { break-inside: auto; }
+          .warehouse-slip-page tr { break-inside: avoid !important; page-break-inside: avoid !important; }
+          .warehouse-slip-page thead { display: table-header-group; }
+        }
+        /* The print portal is hidden on screen; it only appears when printing. */
+        .wh-print-portal { display: none; }
+      `}</style>
+
+      {/* On-screen preview (inside the modal, under #root) */}
+      {pagesContent}
+
+      {/* Print-only copy, portaled to <body> so print isolation is clean. */}
+      {createPortal(
+        <div className="wh-print-portal bg-white">{pagesContent}</div>,
+        document.body
+      )}
     </div>
   )
 }
