@@ -131,6 +131,11 @@ export async function importFullProducts(file) {
     const net = numOrNull(['netAfterTax', 'Net', 'Net Rate', 'NR'])
     const gst = numOrNull(['GST', 'GST%', 'GST %', 'Tax', 'Tax %', 'Tax Rate'])
     const hsn = pick(row, ['HSN', 'HSN Code', 'HSN CODE', 'HSNCode'])
+    // Packaging/conversion master data (new). Product-specific; used to convert
+    // an Outer/Box order quantity into individual pieces before billing.
+    const qtyInBox = numOrNull(['Quantity In Box', 'QuantityInBox', 'Qty In Box', 'Pieces Per Box'])
+    const outerQty = numOrNull(['Outer Quantity', 'OuterQuantity', 'Outer Qty', 'Outers Per Box'])
+    const box = numOrNull(['Box'])
 
     const key = name.trim().toUpperCase()
     let prod = byName.get(key)
@@ -145,7 +150,11 @@ export async function importFullProducts(file) {
         wholesale: wholesale ?? null,
         gst: gst ?? null,
         hsn: hsn || null,
-        net: []
+        net: [],
+        // Packaging conversion master data (null when not provided).
+        qty_in_box: qtyInBox ?? null,
+        outer_qty: outerQty ?? null,
+        box: box ?? null
       }
       byName.set(key, prod)
       order.push(prod)
@@ -157,6 +166,9 @@ export async function importFullProducts(file) {
       if (prod.base == null && base != null) prod.base = base
       if (prod.gst == null && gst != null) prod.gst = gst
       if (prod.hsn == null && hsn) prod.hsn = hsn
+      if (prod.qty_in_box == null && qtyInBox != null) prod.qty_in_box = qtyInBox
+      if (prod.outer_qty == null && outerQty != null) prod.outer_qty = outerQty
+      if (prod.box == null && box != null) prod.box = box
     }
 
     // Append this row's scheme (if it has one) to the product's slab list.

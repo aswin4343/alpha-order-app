@@ -10,6 +10,7 @@ import CustomerPicker from '../components/CustomerPicker.jsx'
 import ProductCard from '../components/ProductCard.jsx'
 import OrderSummaryBar from '../components/OrderSummaryBar.jsx'
 import BrandSelector from '../components/BrandSelector.jsx'
+import { toPieces } from '../utils/packaging.js'
 import { SearchIcon, CloseIcon, SettingsIcon, ReturnIcon, ChartIcon, BellIcon } from '../components/Icons.jsx'
 import { buildOrderMessage, buildVisitMessage, buildWhatsappUrl } from '../utils/whatsapp.js'
 import VisitStatus from '../components/VisitStatus.jsx'
@@ -320,8 +321,18 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
         .flatMap((id) => {
           const p = productMap.get(id)
           if (!p) return []
-          const qty = quantities[id]
-          const unit = units[id] || 'Piece'
+          const enteredQty = quantities[id]
+          const enteredUnit = units[id] || 'Piece'
+          // Convert the rep's entered (qty, unit) into individual PIECES using
+          // this product's own packaging data. Billing always works in pieces.
+          // If the unit has no valid conversion (should not happen, since the
+          // dropdown hides unavailable units), fall back to treating the entry
+          // as pieces rather than silently sending a wrong/zero quantity.
+          const converted = toPieces(p, enteredQty, enteredUnit)
+          const qty = converted != null ? converted : enteredQty
+          const unit = 'Piece'
+          // Original order-entry retained for audit/history (spec #8).
+          const entry = { entered_qty: enteredQty, entered_unit: enteredUnit }
           const priceFields = {
             slabs: p.slabs,
             retail: priceOverrides[id]?.retail != null ? priceOverrides[id].retail : p.retail,
@@ -383,7 +394,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
             // Product was never part of the loaded previous order at all —
             // a genuinely brand-new product. Whole line is the add-on (or,
             // if no previous order was loaded, just a normal line).
-            return [{ id, name: p.name, qty, unit, isAddon: !!originalQtyById, ...priceFields }]
+            return [{ id, name: p.name, qty, unit, ...entry, isAddon: !!originalQtyById, ...priceFields }]
           }
 
           if (qty > originalQty) {
@@ -393,13 +404,13 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
             // "5 original + 1 add-on" from silently becoming "6", and keeps
             // the add-on's delta out of the original's scheme calculation.
             return [
-              { id, name: p.name, qty: originalQty, unit, isAddon: false, ...priceFields },
-              { id: `${id}__addon`, baseId: id, name: p.name, qty: qty - originalQty, unit, isAddon: true, ...priceFields }
+              { id, name: p.name, qty: originalQty, unit, ...entry, isAddon: false, ...priceFields },
+              { id: `${id}__addon`, baseId: id, name: p.name, qty: qty - originalQty, unit, ...entry, isAddon: true, ...priceFields }
             ]
           }
 
           // Quantity unchanged or reduced from the original — not an add-on.
-          return [{ id, name: p.name, qty, unit, isAddon: false, ...priceFields }]
+          return [{ id, name: p.name, qty, unit, ...entry, isAddon: false, ...priceFields }]
         }),
     [quantities, units, productMap, originalQtyById, priceOverrides]
   )

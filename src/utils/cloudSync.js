@@ -218,7 +218,12 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
       // bill (same reasoning as normal_price/scheme_applied above).
       mrp: i.mrp ?? null,
       gst_percent: i.gst ?? null,
-      hsn: i.hsn ?? null
+      hsn: i.hsn ?? null,
+      // Audit trail of what the rep actually typed before conversion to pieces
+      // (spec: retain original entry). qty above is ALWAYS pieces; these two
+      // record e.g. "3 Outer" that produced it. Null-safe for old callers.
+      entered_qty: i.entered_qty ?? null,
+      entered_unit: i.entered_unit ?? null
     }
     })
   } catch (buildErr) {
@@ -840,7 +845,10 @@ export async function fetchAllCloudProducts() {
     wholesale: p.wholesale,
     net: p.net || [],
     gst: p.gst,
-    hsn: p.hsn
+    hsn: p.hsn,
+    qty_in_box: p.qty_in_box ?? null,
+    outer_qty: p.outer_qty ?? null,
+    box: p.box ?? null
   }))
 }
 
@@ -866,6 +874,9 @@ export async function replaceAllCloudProducts(products, fileName) {
     net: p.net || [],
     gst: p.gst ?? null,
     hsn: p.hsn || null,
+    qty_in_box: p.qty_in_box ?? null,
+    outer_qty: p.outer_qty ?? null,
+    box: p.box ?? null,
     sort_order: idx
   }))
   const chunk = 500
@@ -946,6 +957,11 @@ export async function mergeUpdateCloudProducts(uploadedList, fileName) {
     if (hasVal(u.base)) patch.base = u.base
     if (hasVal(u.gst)) patch.gst = u.gst
     if (hasVal(u.hsn)) patch.hsn = u.hsn
+    // Packaging conversion master data (new). Merged like prices: only a valid
+    // value overwrites; blanks are ignored so existing data is never wiped.
+    if (hasVal(u.qty_in_box)) patch.qty_in_box = u.qty_in_box
+    if (hasVal(u.outer_qty)) patch.outer_qty = u.outer_qty
+    if (hasVal(u.box)) patch.box = u.box
     // Scheme slabs: only replace when the Excel genuinely carried scheme rows
     // for this product (non-empty). An empty slabs array means "no scheme info
     // in this file" — NOT "clear the existing scheme".
