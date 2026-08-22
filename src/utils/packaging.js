@@ -101,3 +101,26 @@ function fmt(n) {
   // Trim trailing .0 but keep fractional pieces-per-outer if any.
   return Number.isInteger(n) ? String(n) : String(Math.round(n * 100) / 100)
 }
+
+/**
+ * Inline label for a single unit option in the (native) dropdown, e.g.
+ *   Piece  -> "Piece"
+ *   Outer  -> "Outer (1 = 40 pcs)"
+ *   Box    -> "Box (1 = 2000 pcs)"
+ * Conversion is product-specific; falls back to the bare unit name when no
+ * conversion is available (shouldn't happen, since unavailable units aren't
+ * offered). Kept to ONE line because native <option> can't render two lines.
+ */
+export function unitOptionLabel(product, unit) {
+  const u = (unit || 'Piece')
+  if (u === 'Piece') return 'Piece'
+  if (u === 'Outer') {
+    const per = piecesPerOuter(product)
+    return per != null ? `Outer (1 = ${fmt(per)} pcs)` : 'Outer'
+  }
+  if (u === 'Box') {
+    const per = piecesPerBox(product)
+    return per != null ? `Box (1 = ${fmt(per)} pcs)` : 'Box'
+  }
+  return u
+}

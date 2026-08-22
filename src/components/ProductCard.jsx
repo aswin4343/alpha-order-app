@@ -1,7 +1,7 @@
 import { memo, useState } from 'react'
 import QtyStepper from './QtyStepper.jsx'
 import { schemeBadge, calculateScheme, netRate } from '../utils/schemes.js'
-import { availableUnits, packagingSummary } from '../utils/packaging.js'
+import { availableUnits, unitOptionLabel } from '../utils/packaging.js'
 
 const UNITS = ['Piece', 'Box']
 
@@ -196,7 +196,6 @@ function PriceSelector({ product, override, onOverride, lastPrice }) {
 function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, lastPrice }) {
   const selected = qty > 0
   const units = availableUnits(product)
-  const pkgSummary = packagingSummary(product)
   const badge = schemeBadge(product.slabs)
   const hasScheme = !!badge
   // Defaults ON (per spec) — only OFF when the rep has explicitly toggled it
@@ -254,24 +253,17 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, 
         )}
       </div>
 
-      {/* Packaging conversion info — shown only when this product has packaging
-          data. Generated per-product from its Excel master data; helps the rep
-          understand what 1 Outer / 1 Box means before choosing a unit. */}
-      {pkgSummary && (
-        <p className="text-[10px] leading-tight text-slate-400 mt-1.5">{pkgSummary}</p>
-      )}
-
       {/* Controls */}
       <div className="flex items-center justify-between gap-2 mt-2">
         <select
           value={units.includes(unit) ? unit : 'Piece'}
           onChange={(e) => onUnit(product.id, e.target.value)}
-          className="h-10 rounded-lg border border-slate-200 bg-white pl-2 pr-1 text-xs text-slate-600 outline-none focus:border-brand-500"
+          className="h-10 max-w-[10rem] rounded-lg border border-slate-200 bg-white pl-2 pr-1 text-xs text-slate-600 outline-none focus:border-brand-500"
           aria-label="Quantity type"
         >
           {units.map((u) => (
             <option key={u} value={u}>
-              {u}
+              {unitOptionLabel(product, u)}
             </option>
           ))}
         </select>

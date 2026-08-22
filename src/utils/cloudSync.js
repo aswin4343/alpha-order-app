@@ -974,17 +974,43 @@ export async function mergeUpdateCloudProducts(uploadedList, fileName) {
     updates.push({ id: target.id, patch })
   }
 
-  // 3. Apply updates one product at a time (each is a scoped update by id, so a
-  // single bad row can never affect the rest). Supabase has no bulk-different-
-  // values update, so we loop; the catalogue is <1000 rows so this is fine.
-  let updated = 0
-  for (const { id, patch } of updates) {
-    const { error } = await supabase.from('products').update(patch).eq('id', id)
-    if (error) {
-      console.error('merge update failed for product', id, error)
-      throw new Error('Merge failed while updating a product: ' + (error.message || 'unknown'))
+  // 3. Apply updates in BATCHES via upsert, instead of one round-trip per
+  //    product (which made 800+ sequential network calls and took minutes).
+  //    Each patch is merged onto the product's EXISTING full row first, so the
+  //    upsert re-writes the same values for untouched columns and only the
+  //    patched fields actually change — nothing is blanked. Chunked to stay
+  //    within request limits; ~800 rows becomes a couple of calls, seconds not
+  //    minutes.
+  const byId = new Map(existing.map((p) => [p.id, p]))
+  const fullRows = updates.map(({ id, patch }) => {
+    const cur = byId.get(id) || {}
+    return {
+      id,
+      name: cur.name,
+      slabs: patch.slabs ?? cur.slabs ?? [],
+      base: patch.base ?? cur.base ?? null,
+      mrp: patch.mrp ?? cur.mrp ?? null,
+      retail: patch.retail ?? cur.retail ?? null,
+      wholesale: patch.wholesale ?? cur.wholesale ?? null,
+      net: patch.net ?? cur.net ?? [],
+      gst: patch.gst ?? cur.gst ?? null,
+      hsn: patch.hsn ?? cur.hsn ?? null,
+      qty_in_box: patch.qty_in_box ?? cur.qty_in_box ?? null,
+      outer_qty: patch.outer_qty ?? cur.outer_qty ?? null,
+      box: patch.box ?? cur.box ?? null,
+      sort_order: cur.sort_order ?? null
     }
-    updated++
+  })
+  let updated = 0
+  const CHUNK = 500
+  for (let i = 0; i < fullRows.length; i += CHUNK) {
+    const slice = fullRows.slice(i, i + CHUNK)
+    const { error } = await supabase.from('products').upsert(slice, { onConflict: 'id' })
+    if (error) {
+      console.error('merge upsert batch failed', error)
+      throw new Error('Merge failed while updating products: ' + (error.message || 'unknown'))
+    }
+    updated += slice.length
   }
 
   // 4. Bump catalogue version so reps re-download the enriched data.
