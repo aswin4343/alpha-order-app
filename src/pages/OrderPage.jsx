@@ -11,6 +11,32 @@ import ProductCard from '../components/ProductCard.jsx'
 import OrderSummaryBar from '../components/OrderSummaryBar.jsx'
 import BrandSelector from '../components/BrandSelector.jsx'
 import { toPieces } from '../utils/packaging.js'
+import { useLiveInventory } from '../hooks/useLiveInventory.js'
+
+// Resolve the customer-category default price TYPE for a product, falling back
+// through what the product actually has priced. `pref` is 'WHOLESALE' or
+// 'RETAIL' (from the customer's category). If the preferred price is missing,
+// try the other, then MRP.
+function defaultPriceTypeFor(p, pref) {
+  const order = pref === 'WHOLESALE'
+    ? ['wholesale', 'retail', 'mrp']
+    : ['retail', 'wholesale', 'mrp']
+  for (const k of order) {
+    if (p[k] != null) return k.toUpperCase()
+  }
+  return null
+}
+
+// The price VALUE matching defaultPriceTypeFor (same fallback order).
+function defaultPriceValueFor(p, pref) {
+  const order = pref === 'WHOLESALE'
+    ? ['wholesale', 'retail', 'mrp']
+    : ['retail', 'wholesale', 'mrp']
+  for (const k of order) {
+    if (p[k] != null) return p[k]
+  }
+  return null
+}
 import { SearchIcon, CloseIcon, SettingsIcon, ReturnIcon, ChartIcon, BellIcon } from '../components/Icons.jsx'
 import { buildOrderMessage, buildVisitMessage, buildWhatsappUrl } from '../utils/whatsapp.js'
 import VisitStatus from '../components/VisitStatus.jsx'
@@ -73,6 +99,21 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   const saved = loadSession()
 
   const [customer, setCustomer] = useState(saved?.customer ?? null)
+
+  // Live central inventory (realtime). Product cards read this to show stock
+  // status; updates from the Purchase Manager appear without a refresh.
+  const inventoryMap = useLiveInventory()
+
+  // Customer-category default price rule (strict business rule):
+  //   category exactly "FMCG - WHOLESALE STORE" -> default Wholesale (WP)
+  //   any other / missing / empty category      -> default Retail (RP)
+  // This only sets the DEFAULT; the rep can still override per product. It is
+  // recomputed whenever the selected customer changes, so switching customers
+  // re-evaluates the default (WP<->RP) as required.
+  const defaultPriceType =
+    (customer?.category || '').trim().toUpperCase() === 'FMCG - WHOLESALE STORE'
+      ? 'WHOLESALE'
+      : 'RETAIL'
   const [query, setQuery] = useState('')
   const [quantities, setQuantities] = useState(saved?.quantities ?? {}) // { id: qty }
   const [units, setUnits] = useState(saved?.units ?? {}) // { id: 'Piece'|'Box' }
@@ -363,26 +404,30 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
             // explicit requirement. Scheme products (BR/NR editable tags)
             // don't go through PriceSelector at all, so they fall back to the
             // older base/net/wholesale/retail chain, unaffected by this change.
+            // Selected Price Type + Final Selling Rate. When the rep hasn't
+            // overridden, the DEFAULT follows the customer-category rule
+            // (`defaultPriceType`: WHOLESALE for FMCG - WHOLESALE STORE, else
+            // RETAIL) — so the order data matches what the card shows. Falls
+            // back through available prices if the preferred one is missing for
+            // this product. Scheme products (base/net overrides) are unaffected.
             priceType: priceOverrides[id]?.priceType || (priceOverrides[id]
               ? null // legacy override present (base/net/etc, e.g. a scheme product) — no explicit type
-              : (p.wholesale != null ? 'WHOLESALE' : p.retail != null ? 'RETAIL' : p.mrp != null ? 'MRP' : null)),
+              : defaultPriceTypeFor(p, defaultPriceType)),
             finalSellingPrice:
               priceOverrides[id]?.finalRate != null ? priceOverrides[id].finalRate :
               priceOverrides[id]?.net != null ? priceOverrides[id].net :
               priceOverrides[id]?.base != null ? priceOverrides[id].base :
               priceOverrides[id]?.wholesale != null ? priceOverrides[id].wholesale :
               priceOverrides[id]?.retail != null ? priceOverrides[id].retail :
-              // No selection made at all yet (shouldn't normally happen once
-              // PriceSelector renders, but keeps old behaviour as a fallback):
-              // Wholesale first, matching the new default, then Retail.
-              (p.wholesale != null ? p.wholesale : p.retail != null ? p.retail : null),
-            // The price the system would use with NO selection at all — i.e.
-            // the true default (Wholesale-first, per this feature). This is
-            // what Billing's SPECIAL PRICE detection compares against now;
-            // it must NOT stay hardcoded to Retail, or every ordinary order
-            // using the new Wholesale default would be falsely flagged as a
-            // special price the moment this feature shipped.
-            normalPrice: p.wholesale != null ? p.wholesale : p.retail != null ? p.retail : null,
+              // No override yet: use the price for the category-driven default
+              // type, falling back through what the product actually has.
+              defaultPriceValueFor(p, defaultPriceType),
+            // The price the system would use with NO selection — the true
+            // default for THIS customer (category-driven). Billing's SPECIAL
+            // PRICE detection compares against this, so an ordinary order at the
+            // customer's default (WP for wholesale, RP otherwise) is not falsely
+            // flagged as special.
+            normalPrice: defaultPriceValueFor(p, defaultPriceType),
             // Per-line scheme exception — defaults true (ON), only ever set
             // false when the rep explicitly toggles it for this order/line.
             schemeEnabled: priceOverrides[id]?.schemeEnabled !== false
@@ -412,7 +457,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
           // Quantity unchanged or reduced from the original — not an add-on.
           return [{ id, name: p.name, qty, unit, ...entry, isAddon: false, ...priceFields }]
         }),
-    [quantities, units, productMap, originalQtyById, priceOverrides]
+    [quantities, units, productMap, originalQtyById, priceOverrides, defaultPriceType]
   )
 
   // Only treat as an add-on order if a previous order was loaded AND at least
@@ -869,6 +914,8 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
               onQty={onQty}
               onUnit={onUnit}
               lastPrice={customer ? lastPrices[(p.name || '').trim().toUpperCase()] : undefined}
+              defaultPriceType={defaultPriceType}
+              inventory={inventoryMap.get(p.id)}
             />
           ))}
 

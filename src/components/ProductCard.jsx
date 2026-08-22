@@ -2,6 +2,7 @@ import { memo, useState } from 'react'
 import QtyStepper from './QtyStepper.jsx'
 import { schemeBadge, calculateScheme, netRate } from '../utils/schemes.js'
 import { availableUnits, unitOptionLabel } from '../utils/packaging.js'
+import { inventoryStatus, STATUS_DOT } from '../utils/inventoryStatus.js'
 
 const UNITS = ['Piece', 'Box']
 
@@ -91,7 +92,7 @@ function EditableTag({ label, value, overridden, onChange, accent }) {
  * line's own priceType + finalRate (stored in `override`), so the master
  * catalogue is completely unaffected by a rep's per-order choice.
  */
-function PriceSelector({ product, override, onOverride, lastPrice }) {
+function PriceSelector({ product, override, onOverride, lastPrice, defaultPriceType }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
 
@@ -109,9 +110,17 @@ function PriceSelector({ product, override, onOverride, lastPrice }) {
 
   if (options.length === 0) return null
 
-  // Default selection: WHOLESALE if available, else whatever's first —
-  // matches "Wholesale Price should be the default selected selling price".
-  const defaultType = options.some((o) => o.type === 'WHOLESALE') ? 'WHOLESALE' : options[0].type
+  // Default selection is driven by the CUSTOMER'S CATEGORY (business rule):
+  //   FMCG - WHOLESALE STORE  -> Wholesale (WP)
+  //   every other / no category -> Retail (RP)
+  // `defaultPriceType` carries that decision in from the selected customer.
+  // Fall back gracefully if the preferred price is missing for this product:
+  // preferred -> WHOLESALE -> first available. The rep can still override.
+  const preferred = defaultPriceType || 'RETAIL'
+  const has = (t) => options.some((o) => o.type === t)
+  const defaultType = has(preferred)
+    ? preferred
+    : (has('WHOLESALE') ? 'WHOLESALE' : options[0].type)
   const activeType = override?.priceType || defaultType
   const isCustom = activeType === 'CUSTOM'
   const activeOption = options.find((o) => o.type === activeType)
@@ -193,9 +202,10 @@ function PriceSelector({ product, override, onOverride, lastPrice }) {
  * Product row. Scheme products show BR/NR; all others show RP/WP.
  * Layout is tuned for one-hand use on a phone.
  */
-function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, lastPrice }) {
+function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, lastPrice, defaultPriceType, inventory }) {
   const selected = qty > 0
   const units = availableUnits(product)
+  const stockStatus = inventoryStatus(inventory)
   const badge = schemeBadge(product.slabs)
   const hasScheme = !!badge
   // Defaults ON (per spec) — only OFF when the rep has explicitly toggled it
@@ -223,6 +233,23 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, 
 
       {/* Brand + scheme + price tags, all compact */}
       <div className="flex flex-wrap items-center gap-1 mt-1.5">
+        {/* Live stock status. Neutral "Stock Not Updated" when the Purchase
+            Manager hasn't initialized this product — never red/orange/green,
+            never shown as 0. Otherwise a small colored pill with the count. */}
+        {stockStatus.state === 'NOT_INITIALIZED' ? (
+          <span className="text-[10px] leading-none font-semibold text-slate-400 bg-slate-50 border border-slate-200 px-1.5 py-1 rounded-md">
+            Stock Not Updated
+          </span>
+        ) : (
+          <span className={`text-[10px] leading-none font-semibold px-1.5 py-1 rounded-md border ${
+            stockStatus.state === 'OUT' ? 'text-red-700 bg-red-50 border-red-200'
+              : stockStatus.state === 'LOW' ? 'text-amber-700 bg-amber-50 border-amber-200'
+              : 'text-emerald-700 bg-emerald-50 border-emerald-200'
+          }`}>
+            {STATUS_DOT[stockStatus.state]} {stockStatus.label} · {stockStatus.stock}
+          </span>
+        )}
+
         {hasScheme && (
           <span className="text-[10px] leading-none font-semibold text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-1 rounded-md">
             🎁 {badge}
@@ -249,7 +276,7 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, 
             />
           </>
         ) : (
-          <PriceSelector product={product} override={override} onOverride={onOverride} lastPrice={lastPrice} />
+          <PriceSelector product={product} override={override} onOverride={onOverride} lastPrice={lastPrice} defaultPriceType={defaultPriceType} />
         )}
       </div>
 

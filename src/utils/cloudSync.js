@@ -2059,6 +2059,19 @@ export async function verifyOrder(orderIdOrIds, notes) {
       p_notes: notes || null
     })
     if (error) throw error
+
+    // Confirmed sale -> deduct stock atomically for this order's items.
+    // Idempotent (per-order marker) and non-blocking: a deduction hiccup must
+    // NOT undo a successful verification, so we log rather than throw. Only
+    // initialized products are affected; uninitialized ones are skipped inside
+    // the DB function.
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const { error: dErr } = await supabase.rpc('deduct_order_stock', { p_order_id: id })
+      if (dErr) console.error('stock deduction failed for order', id, dErr)
+    } catch (e) {
+      console.error('stock deduction threw for order', id, e)
+    }
   }
 }
 
@@ -2982,4 +2995,171 @@ export async function updateCustomerDefaultRoute(customerCloudId, newRoute) {
     .update({ route: newRoute })
     .eq('id', customerCloudId)
   if (error) throw error
+}
+
+// ===========================================================================
+// INVENTORY (Purchase Manager module — Phase 1)
+// ===========================================================================
+
+/** Fetch all inventory rows as a Map<product_id, invRow>. */
+export async function loadInventoryMap() {
+  const { data, error } = await supabase.from('product_inventory').select('*')
+  if (error) { console.error('load inventory failed', error); return new Map() }
+  return new Map((data || []).map((r) => [r.product_id, r]))
+}
+
+/** Fetch a single product's inventory row (or null if not initialized). */
+export async function loadProductInventory(productId) {
+  const { data, error } = await supabase
+    .from('product_inventory').select('*').eq('product_id', productId).maybeSingle()
+  if (error) { console.error('load product inventory failed', error); return null }
+  return data || null
+}
+
+/**
+ * Apply a stock change atomically via the DB function (init / receive / adjust).
+ * qty is signed. Returns { applied, previous_stock, current_stock, reason }.
+ */
+export async function applyStockChange({ productId, productName, txnType, qty, reference, userName, userId, minStock, allowNegative }) {
+  const { data, error } = await supabase.rpc('apply_stock_change', {
+    p_product_id: productId,
+    p_product_name: productName ?? null,
+    p_txn_type: txnType,
+    p_qty: qty,
+    p_reference: reference ?? null,
+    p_user_name: userName ?? null,
+    p_user_id: userId ?? null,
+    p_min_stock: minStock ?? null,
+    p_allow_negative: allowNegative ?? false
+  })
+  if (error) { console.error('apply_stock_change failed', error); throw error }
+  return data
+}
+
+/** Record a purchase/receipt row (history). Does NOT change stock by itself. */
+export async function recordPurchase(rec) {
+  const total = (rec.qty != null && rec.purchasePrice != null) ? rec.qty * rec.purchasePrice : null
+  const { error } = await supabase.from('purchases').insert({
+    product_id: rec.productId,
+    product_name: rec.productName ?? null,
+    brand: rec.brand ?? null,
+    qty: rec.qty,
+    purchase_price: rec.purchasePrice ?? null,
+    total_value: total,
+    supplier: rec.supplier ?? null,
+    reference: rec.reference ?? null,
+    added_by: rec.addedBy ?? null,
+    added_by_id: rec.addedById ?? null
+  })
+  if (error) console.error('record purchase failed', error)
+}
+
+/** Update just the minimum stock level for an initialized product. */
+export async function setMinimumStock(productId, minStock) {
+  const { error } = await supabase
+    .from('product_inventory').update({ minimum_stock: minStock }).eq('product_id', productId)
+  if (error) throw error
+}
+
+/** Recent inventory transactions (optionally for one product). */
+export async function loadInventoryTransactions(productId, limit = 100) {
+  let q = supabase.from('inventory_transactions').select('*').order('created_at', { ascending: false }).limit(limit)
+  if (productId) q = q.eq('product_id', productId)
+  const { data, error } = await q
+  if (error) { console.error('load inventory txns failed', error); return [] }
+  return data || []
+}
+
+// ===========================================================================
+// INVENTORY — Phase 4: consumption analysis, reorder alerts, recommendations
+// ===========================================================================
+
+/**
+ * Aggregate the last 60 days of CONFIRMED (billing-verified) sales per product.
+ * Returns Map<PRODUCT_NAME_UPPER, { last30, prev30, total60 }> in pieces.
+ * Only verified orders count as real consumption (spec: confirmed sales only).
+ */
+export async function loadConsumption60d() {
+  const now = Date.now()
+  const from = new Date(now - 60 * 24 * 60 * 60 * 1000).toISOString()
+  const mid = now - 30 * 24 * 60 * 60 * 1000
+  const { data, error } = await supabase
+    .from('orders')
+    .select('billing_verified_at, order_items(product_name, qty, removed)')
+    .eq('billing_status', 'verified')
+    .gte('billing_verified_at', from)
+  if (error) { console.error('load consumption failed', error); return new Map() }
+
+  const map = new Map()
+  for (const o of data || []) {
+    const t = o.billing_verified_at ? new Date(o.billing_verified_at).getTime() : 0
+    const recent = t >= mid
+    for (const it of o.order_items || []) {
+      if (it.removed) continue
+      const key = (it.product_name || '').trim().toUpperCase()
+      if (!key) continue
+      const q = Number(it.qty) || 0
+      if (q <= 0) continue
+      const cur = map.get(key) || { last30: 0, prev30: 0, total60: 0 }
+      cur.total60 += q
+      if (recent) cur.last30 += q; else cur.prev30 += q
+      map.set(key, cur)
+    }
+  }
+  return map
+}
+
+/**
+ * Build a per-product analysis row combining inventory + consumption.
+ * `products` is the catalogue, `invMap` from loadInventoryMap, `consMap` from
+ * loadConsumption60d. Returns rows only for INITIALIZED products (others have
+ * no meaningful stock coverage). Recommendation is only produced when there is
+ * enough history; otherwise reason = 'insufficient_history'.
+ */
+export function buildInventoryAnalysis(products, invMap, consMap) {
+  const rows = []
+  for (const p of products) {
+    const inv = invMap.get(p.id)
+    if (!inv || !inv.inventory_initialized) continue
+    const cons = consMap.get((p.name || '').trim().toUpperCase()) || { last30: 0, prev30: 0, total60: 0 }
+    const stock = Number(inv.current_stock) || 0
+    const min = Number(inv.minimum_stock) || 0
+    const avgMonthly = cons.total60 / 2                 // pieces/month over 60d
+    const avgWeekly = cons.total60 / (60 / 7)
+    const coverageDays = avgMonthly > 0 ? Math.round((stock / avgMonthly) * 30) : null
+    const trend = cons.prev30 === 0
+      ? (cons.last30 > 0 ? 'up' : 'flat')
+      : (cons.last30 > cons.prev30 * 1.15 ? 'up' : cons.last30 < cons.prev30 * 0.85 ? 'down' : 'flat')
+
+    // Recommendation: target ~1 month cover above minimum, buy the gap.
+    // Only recommend when there's real recent history to base it on.
+    let recommendedPurchase = null
+    let recommendReason = null
+    if (cons.total60 > 0) {
+      const target = Math.max(Math.ceil(avgMonthly) + min, min)
+      const buy = Math.max(0, target - stock)
+      recommendedPurchase = buy
+      recommendReason = 'Based on recent two-month consumption and current stock.'
+    } else {
+      recommendReason = 'insufficient_history'
+    }
+
+    rows.push({
+      product: p, inv, stock, min,
+      last30: cons.last30, prev30: cons.prev30, total60: cons.total60,
+      avgMonthly: Math.round(avgMonthly * 10) / 10,
+      avgWeekly: Math.round(avgWeekly * 10) / 10,
+      coverageDays, trend,
+      recommendedPurchase, recommendReason
+    })
+  }
+  return rows
+}
+
+/** Recent purchase history rows (newest first). */
+export async function loadPurchases(limit = 200) {
+  const { data, error } = await supabase
+    .from('purchases').select('*').order('created_at', { ascending: false }).limit(limit)
+  if (error) { console.error('load purchases failed', error); return [] }
+  return data || []
 }
