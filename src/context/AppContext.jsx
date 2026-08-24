@@ -107,6 +107,7 @@ async function syncCustomersFromCloud(localCustomers) {
           area: '',
           route: cloudRoute,
           category: cc.category || '',
+          ledgerCategory: cc.ledger_category || '',
           creditDays: 'No Credit',
           gstn: '',
           phone: '',
@@ -117,14 +118,20 @@ async function syncCustomersFromCloud(localCustomers) {
         return
       }
 
-      // Existing shop — if the cloud's route has since changed (a permanent
-      // route override made anywhere), bring this device's copy up to date.
-      // Local-only fields (phone/GST/etc, which the cloud never stores) are
-      // always preserved untouched.
-      if ((existingLocal.route || '') !== cloudRoute) {
+      // Existing shop — bring device copy up to date for cloud-owned fields:
+      // route (permanent overrides) and ledger_category (assigned centrally /
+      // via migration). Local-only PII (phone/GST/etc) is preserved untouched.
+      const cloudLedger = cc.ledger_category || ''
+      const routeChanged = (existingLocal.route || '') !== cloudRoute
+      const ledgerChanged = cloudLedger && (existingLocal.ledgerCategory || '') !== cloudLedger
+      if (routeChanged || ledgerChanged) {
         const idx = updated.findIndex((u) => u.id === existingLocal.id)
         if (idx !== -1) {
-          updated[idx] = { ...updated[idx], route: cloudRoute }
+          updated[idx] = {
+            ...updated[idx],
+            ...(routeChanged ? { route: cloudRoute } : {}),
+            ...(ledgerChanged ? { ledgerCategory: cloudLedger } : {})
+          }
           changed = true
         }
       }
@@ -223,6 +230,7 @@ export function AppProvider({ children }) {
         area: (data.area || '').trim(),
         route: (data.route || '').trim(),
         category: data.category || '',
+        ledgerCategory: data.ledgerCategory || '',
         creditDays: data.creditDays || 'No Credit',
         gstn: (data.gstn || '').trim(),
         phone: (data.phone || '').trim(),

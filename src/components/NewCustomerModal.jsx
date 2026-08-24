@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { CloseIcon } from './Icons.jsx'
+import { loadLedgerCategories } from '../utils/cloudSync.js'
 
 /**
  * IMPORTANT: Field and inputCls are declared at MODULE scope, not inside the
@@ -62,6 +63,7 @@ export default function NewCustomerModal({ initialName = '', onClose, onCreated 
       area: '',
       route: '',
       category: '',
+      ledgerCategory: '',
       creditDays: 'No Credit',
       gstn: '',
       phone: '',
@@ -70,6 +72,17 @@ export default function NewCustomerModal({ initialName = '', onClose, onCreated 
   })
   const [touched, setTouched] = useState(false)
   const [saving, setSaving] = useState(false)
+  const [ledgerCats, setLedgerCats] = useState([])
+
+  // Load the ledger category master list from the cloud (falls back to the
+  // three known values if the cloud is unreachable, so creation never blocks).
+  useEffect(() => {
+    let alive = true
+    loadLedgerCategories().then((list) => {
+      if (alive) setLedgerCats(list.length ? list : ['RETAIL-CUSTOMER', 'WHOLESALE-CUSTOMER', 'ZEDGO - EXPRESS'])
+    }).catch(() => { if (alive) setLedgerCats(['RETAIL-CUSTOMER', 'WHOLESALE-CUSTOMER', 'ZEDGO - EXPRESS']) })
+    return () => { alive = false }
+  }, [])
 
   // Persist the draft on every change so it survives a killed/reloaded tab.
   useEffect(() => {
@@ -101,6 +114,7 @@ export default function NewCustomerModal({ initialName = '', onClose, onCreated 
     area: !f.area.trim(),
     route: !f.route.trim(),
     category: !f.category,
+    ledgerCategory: !f.ledgerCategory,
     phone: !/^\d{10}$/.test(f.phone.replace(/\D/g, '')),
     email: !emailOk
   }
@@ -184,6 +198,21 @@ export default function NewCustomerModal({ initialName = '', onClose, onCreated 
             >
               <option value="">Select category</option>
               {categories.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+          </Field>
+
+          <Field label="Ledger Category" required showError={touched && errors.ledgerCategory}>
+            <select
+              value={f.ledgerCategory}
+              onChange={set('ledgerCategory')}
+              className={inputCls(touched && errors.ledgerCategory)}
+            >
+              <option value="">Select ledger category</option>
+              {ledgerCats.map((c) => (
                 <option key={c} value={c}>
                   {c}
                 </option>

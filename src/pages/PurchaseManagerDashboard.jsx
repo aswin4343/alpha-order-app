@@ -4,9 +4,11 @@ import { useApp } from '../context/AppContext.jsx'
 import {
   loadInventoryMap, applyStockChange, recordPurchase, setMinimumStock,
   loadConsumption60d, buildInventoryAnalysis,
-  loadInventoryTransactions, loadPurchases
+  loadInventoryTransactions, loadPurchases,
+  loadPurchaseAlertPushEnabled, setPurchaseAlertPushEnabled
 } from '../utils/cloudSync.js'
 import { inventoryStatus, STATUS_PILL, STATUS_DOT } from '../utils/inventoryStatus.js'
+import EnablePushBanner from '../components/EnablePushBanner.jsx'
 import appIcon from '../assets/app_icon.png'
 
 const brandOf = (p) => (p.name || '').split(/[\s-]/)[0] || '—'
@@ -59,6 +61,9 @@ export default function PurchaseManagerDashboard() {
       </header>
 
       <main className="flex-1 px-4 lg:px-6 py-4 max-w-6xl w-full mx-auto">
+        <div className="mb-3">
+          <EnablePushBanner role="purchase_manager" label="Get purchase &amp; stock alerts instantly — even when the app is closed." />
+        </div>
         {tab === 'add' && (
           <AddStock products={products} invMap={invMap} profile={profile}
             onDone={async (msg) => { await refresh(); flash(msg) }} />
@@ -337,49 +342,75 @@ function InventoryList({ products, invMap, loading, onMinSaved }) {
 // --- Reorder Alerts ---------------------------------------------------------
 // Only initialized products appear. Priority: Out of Stock, then Low Stock.
 function ReorderAlerts({ analysis, loading }) {
+  const [pushOn, setPushOn] = useState(null)
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => { loadPurchaseAlertPushEnabled().then(setPushOn).catch(() => setPushOn(true)) }, [])
+
+  const togglePush = async () => {
+    const next = !pushOn
+    setSaving(true)
+    try { await setPurchaseAlertPushEnabled(next); setPushOn(next) }
+    catch { alert('Could not update setting.') }
+    finally { setSaving(false) }
+  }
+
   const alerts = analysis
     .filter((r) => r.stock <= 0 || r.stock <= r.min)
     .sort((a, b) => {
-      // Out of stock first, then lowest coverage.
       const ao = a.stock <= 0 ? 0 : 1, bo = b.stock <= 0 ? 0 : 1
       if (ao !== bo) return ao - bo
       return (a.stock - a.min) - (b.stock - b.min)
     })
 
-  if (loading) return <Spinner />
-  if (alerts.length === 0) {
-    return <Empty title="No reorder alerts" body="All tracked products are above their minimum stock level." />
-  }
   return (
-    <div className="space-y-2">
-      {alerts.map((r) => {
-        const out = r.stock <= 0
-        return (
-          <div key={r.product.id} className={`rounded-2xl bg-white border p-4 ${out ? 'border-red-200' : 'border-amber-200'}`}>
-            <div className="flex items-start justify-between gap-2">
-              <div className="min-w-0">
-                <p className="font-semibold text-slate-800 truncate">{r.product.name}</p>
-                <p className="text-[11px] text-slate-400">{(r.product.name || '').split(/[\s-]/)[0]}</p>
+    <div className="space-y-3">
+      {/* Push toggle — dashboard alerts always show; this only gates OS push. */}
+      <div className="rounded-2xl bg-white border border-slate-200 p-4 flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <p className="font-semibold text-slate-800 text-sm">Purchase Stock Push Alerts</p>
+          <p className="text-[11px] text-slate-400">Send device notifications when a product hits its reorder level. The list below always shows regardless.</p>
+        </div>
+        <button onClick={togglePush} disabled={pushOn === null || saving}
+          className={`shrink-0 relative h-7 w-12 rounded-full transition ${pushOn ? 'bg-emerald-500' : 'bg-slate-300'}`}>
+          <span className={`absolute top-0.5 h-6 w-6 rounded-full bg-white shadow transition ${pushOn ? 'left-[22px]' : 'left-0.5'}`} />
+        </button>
+      </div>
+
+      {loading ? <Spinner /> : alerts.length === 0 ? (
+        <Empty title="No reorder alerts" body="All tracked products are above their reorder level." />
+      ) : (
+        <div className="space-y-2">
+          {alerts.map((r) => {
+            const out = r.stock <= 0
+            return (
+              <div key={r.product.id} className={`rounded-2xl bg-white border p-4 ${out ? 'border-red-200' : 'border-amber-200'}`}>
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <p className="font-semibold text-slate-800 truncate">{r.product.name}</p>
+                    <p className="text-[11px] text-slate-400">{(r.product.name || '').split(/[\s-]/)[0]}</p>
+                  </div>
+                  <span className={`shrink-0 text-[10px] font-bold px-2 py-1 rounded-lg ${out ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
+                    {out ? '🔴 Out of Stock' : '🟠 Below Reorder Level'}
+                  </span>
+                </div>
+                <div className="grid grid-cols-4 gap-2 mt-3 text-center">
+                  <Stat label="Current" value={r.stock} />
+                  <Stat label="Reorder Lvl" value={r.min} />
+                  <Stat label="30d sales" value={r.last30} />
+                  <Stat label="Buy" value={r.recommendedPurchase ?? '—'} accent />
+                </div>
+                {r.recommendReason && r.recommendReason !== 'insufficient_history' && (
+                  <p className="text-[11px] text-slate-400 mt-2">{r.recommendReason}</p>
+                )}
+                {r.recommendReason === 'insufficient_history' && (
+                  <p className="text-[11px] text-slate-400 mt-2">Insufficient sales history for a recommendation.</p>
+                )}
               </div>
-              <span className={`shrink-0 text-[10px] font-bold px-2 py-1 rounded-lg ${out ? 'bg-red-100 text-red-700' : 'bg-amber-100 text-amber-700'}`}>
-                {out ? '🔴 Out of Stock' : '🟠 Low Stock'}
-              </span>
-            </div>
-            <div className="grid grid-cols-4 gap-2 mt-3 text-center">
-              <Stat label="Current" value={r.stock} />
-              <Stat label="Minimum" value={r.min} />
-              <Stat label="30d sales" value={r.last30} />
-              <Stat label="Buy" value={r.recommendedPurchase ?? '—'} accent />
-            </div>
-            {r.recommendReason && r.recommendReason !== 'insufficient_history' && (
-              <p className="text-[11px] text-slate-400 mt-2">{r.recommendReason}</p>
-            )}
-            {r.recommendReason === 'insufficient_history' && (
-              <p className="text-[11px] text-slate-400 mt-2">Insufficient sales history for a recommendation.</p>
-            )}
-          </div>
-        )
-      })}
+            )
+          })}
+        </div>
+      )}
     </div>
   )
 }

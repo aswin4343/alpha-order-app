@@ -45,18 +45,21 @@ Deno.serve(async (req) => {
       delivery_id, order_id, shop_name, bill_no, verified_by, route,
       ann_title, ann_body,
       // billing_edit-specific:
-      sales_rep_id, change_summary
+      sales_rep_id, change_summary,
+      // purchase_alert-specific:
+      product_name, current_stock, reorder_level
     } = body || {}
 
     const isAnnouncement = kind === 'announcement'
     const isBillingEdit = kind === 'billing_edit'
+    const isPurchaseAlert = kind === 'purchase_alert'
 
     // Choose recipients + message based on the kind of event.
-    // - QC alert       → push to qc_team devices.
-    // - Announcement   → push to ALL salesperson devices.
-    // - Billing edit   → push to ONE specific rep's device(s) only — the rep
-    //   who originally placed the order that was just edited. Targeted by
-    //   user_id, not role, since this must never reach every rep.
+    // - QC alert        → push to qc_team devices.
+    // - Announcement    → push to ALL salesperson devices.
+    // - Billing edit    → push to ONE specific rep's device(s) only.
+    // - Purchase alert  → push to purchase_manager devices, but ONLY if the
+    //   purchase-stock push toggle is enabled (dashboard alerts are separate).
     let subs, subsError
     if (isBillingEdit) {
       if (!sales_rep_id) {
@@ -65,6 +68,18 @@ Deno.serve(async (req) => {
         })
       }
       const res = await admin.from('push_subscriptions').select('id, subscription').eq('user_id', sales_rep_id)
+      subs = res.data; subsError = res.error
+    } else if (isPurchaseAlert) {
+      // Respect the PM's push toggle. If disabled, do nothing (the dashboard
+      // list still shows the product as needing purchase).
+      const { data: setting } = await admin
+        .from('purchase_alert_settings').select('push_enabled').eq('id', 1).maybeSingle()
+      if (setting && setting.push_enabled === false) {
+        return new Response(JSON.stringify({ ok: true, sent: 0, note: 'push disabled' }), {
+          headers: { 'Content-Type': 'application/json' }
+        })
+      }
+      const res = await admin.from('push_subscriptions').select('id, subscription').eq('role', 'purchase_manager')
       subs = res.data; subsError = res.error
     } else {
       const targetRole = isAnnouncement ? 'salesperson' : 'qc_team'
@@ -82,7 +97,20 @@ Deno.serve(async (req) => {
       })
     }
 
-    const payload = isBillingEdit
+    const payload = isPurchaseAlert
+      ? JSON.stringify({
+          title: '🔔 Purchase Order Required',
+          body:
+            `${product_name || 'A product'} has reached its stock limit.\n` +
+            `Current Stock: ${current_stock ?? '-'} | Limit: ${reorder_level ?? '-'}\n` +
+            `Please place a Purchase Order.`,
+          data: {
+            type: 'purchase_alert',
+            product_name: product_name || '',
+            url: `/?purchase_reorder=1`
+          }
+        })
+      : isBillingEdit
       ? JSON.stringify({
           title: '🔔 Order Updated',
           body: (change_summary || `${shop_name || 'Your order'} was updated by Billing.`).slice(0, 240),

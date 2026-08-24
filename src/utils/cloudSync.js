@@ -59,6 +59,7 @@ export async function ensureCloudCustomer(customer, userId, repCreated = false) 
       shop_name: customer.name,
       route: customer.route || '',
       category: customer.category || '',
+      ledger_category: customer.ledgerCategory || null,
       created_by: userId,
       is_rep_created: repCreated
     })
@@ -74,6 +75,7 @@ export async function ensureCloudCustomer(customer, userId, repCreated = false) 
           shop_name: customer.name,
           route: customer.route || '',
           category: customer.category || '',
+          ledger_category: customer.ledgerCategory || null,
           created_by: userId
         })
         .select('id')
@@ -1381,7 +1383,7 @@ export async function fetchAllCloudCustomers() {
   while (true) {
     const { data, error } = await supabase
       .from('customers')
-      .select('id, shop_name, route, category, created_at')
+      .select('id, shop_name, route, category, ledger_category, created_at')
       .order('created_at', { ascending: false })
       .range(from, from + pageSize - 1)
     if (error) throw error
@@ -3162,4 +3164,36 @@ export async function loadPurchases(limit = 200) {
     .from('purchases').select('*').order('created_at', { ascending: false }).limit(limit)
   if (error) { console.error('load purchases failed', error); return [] }
   return data || []
+}
+
+// ===========================================================================
+// LEDGER CATEGORY (customer attribute)
+// ===========================================================================
+
+/** Load the ledger category master list (names only), ordered. */
+export async function loadLedgerCategories() {
+  const { data, error } = await supabase
+    .from('ledger_categories').select('name, sort_order').order('sort_order', { ascending: true })
+  if (error) { console.error('load ledger categories failed', error); return [] }
+  return (data || []).map((r) => r.name)
+}
+
+// ===========================================================================
+// PURCHASE ALERTS (Feature 4, Half A) — push toggle only; alert STATE is
+// maintained in the DB by apply_stock_change.
+// ===========================================================================
+
+/** Read whether purchase-stock PUSH alerts are enabled. */
+export async function loadPurchaseAlertPushEnabled() {
+  const { data, error } = await supabase
+    .from('purchase_alert_settings').select('push_enabled').eq('id', 1).maybeSingle()
+  if (error) { console.error('load purchase alert setting failed', error); return true }
+  return data ? !!data.push_enabled : true
+}
+
+/** Enable/disable purchase-stock PUSH alerts (dashboard alerts stay on). */
+export async function setPurchaseAlertPushEnabled(enabled) {
+  const { error } = await supabase
+    .from('purchase_alert_settings').update({ push_enabled: enabled, updated_at: new Date().toISOString() }).eq('id', 1)
+  if (error) throw error
 }

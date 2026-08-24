@@ -329,6 +329,7 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
   const [replaceItemTarget, setReplaceItemTarget] = useState(null) // item being replaced
   const [showPickerBill, setShowPickerBill] = useState(false)
   const [showFullBill, setShowFullBill] = useState(false)
+  const [showNewCustomer, setShowNewCustomer] = useState(false)
 
   // Shared audit context for every billing edit on this order. Threaded into
   // the edit modals so each modification writes a complete, traceable,
@@ -404,6 +405,14 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
             </div>
             <p className="text-xs text-slate-500 mt-0.5">{order.route || 'No route'} · {fmt(order.created_at)}</p>
           </div>
+          {order.original?.is_new_customer && (
+            <button
+              onClick={() => setShowNewCustomer(true)}
+              className="shrink-0 rounded-xl border-2 border-blue-600 text-blue-700 px-3 py-2 text-xs font-bold hover:bg-blue-50"
+            >
+              🆕 New
+            </button>
+          )}
           <button
             onClick={() => setShowFullBill(true)}
             className="shrink-0 rounded-xl border-2 border-brand-600 text-brand-700 px-3 py-2 text-xs font-bold hover:bg-brand-50"
@@ -555,6 +564,10 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
           orderRef={orderRefFrom(order.id)}
           items={mapBillItems(displayItems, products)}
         />
+      )}
+
+      {showNewCustomer && (
+        <NewCustomerInfoModal order={order} onClose={() => setShowNewCustomer(false)} />
       )}
 
       {/* Qty edit modal */}
@@ -999,5 +1012,86 @@ function AddonAwareDetailPanel({ order, onBackToOrders, onVerified, repName }) {
         </div>
       </div>
     </section>
+  )
+}
+
+// --- New Customer info popup (Billing) ---------------------------------------
+// Reads from the SAME order/customer record Sales created: the order's intro_*
+// fields (captured at first order) plus the customer's ledger/category from the
+// customers table. Per-field copy + Copy All. No data is duplicated here.
+function NewCustomerInfoModal({ order, onClose }) {
+  const [ledger, setLedger] = useState(null)
+  const [copied, setCopied] = useState('')
+  const o = order.original || {}
+
+  useEffect(() => {
+    let alive = true
+    import('../utils/cloudSync.js').then(async ({ supabase }) => {
+      const { data } = await supabase
+        .from('customers')
+        .select('ledger_category, category, route')
+        .eq('shop_name', order.shop_name)
+        .limit(1).maybeSingle()
+      if (alive && data) setLedger(data)
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [order.shop_name])
+
+  // Build the field list dynamically; skip empty values so no undefined/null shows.
+  const fields = [
+    ['Store Name', order.shop_name],
+    ['Phone Number', o.intro_phone],
+    ['GST Number', o.intro_gstn],
+    ['Email', o.intro_email],
+    ['Customer Category', ledger?.category],
+    ['Ledger Category', ledger?.ledger_category],
+    ['Route', order.route || ledger?.route],
+    ['Credit Days', o.intro_credit_days]
+  ].filter(([, v]) => v != null && String(v).trim() !== '')
+
+  const copy = async (label, value) => {
+    try { await navigator.clipboard.writeText(String(value)); setCopied(label); setTimeout(() => setCopied(''), 1500) }
+    catch { /* clipboard blocked — non-fatal */ }
+  }
+  const copyAll = async () => {
+    const text = fields.map(([l, v]) => `${l}: ${v}`).join('\n')
+    try { await navigator.clipboard.writeText(text); setCopied('__all__'); setTimeout(() => setCopied(''), 1500) }
+    catch { /* non-fatal */ }
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center px-4">
+      <div className="bg-white w-full max-w-md rounded-2xl max-h-[85vh] flex flex-col">
+        <div className="flex items-center justify-between p-4 border-b border-slate-100">
+          <div>
+            <h2 className="font-bold text-slate-800">New Customer</h2>
+            <p className="text-[11px] text-slate-400">Details entered by Sales</p>
+          </div>
+          <button onClick={onClose} className="h-8 w-8 rounded-full flex items-center justify-center text-slate-500 hover:bg-slate-100">✕</button>
+        </div>
+
+        <div className="overflow-y-auto p-3 space-y-1.5">
+          {fields.map(([label, value]) => (
+            <div key={label} className="flex items-center gap-2 rounded-xl border border-slate-100 px-3 py-2">
+              <div className="min-w-0 flex-1">
+                <p className="text-[10px] font-semibold text-slate-400 uppercase tracking-wide">{label}</p>
+                <p className="text-sm text-slate-800 break-words">{value}</p>
+              </div>
+              <button onClick={() => copy(label, value)}
+                className="shrink-0 text-[11px] font-semibold text-brand-700 border border-slate-200 rounded-lg px-2.5 py-1.5 hover:bg-slate-50">
+                {copied === label ? 'Copied' : 'Copy'}
+              </button>
+            </div>
+          ))}
+          {fields.length === 0 && <p className="text-center text-sm text-slate-400 py-6">No customer details available.</p>}
+        </div>
+
+        <div className="p-3 border-t border-slate-100">
+          <button onClick={copyAll} className="w-full rounded-xl bg-slate-900 text-white py-2.5 font-bold text-sm">
+            {copied === '__all__' ? 'Copied all ✓' : 'Copy All'}
+          </button>
+        </div>
+      </div>
+    </div>
   )
 }

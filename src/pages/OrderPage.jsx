@@ -104,16 +104,18 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   // status; updates from the Purchase Manager appear without a refresh.
   const inventoryMap = useLiveInventory()
 
-  // Customer-category default price rule (strict business rule):
-  //   category exactly "FMCG - WHOLESALE STORE" -> default Wholesale (WP)
-  //   any other / missing / empty category      -> default Retail (RP)
-  // This only sets the DEFAULT; the rep can still override per product. It is
-  // recomputed whenever the selected customer changes, so switching customers
-  // re-evaluates the default (WP<->RP) as required.
-  const defaultPriceType =
-    (customer?.category || '').trim().toUpperCase() === 'FMCG - WHOLESALE STORE'
-      ? 'WHOLESALE'
-      : 'RETAIL'
+  // LEDGER-category default price rule (strict business rule):
+  //   ledger_category exactly "WHOLESALE-CUSTOMER" -> default Wholesale (WP)
+  //   any other / missing / empty ledger category  -> default Retail (RP)
+  //   (Retail Customer, Zedgo Express, unmapped, etc. all fall back to Retail.)
+  // This REPLACES the earlier FMCG customer-category rule. It only sets the
+  // DEFAULT; the rep can still override per product. Recomputed whenever the
+  // selected customer changes, so switching customers re-evaluates WP<->RP.
+  // Tolerant of case/spacing; also accepts the local camelCase field or the
+  // cloud snake_case field, whichever the customer object carries.
+  const ledgerCat = (customer?.ledgerCategory ?? customer?.ledger_category ?? '')
+    .toString().trim().toUpperCase()
+  const defaultPriceType = ledgerCat === 'WHOLESALE-CUSTOMER' ? 'WHOLESALE' : 'RETAIL'
   const [query, setQuery] = useState('')
   const [quantities, setQuantities] = useState(saved?.quantities ?? {}) // { id: qty }
   const [units, setUnits] = useState(saved?.units ?? {}) // { id: 'Piece'|'Box' }
@@ -406,7 +408,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
             // older base/net/wholesale/retail chain, unaffected by this change.
             // Selected Price Type + Final Selling Rate. When the rep hasn't
             // overridden, the DEFAULT follows the customer-category rule
-            // (`defaultPriceType`: WHOLESALE for FMCG - WHOLESALE STORE, else
+            // (`defaultPriceType`: WHOLESALE for ledger WHOLESALE-CUSTOMER, else
             // RETAIL) — so the order data matches what the card shows. Falls
             // back through available prices if the preferred one is missing for
             // this product. Scheme products (base/net overrides) are unaffected.
