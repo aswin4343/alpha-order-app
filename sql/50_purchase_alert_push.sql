@@ -31,10 +31,15 @@ begin
   if coalesce(new.alert_active, false) = true
      and coalesce(old.alert_active, false) = false then
 
-    -- Pull the function URL + shared secret from app_settings (same row the QC
-    -- push uses). If not configured, silently skip (no error to the caller).
-    select value into v_url from app_settings where key = 'push_function_url';
-    select value into v_secret from app_settings where key = 'qc_push_secret';
+    -- Pull the function URL + shared secret from app_settings. This project's
+    -- app_settings is a single-row table with named columns (qc_push_function_url,
+    -- qc_push_secret) — the same ones the QC push already uses. If not set,
+    -- silently skip (no error to the caller).
+    select qc_push_function_url, qc_push_secret
+      into v_url, v_secret
+      from app_settings
+      order by id
+      limit 1;
     if v_url is null or v_secret is null then
       return new;
     end if;
@@ -65,10 +70,9 @@ create trigger trg_purchase_alert_push
   for each row
   execute function notify_purchase_alert();
 
--- NOTE: if your app_settings does not yet have 'push_function_url', set it:
---   insert into app_settings (key, value) values
---     ('push_function_url', 'https://<PROJECT_REF>.supabase.co/functions/v1/send-qc-push')
---   on conflict (key) do update set value = excluded.value;
--- (qc_push_secret already exists from the QC push setup.)
+-- NOTE: this project's app_settings already holds qc_push_function_url and
+-- qc_push_secret (from the QC push setup), so NO extra configuration is needed —
+-- this trigger reuses them. Confirm they're populated with:
+--   select qc_push_function_url, qc_push_secret from app_settings;
 
 notify pgrst, 'reload schema';
