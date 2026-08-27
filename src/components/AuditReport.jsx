@@ -80,17 +80,34 @@ export default function AuditReport({ onClose }) {
   // #root, and no competing print stylesheets from other components — which is
   // what made the in-page approaches print blank. We serialise the already-
   // rendered report node into a minimal HTML document and print that.
-  const printReport = () => {
+  // Fetch the actual CSS TEXT and embed it directly — copying <link> tags by
+  // reference doesn't work because a fresh window.open('', ...) has no URL
+  // (about:blank), so a root-relative href has no origin to resolve against
+  // and silently fails to load, producing a blank page.
+  const printReport = async () => {
     const node = document.getElementById('audit-report-sheet')
     if (!node) { window.print(); return }
     const w = window.open('', '_blank', 'width=1100,height=800')
     if (!w) { alert('Please allow pop-ups to download the report.'); return }
-    // Pull in the app's stylesheets so the report keeps its formatting.
-    const styles = Array.from(document.querySelectorAll('link[rel="stylesheet"], style'))
-      .map((n) => n.outerHTML).join('\n')
+
+    const cssLinks = Array.from(document.querySelectorAll('link[rel="stylesheet"]'))
+    const inlineStyleText = Array.from(document.querySelectorAll('style')).map((s) => s.textContent).join('\n')
+    let linkedCss = ''
+    try {
+      const texts = await Promise.all(cssLinks.map(async (link) => {
+        try {
+          const url = new URL(link.getAttribute('href'), window.location.href).href
+          const res = await fetch(url)
+          return res.ok ? await res.text() : ''
+        } catch { return '' }
+      }))
+      linkedCss = texts.join('\n')
+    } catch { /* proceed with whatever we have */ }
+
     w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
       <title>Billing Edit Audit Report</title>
-      ${styles}
+      <base href="${window.location.origin}/">
+      <style>${linkedCss}\n${inlineStyleText}</style>
       <style>
         @page { size: A4 landscape; margin: 10mm; }
         html,body{margin:0;padding:0;background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
@@ -99,9 +116,8 @@ export default function AuditReport({ onClose }) {
         tr{break-inside:avoid;}
       </style></head><body>${node.outerHTML}</body></html>`)
     w.document.close()
-    // Give the styles a moment to apply, then print.
-    w.onload = () => { w.focus(); w.print() }
-    setTimeout(() => { try { w.focus(); w.print() } catch { /* already printed */ } }, 600)
+    const doPrint = () => { try { w.focus(); w.print() } catch { /* already printed / closed */ } }
+    setTimeout(doPrint, 400)
   }
   const sheet = (
     <div id="audit-report-sheet" className="audit-print bg-white w-full max-w-6xl rounded-2xl shadow-2xl p-5 sm:p-6 mx-auto">
