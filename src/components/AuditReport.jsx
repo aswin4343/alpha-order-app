@@ -87,8 +87,6 @@ export default function AuditReport({ onClose }) {
   const printReport = async () => {
     const node = document.getElementById('audit-report-sheet')
     if (!node) { window.print(); return }
-    const w = window.open('', '_blank', 'width=1100,height=800')
-    if (!w) { alert('Please allow pop-ups to download the report.'); return }
 
     const cssLinks = Array.from(document.querySelectorAll('link[rel="stylesheet"]'))
     const inlineStyleText = Array.from(document.querySelectorAll('style')).map((s) => s.textContent).join('\n')
@@ -104,7 +102,7 @@ export default function AuditReport({ onClose }) {
       linkedCss = texts.join('\n')
     } catch { /* proceed with whatever we have */ }
 
-    w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
       <title>Billing Edit Audit Report</title>
       <base href="${window.location.origin}/">
       <style>${linkedCss}\n${inlineStyleText}</style>
@@ -121,10 +119,20 @@ export default function AuditReport({ onClose }) {
       </style></head><body>
         <button class="rpt-print-btn" onclick="window.print()">🖨️ Print / Save as PDF</button>
         ${node.outerHTML}
-      </body></html>`)
-    w.document.close()
-    const doPrint = () => { try { w.focus(); w.print() } catch { /* already printed / closed */ } }
-    setTimeout(doPrint, 400)
+        <script>
+          window.onload = function () { try { window.print() } catch (e) {} };
+        </script>
+      </body></html>`
+    // A blob: URL gives the window a REAL, navigable document instead of
+    // about:blank — this is what makes Chromium's print PREVIEW render
+    // correctly instead of coming out blank (document.write into an empty
+    // popup does not reliably support print preview, even though the page
+    // itself displays fine on screen).
+    const blob = new Blob([html], { type: 'text/html' })
+    const blobUrl = URL.createObjectURL(blob)
+    const w = window.open(blobUrl, '_blank', 'width=1100,height=800')
+    if (!w) { alert('Please allow pop-ups to download the report.'); return }
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000)
   }
   const sheet = (
     <div id="audit-report-sheet" className="audit-print bg-white w-full max-w-6xl rounded-2xl shadow-2xl p-5 sm:p-6 mx-auto">

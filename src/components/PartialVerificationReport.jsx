@@ -142,8 +142,6 @@ export default function PartialVerificationReport({ onClose }) {
   const printReport = async () => {
     const node = document.getElementById('partial-verif-sheet')
     if (!node) return
-    const w = window.open('', '_blank', 'width=1100,height=800')
-    if (!w) { alert('Please allow pop-ups to download the report.'); return }
 
     const cssLinks = Array.from(document.querySelectorAll('link[rel="stylesheet"]'))
     const inlineStyleText = Array.from(document.querySelectorAll('style')).map((s) => s.textContent).join('\n')
@@ -159,7 +157,7 @@ export default function PartialVerificationReport({ onClose }) {
       linkedCss = texts.join('\n')
     } catch { /* proceed with whatever we have */ }
 
-    w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
       <title>Partial Verification Report</title>
       <base href="${window.location.origin}/">
       <style>${linkedCss}\n${inlineStyleText}</style>
@@ -176,13 +174,23 @@ export default function PartialVerificationReport({ onClose }) {
       </style></head><body>
         <button class="rpt-print-btn" onclick="window.print()">🖨️ Print / Save as PDF</button>
         ${node.outerHTML}
-      </body></html>`)
-    w.document.close()
-    // Best-effort auto-trigger — but the button above is the guaranteed path,
-    // since auto-print can silently fail after the async CSS fetch above (the
-    // gap between the click and this point can break it in some browsers).
-    const doPrint = () => { try { w.focus(); w.print() } catch { /* already printed / closed */ } }
-    setTimeout(doPrint, 400)
+        <script>
+          // A REAL page load (this is a blob: URL, not document.write into
+          // about:blank) so window.onload fires reliably here, unlike the
+          // previous approach — this is what fixes the blank print PREVIEW
+          // pane (Chromium's print pipeline doesn't reliably preview pages
+          // synthesized via document.write into an empty popup).
+          window.onload = function () { try { window.print() } catch (e) {} };
+        </script>
+      </body></html>`
+    // A blob: URL gives the window a real, navigable document instead of
+    // about:blank — this is what makes Chromium's print preview render
+    // correctly instead of coming out blank.
+    const blob = new Blob([html], { type: 'text/html' })
+    const blobUrl = URL.createObjectURL(blob)
+    const w = window.open(blobUrl, '_blank', 'width=1100,height=800')
+    if (!w) { alert('Please allow pop-ups to download the report.'); return }
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000)
   }
 
   return (
