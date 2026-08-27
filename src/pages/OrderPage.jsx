@@ -1,8 +1,9 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
-import { saveCloudOrder, currentUserId, countUnreadAnnouncements, listAllRoutes, ensureCloudCustomer, updateCustomerDefaultRoute, loadCustomerLastPrices } from '../utils/cloudSync.js'
+import { saveCloudOrder, currentUserId, countUnreadAnnouncements, listAllRoutes, ensureCloudCustomer, updateCustomerDefaultRoute, loadCustomerLastPrices, loadPendingStockOuts } from '../utils/cloudSync.js'
 import PreviousOrdersModal from '../components/PreviousOrdersModal.jsx'
+import PendingOrdersModal from '../components/PendingOrdersModal.jsx'
 import OrderSummaryModal from '../components/OrderSummaryModal.jsx'
 import { useSearch } from '../hooks/useSearch.js'
 import { useDebounce } from '../hooks/useDebounce.js'
@@ -41,6 +42,7 @@ import { SearchIcon, CloseIcon, SettingsIcon, ReturnIcon, ChartIcon, BellIcon } 
 import { buildOrderMessage, buildVisitMessage, buildWhatsappUrl } from '../utils/whatsapp.js'
 import VisitStatus from '../components/VisitStatus.jsx'
 import EnablePushBanner from '../components/EnablePushBanner.jsx'
+import { verifyPushSubscription } from '../utils/push.js'
 import appIcon from '../assets/app_icon.png'
 
 const getProductText = (p) => p.name
@@ -99,6 +101,16 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   const saved = loadSession()
 
   const [customer, setCustomer] = useState(saved?.customer ?? null)
+
+  // Pending Orders (Stock-Out reschedule) — loaded once on mount and after any
+  // reschedule action, so the header badge count and the modal stay in sync.
+  const [pendingStockOuts, setPendingStockOuts] = useState([])
+  const [showPendingOrders, setShowPendingOrders] = useState(false)
+  const refreshPending = useCallback(() => {
+    if (!user?.id) return
+    loadPendingStockOuts(user.id).then(setPendingStockOuts).catch(() => {})
+  }, [user?.id])
+  useEffect(() => { refreshPending() }, [refreshPending])
 
   // Live central inventory (realtime). Product cards read this to show stock
   // status; updates from the Purchase Manager appear without a refresh.
@@ -174,6 +186,10 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   // Deep-link from a "Billing edited your order" push notification
   // (?order=<id>) — opens the exact order summary directly.
   const [deepLinkOrderId, setDeepLinkOrderId] = useState(null)
+  // Silent, no-prompt re-verify that this rep's push row still exists in
+  // Supabase — repairs the case where the server-side subscription row was
+  // cleaned up (expired delivery) but the browser still thinks it's subscribed.
+  useEffect(() => { verifyPushSubscription('salesperson') }, [])
   useEffect(() => {
     try {
       const params = new URLSearchParams(window.location.search)
@@ -785,6 +801,15 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
             <ChartIcon className="h-6 w-6" />
           </button>
           <button
+            onClick={() => setShowPendingOrders(true)}
+            aria-label="Pending orders"
+            className={`flex items-center gap-1 h-10 px-2.5 rounded-lg border active:bg-slate-100 ${
+              pendingStockOuts.length > 0 ? 'text-amber-700 border-amber-300 bg-amber-50' : 'text-slate-600 border-slate-200'
+            }`}
+          >
+            <span className="text-xs font-semibold">Pending Orders ({pendingStockOuts.length})</span>
+          </button>
+          <button
             onClick={onOpenReturns}
             aria-label="Customer returns"
             className="flex items-center gap-1 h-10 px-2.5 rounded-lg text-slate-600 border border-slate-200 active:bg-slate-100"
@@ -934,6 +959,16 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
           )}
         </div>
       </main>
+
+      {showPendingOrders && (
+        <PendingOrdersModal
+          items={pendingStockOuts}
+          repId={user?.id}
+          repName={profile?.full_name}
+          onClose={() => setShowPendingOrders(false)}
+          onRescheduled={() => refreshPending()}
+        />
+      )}
 
       {showPrevOrders && customer && (
         <PreviousOrdersModal

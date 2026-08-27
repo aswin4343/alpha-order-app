@@ -93,6 +93,44 @@ export async function enablePush(role) {
   }
 }
 
+/**
+ * Silently re-verify (no permission prompt, no UI) that this device's push
+ * subscription is actually persisted server-side, and re-save it if so.
+ *
+ * WHY THIS EXISTS: the edge function deletes a subscription row from
+ * push_subscriptions whenever a send to it 404s/410s (expired). The BROWSER's
+ * local subscription object can still exist and report "subscribed" even
+ * after that row is gone — so the enable banner stays hidden and the device
+ * silently stops receiving pushes with no error anywhere. Calling this on
+ * every load (when permission is already granted) re-upserts the row so a
+ * stale server-side deletion is corrected automatically, and covers token
+ * refresh across login/logout, page refresh, and browser restarts.
+ */
+export async function verifyPushSubscription(role) {
+  if (!pushSupported()) return
+  if (Notification.permission !== 'granted') return
+  try {
+    const reg = await getRegistration()
+    if (!reg || !reg.pushManager) return
+    let sub = await reg.pushManager.getSubscription()
+    if (!sub) {
+      // Permission is granted but there's no local subscription at all
+      // (e.g. it expired browser-side) — create a fresh one.
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+      })
+    }
+    // Always re-upsert: cheap, idempotent (onConflict: endpoint), and this is
+    // exactly what repairs a row the server-side cleanup deleted.
+    await savePushSubscription(sub, role)
+  } catch (e) {
+    // Non-fatal — this runs silently in the background. Logged so it's
+    // diagnosable rather than a silent failure.
+    console.error('verifyPushSubscription failed:', e)
+  }
+}
+
 /** Unsubscribe this device and remove the stored subscription. */
 export async function disablePush() {
   if (!pushSupported()) return

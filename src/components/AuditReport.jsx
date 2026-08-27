@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react'
-import { createPortal } from 'react-dom'
 import { loadBillingAudit } from '../utils/cloudSync.js'
 
 // Local date helpers — build day boundaries in the user's local timezone, then
@@ -77,10 +76,35 @@ export default function AuditReport({ onClose }) {
   const fmtDate = (iso) => new Date(iso).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' })
   const fmtTime = (iso) => new Date(iso).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit', hour12: true })
 
-  // The printable report sheet — rendered both on-screen (in the modal) and in
-  // a body-level print portal so printing isn't trapped by the fixed modal.
+  // Print via a dedicated window. A fresh window has no modal wrapper, no
+  // #root, and no competing print stylesheets from other components — which is
+  // what made the in-page approaches print blank. We serialise the already-
+  // rendered report node into a minimal HTML document and print that.
+  const printReport = () => {
+    const node = document.getElementById('audit-report-sheet')
+    if (!node) { window.print(); return }
+    const w = window.open('', '_blank', 'width=1100,height=800')
+    if (!w) { alert('Please allow pop-ups to download the report.'); return }
+    // Pull in the app's stylesheets so the report keeps its formatting.
+    const styles = Array.from(document.querySelectorAll('link[rel="stylesheet"], style'))
+      .map((n) => n.outerHTML).join('\n')
+    w.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+      <title>Billing Edit Audit Report</title>
+      ${styles}
+      <style>
+        @page { size: A4 landscape; margin: 10mm; }
+        html,body{margin:0;padding:0;background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+        .audit-print{box-shadow:none!important;border-radius:0!important;max-width:none!important;}
+        table{font-size:9px!important;}
+        tr{break-inside:avoid;}
+      </style></head><body>${node.outerHTML}</body></html>`)
+    w.document.close()
+    // Give the styles a moment to apply, then print.
+    w.onload = () => { w.focus(); w.print() }
+    setTimeout(() => { try { w.focus(); w.print() } catch { /* already printed */ } }, 600)
+  }
   const sheet = (
-    <div className="audit-print bg-white w-full max-w-6xl rounded-2xl shadow-2xl p-5 sm:p-6 mx-auto">
+    <div id="audit-report-sheet" className="audit-print bg-white w-full max-w-6xl rounded-2xl shadow-2xl p-5 sm:p-6 mx-auto">
       <div className="text-center border-b-2 border-slate-800 pb-2 mb-3">
         <h1 className="text-lg font-black tracking-wide text-slate-900">ALPHA FLOW</h1>
         <p className="text-sm font-bold text-slate-700">Billing Verification — Edit Audit Report</p>
@@ -165,19 +189,11 @@ export default function AuditReport({ onClose }) {
     <div className="fixed inset-0 z-50 bg-black/50 overflow-y-auto">
       <style>{`
         @media print {
-          @page { size: A4 landscape; margin: 10mm; }
-          html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          /* Print isolation: hide the app + on-screen modal, show ONLY the
-             body-level print portal (a direct child of <body>, so it isn't
-             trapped inside this position:fixed modal — which was printing blank). */
-          #root { display: none !important; }
-          .audit-print-portal { display: block !important; }
+          /* Printing happens in a dedicated window (see printReport), so the
+             in-page report never needs to print itself. Hiding it here prevents
+             a stray Ctrl+P on the dashboard from producing a broken page. */
           .no-print, .no-print * { display: none !important; }
-          .audit-print { box-shadow: none !important; border-radius: 0 !important; max-width: none !important; }
-          .audit-print table { font-size: 9px !important; }
-          .audit-print tr { break-inside: avoid; }
         }
-        .audit-print-portal { display: none; }
       `}</style>
 
       <div className="min-h-full flex flex-col items-center py-4 px-2">
@@ -206,23 +222,15 @@ export default function AuditReport({ onClose }) {
                 className="rounded-xl border border-slate-200 px-2 py-2 text-sm shadow bg-white" />
             </div>
           )}
-          <button onClick={() => window.print()} disabled={!rows || rows.length === 0}
+          <button onClick={printReport} disabled={!rows || rows.length === 0}
             className="rounded-xl bg-slate-900 text-white px-5 py-2.5 text-sm font-bold shadow hover:bg-slate-800 disabled:bg-slate-400">
             📄 Download PDF Report
           </button>
         </div>
 
-        {/* Report sheet (on-screen copy) */}
+        {/* Report sheet */}
         {sheet}
       </div>
-
-      {/* Print-only copy, portaled to <body> so print isolation is clean
-          (mirrors the Warehouse Slip fix — a fixed-position modal otherwise
-          prints blank). */}
-      {createPortal(
-        <div className="audit-print-portal bg-white">{sheet}</div>,
-        document.body
-      )}
     </div>
   )
 }

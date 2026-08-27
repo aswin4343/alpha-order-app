@@ -17,6 +17,7 @@ import appIcon from '../assets/app_icon.png'
 import PickerBill, { orderRefFrom } from '../components/PickerBill.jsx'
 import FullBill from '../components/FullBill.jsx'
 import AuditReport from '../components/AuditReport.jsx'
+import PartialVerificationReport from '../components/PartialVerificationReport.jsx'
 
 /**
  * Maps raw billing order_items rows into the full field set BOTH bill views
@@ -112,6 +113,7 @@ export default function BillingDashboard() {
 
   const [showDeleted, setShowDeleted] = useState(false)
   const [showAudit, setShowAudit] = useState(false)
+  const [showPartialVerif, setShowPartialVerif] = useState(false)
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
@@ -124,6 +126,9 @@ export default function BillingDashboard() {
           </div>
           <button onClick={() => setShowAudit(true)} className="text-sm font-semibold text-slate-500 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 hidden sm:block">
             Edit History
+          </button>
+          <button onClick={() => setShowPartialVerif(true)} className="text-sm font-semibold text-slate-500 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 hidden sm:block">
+            Partial Verification
           </button>
           <button onClick={() => setShowDeleted(true)} className="text-sm font-semibold text-slate-500 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 hidden sm:block">
             Deleted Bills
@@ -189,6 +194,7 @@ export default function BillingDashboard() {
 
       {showDeleted && <DeletedBillsModal onClose={() => setShowDeleted(false)} />}
       {showAudit && <AuditReport onClose={() => setShowAudit(false)} />}
+      {showPartialVerif && <PartialVerificationReport onClose={() => setShowPartialVerif(false)} />}
     </div>
   )
 }
@@ -469,6 +475,12 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
                         <p className={`font-medium text-sm ${it.removed ? 'line-through text-slate-400' : 'text-slate-800'}`}>
                           {it.product_name}
                         </p>
+                        {it.rescheduled_from_item_id && (
+                          <span className="shrink-0 text-[9px] font-bold text-blue-700 bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded"
+                            title={it.rescheduled_from_date ? `Rescheduled from stock-out on ${it.rescheduled_from_date}` : 'Rescheduled from a stock-out item'}>
+                            ↩ Rescheduled
+                          </span>
+                        )}
                       </div>
                       <div className="flex items-center gap-2 mt-1 ml-6 flex-wrap">
                         <span className="text-[11px] text-slate-500">

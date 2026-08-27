@@ -71,6 +71,14 @@ export default function OrderChangeNotifier() {
               {changes.map((c, i) => (
                 <div key={i} className="text-sm text-slate-700 bg-slate-50 rounded-lg px-3 py-2 border border-slate-100">
                   {c}
+                  {/* Stock-Out removals are also trackable/reschedulable — say so
+                      right where the rep sees the change, without needing the
+                      underlying notification trigger to know about this feature. */}
+                  {String(c).toLowerCase().includes('stock out') && (
+                    <p className="text-[11px] text-amber-700 mt-1">
+                      It has been added to Pending Orders and can be rescheduled.
+                    </p>
+                  )}
                 </div>
               ))}
               {changes.length === 0 && <p className="text-sm text-slate-400">No detailed changes recorded.</p>}

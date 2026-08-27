@@ -2087,7 +2087,7 @@ export async function loadBillingOrderItemsFull(orderIdOrIds) {
   const ids = Array.isArray(orderIdOrIds) ? orderIdOrIds : [orderIdOrIds]
   const { data, error } = await supabase
     .from('order_items')
-    .select('id, order_id, product_name, qty, unit, is_addon, available, original_qty, change_type, change_reason, original_product_name, removed, normal_price, is_special_price, scheme_enabled, unit_price, mrp, gst_percent, hsn, free_qty, price_type')
+    .select('id, order_id, product_name, qty, unit, is_addon, available, original_qty, change_type, change_reason, original_product_name, removed, normal_price, is_special_price, scheme_enabled, unit_price, mrp, gst_percent, hsn, free_qty, price_type, rescheduled_from_item_id, rescheduled_from_date')
     .in('order_id', ids)
     .order('removed', { ascending: true })
   if (error) throw error
@@ -3196,4 +3196,182 @@ export async function setPurchaseAlertPushEnabled(enabled) {
   const { error } = await supabase
     .from('purchase_alert_settings').update({ push_enabled: enabled, updated_at: new Date().toISOString() }).eq('id', 1)
   if (error) throw error
+}
+
+// ===========================================================================
+// PENDING ORDERS / RESCHEDULING (Stock Out removals)
+// ===========================================================================
+
+/**
+ * All of THIS rep's stock-out removals that haven't been rescheduled yet.
+ * Only reason EXACTLY 'Stock Out' counts (not other removal reasons). Includes
+ * the parent order's shop/route/date/brand so the UI can group by original
+ * order date and the reschedule action has everything it needs.
+ */
+export async function loadPendingStockOuts(repId) {
+  const { data, error } = await supabase
+    .from('order_items')
+    .select(`
+      id, product_name, qty, unit, edited_at, order_id, mrp, gst_percent, hsn,
+      unit_price, normal_price, is_special_price, price_type, scheme_enabled, free_qty,
+      rescheduled_to_date, rescheduled_order_id, rescheduled_is_addon,
+      orders!inner ( id, shop_name, route, order_date, brand, sales_rep_id, hidden )
+    `)
+    .eq('removed', true)
+    .eq('change_reason', 'Stock Out')
+    .is('rescheduled_order_id', null)
+    .eq('orders.sales_rep_id', repId)
+    .eq('orders.hidden', false)
+    .order('edited_at', { ascending: false })
+  if (error) { console.error('load pending stock-outs failed', error); return [] }
+  return (data || []).filter((r) => r.orders) // inner join guard
+}
+
+/**
+ * Reschedule ONE stock-out item to a future date. Creates a normal new order
+ * for that date (reusing saveCloudOrder — the same path AddOnFlowModal uses),
+ * carrying over the EXACT pricing/scheme snapshot already captured on the
+ * original line (never recomputed, so the customer's originally-quoted price
+ * is preserved). Billing's existing shop+order_date grouping automatically
+ * shows it as an add-on if the customer already has an order that date.
+ *
+ * Idempotent: claims the source row first (conditional update on
+ * rescheduled_order_id IS NULL); if another click already claimed it, this
+ * aborts without creating a duplicate order.
+ */
+export async function rescheduleStockOutItem({ item, targetDate, repId, repName, brand }) {
+  const parentOrder = item.orders
+  if (!parentOrder) throw new Error('Original order not found for this item.')
+
+  // Detect whether the customer already has an order for the target date —
+  // purely to label the outcome for the UI (Billing's grouping works either
+  // way regardless of this check).
+  const { data: existing } = await supabase
+    .from('orders')
+    .select('id')
+    .eq('sales_rep_id', repId)
+    .eq('shop_name', parentOrder.shop_name)
+    .eq('order_date', targetDate)
+    .eq('hidden', false)
+    .limit(1)
+  const willBeAddon = !!(existing && existing.length)
+
+  // Claim the source row FIRST so a double-click / concurrent reschedule can
+  // never create two orders for the same stock-out line.
+  const claimStamp = new Date().toISOString()
+  const { data: claimed, error: claimErr } = await supabase
+    .from('order_items')
+    .update({ rescheduled_at: claimStamp, rescheduled_by: repName || null })
+    .eq('id', item.id)
+    .is('rescheduled_order_id', null)
+    .select('id')
+  if (claimErr) throw claimErr
+  if (!claimed || claimed.length === 0) {
+    throw new Error('This item was already rescheduled.')
+  }
+
+  // Rebuild the single order item, reusing the EXACT price snapshot already
+  // captured on the original stock-out line (not recomputed).
+  const rescheduledItem = {
+    id: item.id, // harmless placeholder; saveCloudOrder generates its own row
+    name: item.product_name,
+    qty: item.qty,
+    unit: item.unit || 'Piece',
+    isAddon: willBeAddon,
+    mrp: item.mrp,
+    gst: item.gst_percent,
+    hsn: item.hsn,
+    priceType: item.price_type,
+    finalSellingPrice: item.unit_price,
+    normalPrice: item.normal_price,
+    schemeEnabled: item.scheme_enabled !== false
+  }
+
+  let newOrderId
+  try {
+    newOrderId = await saveCloudOrder({
+      customer: { name: parentOrder.shop_name, route: parentOrder.route || '', category: '' },
+      brand: brand || parentOrder.brand,
+      userId: repId,
+      items: [rescheduledItem],
+      orderDate: targetDate,
+      route: parentOrder.route || ''
+    })
+  } catch (e) {
+    // Release the claim so the item is reschedulable again after a failure.
+    await supabase.from('order_items').update({ rescheduled_at: null, rescheduled_by: null }).eq('id', item.id)
+    throw e
+  }
+
+  const { error: finalErr } = await supabase
+    .from('order_items')
+    .update({
+      rescheduled_to_date: targetDate,
+      rescheduled_order_id: newOrderId,
+      rescheduled_is_addon: willBeAddon
+    })
+    .eq('id', item.id)
+  if (finalErr) console.error('failed to record reschedule link (order was still created)', finalErr)
+
+  // saveCloudOrder recomputes free_qty from scheme slabs, which we didn't
+  // carry over (they're not part of the removed-line snapshot). Overwrite it
+  // with the EXACT free_qty the customer was originally promised, so a
+  // reschedule can never silently change what they were quoted. While we're
+  // touching the new row, also stamp the back-reference (Phase 3): Billing
+  // can now see, on the NEW order, exactly which original stock-out line and
+  // date this item traces back to — full two-way traceability.
+  const newRowPatch = { rescheduled_from_item_id: item.id, rescheduled_from_order_id: parentOrder.id, rescheduled_from_date: parentOrder.order_date || null }
+  if (item.free_qty != null) newRowPatch.free_qty = item.free_qty
+  const { error: fqErr } = await supabase
+    .from('order_items')
+    .update(newRowPatch)
+    .eq('order_id', newOrderId)
+    .eq('product_name', item.product_name)
+  if (fqErr) console.error('failed to stamp reschedule traceability on new item', fqErr)
+
+  return { newOrderId, isAddon: willBeAddon }
+}
+
+// ===========================================================================
+// PARTIAL VERIFICATION REPORT (Billing)
+// ===========================================================================
+
+/**
+ * Orders that were PARTIALLY verified within a date range: verification is
+ * complete (billing_status='verified') AND at least one line was removed for
+ * reason exactly 'Stock Out'. Returns each order with its verified items and
+ * its stock-out items separated, plus enough identifying info (shop, route,
+ * sales rep, order ref) per spec. Filtered by billing_verified_at, matching
+ * how the rest of Billing's date-based views work.
+ */
+export async function loadPartialVerifications(fromISO, toISO) {
+  const { data, error } = await supabase
+    .from('orders')
+    .select(`
+      id, shop_name, route, sales_rep_id, billing_verified_at, order_date,
+      order_items ( id, product_name, qty, unit, removed, change_reason )
+    `)
+    .eq('billing_status', 'verified')
+    .gte('billing_verified_at', fromISO)
+    .lte('billing_verified_at', toISO)
+  if (error) { console.error('load partial verifications failed', error); return [] }
+
+  const partial = (data || [])
+    .map((o) => {
+      const items = o.order_items || []
+      const stockOut = items.filter((i) => i.removed && i.change_reason === 'Stock Out')
+      const verified = items.filter((i) => !i.removed)
+      return { ...o, stockOutItems: stockOut, verifiedItems: verified }
+    })
+    .filter((o) => o.stockOutItems.length > 0 && o.verifiedItems.length > 0)
+
+  // Attach rep display names in one batch (small, bounded list).
+  const repIds = [...new Set(partial.map((o) => o.sales_rep_id).filter(Boolean))]
+  if (repIds.length) {
+    const { data: reps } = await supabase.from('profiles').select('id, full_name').in('id', repIds)
+    const nameById = new Map((reps || []).map((r) => [r.id, r.full_name]))
+    partial.forEach((o) => { o.sales_rep_name = nameById.get(o.sales_rep_id) || '—' })
+  }
+
+  return partial.sort((a, b) => new Date(b.billing_verified_at) - new Date(a.billing_verified_at))
 }

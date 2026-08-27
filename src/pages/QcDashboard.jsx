@@ -5,7 +5,7 @@ import {
   markQcInProgress, qcVerifyGroup, PACKING_STAFF, QC_ERROR_TYPES, updateMyName,
   loadQcDeliveryById
 } from '../utils/cloudSync.js'
-import { enablePush, pushStatus, pushSupported } from '../utils/push.js'
+import { enablePush, pushStatus, pushSupported, verifyPushSubscription } from '../utils/push.js'
 import appIcon from '../assets/app_icon.png'
 
 const CHECKLIST = [
@@ -52,6 +52,10 @@ export default function QcDashboard() {
   })()
   const [showNamePrompt, setShowNamePrompt] = useState(false)
   useEffect(() => { if (needsName) setShowNamePrompt(true) }, [needsName])
+  // Silent, no-prompt re-verify that this device's push row still exists in
+  // Supabase (repairs the "app thinks it's subscribed but the server-side row
+  // was deleted" case — see verifyPushSubscription for why that happens).
+  useEffect(() => { verifyPushSubscription('qc_team') }, [])
 
   // --- Push notifications: show an enable banner until subscribed/denied. ----
   const [push, setPush] = useState({ supported: pushSupported(), permission: 'default', subscribed: false })

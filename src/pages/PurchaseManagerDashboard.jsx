@@ -9,6 +9,7 @@ import {
 } from '../utils/cloudSync.js'
 import { inventoryStatus, STATUS_PILL, STATUS_DOT } from '../utils/inventoryStatus.js'
 import EnablePushBanner from '../components/EnablePushBanner.jsx'
+import { verifyPushSubscription } from '../utils/push.js'
 import appIcon from '../assets/app_icon.png'
 
 const brandOf = (p) => (p.name || '').split(/[\s-]/)[0] || '—'
@@ -30,6 +31,29 @@ export default function PurchaseManagerDashboard() {
     setLoading(false)
   }, [])
   useEffect(() => { refresh() }, [refresh])
+
+  // Silent, no-prompt re-verify the PM's push subscription (see push.js for
+  // why this must run on every load, not just first opt-in).
+  useEffect(() => { verifyPushSubscription('purchase_manager') }, [])
+
+  // Deep-link: clicking a "Purchase Order Required" push (open OR closed app)
+  // should land the PM directly on Reorder Alerts, not the default tab.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    if (params.get('purchase_reorder')) {
+      setTab('reorder')
+      const url = new URL(window.location.href)
+      url.searchParams.delete('purchase_reorder')
+      window.history.replaceState({}, '', url)
+    }
+    const onSwMessage = (event) => {
+      if (event.data?.type === 'qc_open' && event.data?.data?.type === 'purchase_alert') {
+        setTab('reorder')
+      }
+    }
+    navigator.serviceWorker?.addEventListener?.('message', onSwMessage)
+    return () => navigator.serviceWorker?.removeEventListener?.('message', onSwMessage)
+  }, [])
 
   const analysis = useMemo(
     () => buildInventoryAnalysis(products, invMap, consMap),
