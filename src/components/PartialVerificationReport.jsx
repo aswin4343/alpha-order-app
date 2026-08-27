@@ -169,8 +169,18 @@ export default function PartialVerificationReport({ onClose }) {
         .pv-print{box-shadow:none!important;border-radius:0!important;max-width:none!important;}
         table{font-size:9px!important;}
         tr{break-inside:avoid;}
-      </style></head><body>${node.outerHTML}</body></html>`)
+        .rpt-print-btn{position:fixed;top:12px;right:12px;z-index:999;background:#0f172a;color:#fff;
+          border:none;border-radius:10px;padding:10px 16px;font-weight:700;font-size:14px;cursor:pointer;
+          box-shadow:0 4px 12px rgba(0,0,0,.25);}
+        @media print { .rpt-print-btn{ display:none !important; } }
+      </style></head><body>
+        <button class="rpt-print-btn" onclick="window.print()">🖨️ Print / Save as PDF</button>
+        ${node.outerHTML}
+      </body></html>`)
     w.document.close()
+    // Best-effort auto-trigger — but the button above is the guaranteed path,
+    // since auto-print can silently fail after the async CSS fetch above (the
+    // gap between the click and this point can break it in some browsers).
     const doPrint = () => { try { w.focus(); w.print() } catch { /* already printed / closed */ } }
     setTimeout(doPrint, 400)
   }
