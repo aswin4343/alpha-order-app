@@ -251,7 +251,10 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
                   )}
                   <ProductTable rows={h.rows} startIndex={h.startIndex} />
                   {isLastHalfOverall && (
-                    <div className="mt-3 text-[10px] text-slate-400 text-center">{summaryLine}</div>
+                    <div className="mt-3 text-[10px] text-slate-400 text-center">
+                      {summaryLine}
+                      <span className="ml-2 opacity-60">· build v50</span>
+                    </div>
                   )}
                 </div>
               )
