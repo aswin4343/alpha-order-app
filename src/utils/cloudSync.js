@@ -1,6 +1,7 @@
 import { supabase } from './supabase.js'
 import { schemeText } from './productDiff.js'
 import { calculateScheme } from './schemes.js'
+import { PRICE_APPROVAL_ENABLED } from './featureFlags.js'
 
 /**
  * Always fetch the CURRENT authenticated user id straight from Supabase at the
@@ -209,8 +210,9 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
       // Admin approval gate (spec: ANY deviation from MRP/RP/WP requires
       // sign-off; ONLY this line is held, the rest of the order is unaffected
       // and proceeds through Billing normally). Ordinary lines get null —
-      // no workflow applies to them.
-      approval_status: isSpecial ? 'pending' : null,
+      // no workflow applies to them. Paused via PRICE_APPROVAL_ENABLED — see
+      // utils/featureFlags.js for why and how to re-enable.
+      approval_status: (PRICE_APPROVAL_ENABLED && isSpecial) ? 'pending' : null,
       scheme_enabled: i.schemeEnabled !== false,
       // Selected Price Type (WHOLESALE | RETAIL | MRP | CUSTOM) alongside the
       // Final Rate above (unit_price) — stored together so Billing/invoicing

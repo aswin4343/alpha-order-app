@@ -12,6 +12,7 @@ import AdminQcView from '../pages/AdminQcView.jsx'
 import AdminDeliveryView from '../pages/AdminDeliveryView.jsx'
 import AdminApprovalsPage from '../pages/AdminApprovalsPage.jsx'
 import { countPendingApprovals } from '../utils/cloudSync.js'
+import { PRICE_APPROVAL_ENABLED } from '../utils/featureFlags.js'
 
 /**
  * Admin experience: a persistent sidebar shell (AdminShell) wrapping whichever
@@ -31,9 +32,11 @@ export default function AdminApp() {
 
   // Live count for the sidebar badge — refreshed on mount and periodically,
   // plus immediately after visiting Approvals (so acting on one doesn't leave
-  // a stale number behind).
+  // a stale number behind). Skipped entirely while PRICE_APPROVAL_ENABLED is
+  // false — nothing to count, no point polling.
   const [approvalsCount, setApprovalsCount] = useState(0)
   useEffect(() => {
+    if (!PRICE_APPROVAL_ENABLED) return
     const refresh = () => countPendingApprovals().then(setApprovalsCount).catch(() => {})
     refresh()
     const id = setInterval(refresh, 60000)

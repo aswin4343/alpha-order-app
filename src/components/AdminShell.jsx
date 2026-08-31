@@ -1,16 +1,19 @@
 import { useState } from 'react'
 import appIcon from '../assets/app_icon.png'
+import { PRICE_APPROVAL_ENABLED } from '../utils/featureFlags.js'
 
 // Nav item definitions. `key` matches AdminApp's route state.
 // Items not yet built (Phase C2/C3) are flagged `soon` and show a small
 // badge instead of being clickable, so the full nav is visible from day one
-// without dead links.
+// without dead links. Price Approvals is fully built but paused (the team
+// needs time to adjust their workflow first) — same `soon` treatment while
+// PRICE_APPROVAL_ENABLED is false; flipping that flag brings it straight back.
 const NAV_ITEMS = [
   { key: 'dashboard', label: 'Dashboard', icon: '📊' },
   { key: 'sales', label: 'Sales', icon: '🧑‍💼', soon: true },
   { key: 'orders', label: 'Orders', icon: '🛒', soon: true },
   { key: 'billing', label: 'Billing', icon: '🧾' },
-  { key: 'approvals', label: 'Price Approvals', icon: '🛡️' },
+  { key: 'approvals', label: 'Price Approvals', icon: '🛡️', soon: !PRICE_APPROVAL_ENABLED },
   { key: 'qc', label: 'Quality Check', icon: '✅' },
   { key: 'delivery', label: 'Delivery', icon: '🚚' },
   { key: 'customers', label: 'Customers', icon: '🏪', soon: true },

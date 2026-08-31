@@ -18,6 +18,7 @@ import PickerBill, { orderRefFrom } from '../components/PickerBill.jsx'
 import FullBill from '../components/FullBill.jsx'
 import AuditReport from '../components/AuditReport.jsx'
 import PartialVerificationReport from '../components/PartialVerificationReport.jsx'
+import { PRICE_APPROVAL_ENABLED } from '../utils/featureFlags.js'
 
 /**
  * Maps raw billing order_items rows into the full field set BOTH bill views
@@ -31,8 +32,10 @@ function mapBillItems(rawItems, products) {
     // Admin-approval gate: a special/custom price line stays OFF the actual
     // invoice/Warehouse Slip until Admin approves it — only THIS line is
     // held, everything else in the order bills normally. Rejected lines never
-    // bill at all. Approved (or never-special) lines are unaffected.
-    .filter((i) => i.approval_status !== 'pending' && i.approval_status !== 'rejected')
+    // bill at all. Approved (or never-special) lines are unaffected. Gated by
+    // PRICE_APPROVAL_ENABLED — paused for now, so nothing is excluded (any
+    // items already flagged from earlier testing bill normally again).
+    .filter((i) => !PRICE_APPROVAL_ENABLED || (i.approval_status !== 'pending' && i.approval_status !== 'rejected'))
     .map((i) => {
     const liveProduct = i.mrp == null
       ? (products || []).find((p) => (p.name || '').trim().toUpperCase() === (i.product_name || '').trim().toUpperCase())
@@ -508,13 +511,13 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
                         {it.is_special_price && (
                           <span className="text-[10px] font-bold bg-purple-50 text-purple-700 px-1.5 py-0.5 rounded">SPECIAL PRICE</span>
                         )}
-                        {it.approval_status === 'pending' && (
+                        {PRICE_APPROVAL_ENABLED && it.approval_status === 'pending' && (
                           <span className="text-[10px] font-bold bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded">⏳ Awaiting Admin Approval</span>
                         )}
-                        {it.approval_status === 'rejected' && (
+                        {PRICE_APPROVAL_ENABLED && it.approval_status === 'rejected' && (
                           <span className="text-[10px] font-bold bg-red-100 text-red-700 px-1.5 py-0.5 rounded">✕ Price Rejected</span>
                         )}
-                        {it.approval_status === 'approved' && (
+                        {PRICE_APPROVAL_ENABLED && it.approval_status === 'approved' && (
                           <span className="text-[10px] font-bold bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded">✓ Approved</span>
                         )}
                         {it.scheme_enabled === false && (
@@ -526,12 +529,12 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
                           Normal ₹{it.normal_price} → Special ₹{it.unit_price}
                         </p>
                       )}
-                      {it.approval_status === 'pending' && (
+                      {PRICE_APPROVAL_ENABLED && it.approval_status === 'pending' && (
                         <p className="text-[11px] text-amber-700 ml-6 mt-0.5">
                           Held pending Admin approval — excluded from this invoice for now. The rest of the order is unaffected.
                         </p>
                       )}
-                      {it.approval_status === 'rejected' && (
+                      {PRICE_APPROVAL_ENABLED && it.approval_status === 'rejected' && (
                         <p className="text-[11px] text-red-600 ml-6 mt-0.5">
                           Rejected by Admin{it.approval_reason ? `: ${it.approval_reason}` : ''} — will not be billed.
                         </p>
@@ -546,10 +549,11 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
                     </button>
                   </div>
 
-                  {/* Edit actions (only for pending orders, and not for lines
-                      held/rejected by the price-approval workflow — those
-                      wait on Admin, not Billing). */}
-                  {!it.removed && order._status !== 'verified' && it.approval_status !== 'pending' && it.approval_status !== 'rejected' && (
+                  {/* Edit actions (only for pending orders, and — while the
+                      price-approval feature is enabled — not for lines
+                      held/rejected by that workflow, since those wait on
+                      Admin, not Billing). */}
+                  {!it.removed && order._status !== 'verified' && (!PRICE_APPROVAL_ENABLED || (it.approval_status !== 'pending' && it.approval_status !== 'rejected')) && (
                     <div className="flex gap-2 mt-2.5 ml-6">
                       <button onClick={() => setEditItem(it)}
                         className="text-xs font-semibold text-brand-700 border border-brand-200 rounded-lg px-2.5 py-1 hover:bg-brand-50">Edit Qty</button>
