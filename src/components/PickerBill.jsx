@@ -1,5 +1,4 @@
 import { useState, useRef, useLayoutEffect } from 'react'
-import { createPortal } from 'react-dom'
 import { ALPHA_LOGO, ZEDGO_LOGO } from '../assets/logos.js'
 // (ALPHA_LOGO / ZEDGO_LOGO are used by brandLogoFor below.)
 
@@ -363,28 +362,10 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
   return (
     <div className="bg-white">
       <style>{`
-        @media print {
-          @page { size: A4 portrait; margin: 0; }
-          html, body { margin: 0 !important; padding: 0 !important; background: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-
-          /* PRINT ISOLATION: hide the entire app (#root) and show ONLY the
-             body-level print portal — a direct child of <body>, not trapped
-             inside the modal's position:fixed/overflow box, so there is no
-             ghost double-paint and page-breaks apply cleanly. */
-          #root { display: none !important; }
-          .wh-print-portal { display: block !important; }
-          .no-print, .no-print-inline { display: none !important; }
-
-          /* Each .wh-sheet is hard-locked to exactly 297mm and clips any
-             stray sub-millimeter overflow, so it can never spill onto a
-             phantom extra page regardless of tiny print-vs-screen text
-             rendering differences. */
-          .wh-sheet { break-inside: avoid !important; page-break-inside: avoid !important; }
-          .wh-sheet tr { break-inside: avoid !important; page-break-inside: avoid !important; }
-          .wh-sheet thead { display: table-header-group; }
-        }
-        /* The print portal is hidden on screen; it only appears when printing. */
-        .wh-print-portal { display: none; }
+        /* No in-page print CSS needed anymore — the Warehouse Slip prints via
+           a genuinely separate window (see printWarehouseSlip in
+           BillingDashboard.jsx), which carries its own @page/print rules. */
+        .no-print-inline { }
       `}</style>
 
       {/* Hidden measurement pass — always rendered so refs stay populated,
@@ -409,10 +390,19 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
         </div>
       )}
 
-      {/* Print-only copy, portaled to <body> so print isolation is clean. */}
-      {halves && createPortal(
-        <div className="wh-print-portal bg-white">{halvesContent}</div>,
-        document.body
+      {/* Hidden export copy — NOT a portal, just a normal hidden element under
+          #root. The Warehouse Slip prints via a genuinely separate window
+          (see printWarehouseSlip in BillingDashboard.jsx), which reads this
+          node's outerHTML. This replaces the previous createPortal + #root
+          -hiding technique, which proved unreliable for this A4-portrait
+          layout across both Brave and Chrome (blank PDF output) — a fully
+          separate print window sidesteps that entire mechanism, using the
+          same approach already proven correct for the other print reports in
+          this app. */}
+      {halves && (
+        <div id="warehouse-slip-export" aria-hidden="true" style={{ position: 'absolute', top: 0, left: '-9999px' }}>
+          {halvesContent}
+        </div>
       )}
     </div>
   )

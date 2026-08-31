@@ -761,6 +761,60 @@ function Modal({ title, children, onClose }) {
  * dedicated layout, not a screenshot of the app UI (per the requirement).
  */
 function PickerBillModal({ onClose, items, ...billProps }) {
+  // Print via a genuinely separate window, sourced from the hidden export
+  // node PickerBill always renders (#warehouse-slip-export). This replaces
+  // window.print() + in-page @media print — that combination (createPortal +
+  // hiding #root) proved unreliable for the A4-portrait height-measured
+  // layout (blank PDF output in both Brave and Chrome). A fully separate
+  // window with inlined CSS text is the SAME technique already proven correct
+  // for the Edit Audit Report and Partial Verification Report in this app.
+  const printWarehouseSlip = async () => {
+    const node = document.getElementById('warehouse-slip-export')
+    if (!node) { alert('Slip is still preparing — please wait a moment and try again.'); return }
+
+    const cssLinks = Array.from(document.querySelectorAll('link[rel="stylesheet"]'))
+    const inlineStyleText = Array.from(document.querySelectorAll('style')).map((s) => s.textContent).join('\n')
+    let linkedCss = ''
+    try {
+      const texts = await Promise.all(cssLinks.map(async (link) => {
+        try {
+          const url = new URL(link.getAttribute('href'), window.location.href).href
+          const res = await fetch(url)
+          return res.ok ? await res.text() : ''
+        } catch { return '' }
+      }))
+      linkedCss = texts.join('\n')
+    } catch { /* proceed with whatever we have */ }
+
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+      <title>Warehouse Slip</title>
+      <base href="${window.location.origin}/">
+      <style>${linkedCss}\n${inlineStyleText}</style>
+      <style>
+        @page { size: A4 portrait; margin: 0; }
+        html,body{margin:0;padding:0;background:#fff;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+        #warehouse-slip-export{position:static!important;left:auto!important;top:auto!important;}
+        .wh-sheet{break-inside:avoid!important;page-break-inside:avoid!important;}
+        .wh-sheet tr{break-inside:avoid!important;page-break-inside:avoid!important;}
+        .wh-sheet thead{display:table-header-group;}
+        .rpt-print-btn{position:fixed;top:12px;right:12px;z-index:999;background:#0f172a;color:#fff;
+          border:none;border-radius:10px;padding:10px 16px;font-weight:700;font-size:14px;cursor:pointer;
+          box-shadow:0 4px 12px rgba(0,0,0,.25);}
+        @media print { .rpt-print-btn{ display:none !important; } }
+      </style></head><body>
+        <button class="rpt-print-btn" onclick="window.print()">🖨️ Print / Save as PDF</button>
+        ${node.outerHTML}
+        <script>
+          window.onload = function () { try { window.print() } catch (e) {} };
+        </script>
+      </body></html>`
+    const blob = new Blob([html], { type: 'text/html' })
+    const blobUrl = URL.createObjectURL(blob)
+    const w = window.open(blobUrl, '_blank', 'width=1100,height=800')
+    if (!w) { alert('Please allow pop-ups to download the Warehouse Slip.'); return }
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 60000)
+  }
+
   return (
     <div className="fixed inset-0 z-50 bg-black/50 overflow-y-auto">
       <div className="min-h-full flex flex-col items-center py-4 px-2">
@@ -769,7 +823,7 @@ function PickerBillModal({ onClose, items, ...billProps }) {
             ← Close
           </button>
           <button
-            onClick={() => window.print()}
+            onClick={printWarehouseSlip}
             disabled={items == null}
             className="rounded-xl bg-slate-900 text-white px-5 py-2.5 text-sm font-bold shadow hover:bg-slate-800 disabled:bg-slate-400"
           >
