@@ -206,6 +206,11 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
       scheme_applied: schemeSnapshot === 'No scheme' ? null : schemeSnapshot,
       normal_price: i.normalPrice ?? null,
       is_special_price: isSpecial,
+      // Admin approval gate (spec: ANY deviation from MRP/RP/WP requires
+      // sign-off; ONLY this line is held, the rest of the order is unaffected
+      // and proceeds through Billing normally). Ordinary lines get null —
+      // no workflow applies to them.
+      approval_status: isSpecial ? 'pending' : null,
       scheme_enabled: i.schemeEnabled !== false,
       // Selected Price Type (WHOLESALE | RETAIL | MRP | CUSTOM) alongside the
       // Final Rate above (unit_price) — stored together so Billing/invoicing
@@ -2087,7 +2092,7 @@ export async function loadBillingOrderItemsFull(orderIdOrIds) {
   const ids = Array.isArray(orderIdOrIds) ? orderIdOrIds : [orderIdOrIds]
   const { data, error } = await supabase
     .from('order_items')
-    .select('id, order_id, product_name, qty, unit, is_addon, available, original_qty, change_type, change_reason, original_product_name, removed, normal_price, is_special_price, scheme_enabled, unit_price, mrp, gst_percent, hsn, free_qty, price_type, rescheduled_from_item_id, rescheduled_from_date')
+    .select('id, order_id, product_name, qty, unit, is_addon, available, original_qty, change_type, change_reason, original_product_name, removed, normal_price, is_special_price, scheme_enabled, unit_price, mrp, gst_percent, hsn, free_qty, price_type, rescheduled_from_item_id, rescheduled_from_date, approval_status, approved_by, approved_at, approval_reason')
     .in('order_id', ids)
     .order('removed', { ascending: true })
   if (error) throw error
@@ -3374,4 +3379,59 @@ export async function loadPartialVerifications(fromISO, toISO) {
   }
 
   return partial.sort((a, b) => new Date(b.billing_verified_at) - new Date(a.billing_verified_at))
+}
+
+// ===========================================================================
+// PRICE APPROVAL (Admin) — every special/custom-priced order line
+// ===========================================================================
+
+/** All order lines awaiting Admin sign-off, newest first, with shop/rep context. */
+export async function loadPendingApprovals() {
+  const { data, error } = await supabase
+    .from('order_items')
+    .select(`
+      id, product_name, qty, unit, unit_price, normal_price, price_type, edited_at,
+      order_id, orders!inner ( id, shop_name, route, order_date, sales_rep_id, created_at )
+    `)
+    .eq('approval_status', 'pending')
+    .order('id', { ascending: false })
+  if (error) { console.error('load pending approvals failed', error); return [] }
+  const rows = (data || []).filter((r) => r.orders)
+  const repIds = [...new Set(rows.map((r) => r.orders.sales_rep_id).filter(Boolean))]
+  if (repIds.length) {
+    const { data: reps } = await supabase.from('profiles').select('id, full_name').in('id', repIds)
+    const nameById = new Map((reps || []).map((r) => [r.id, r.full_name]))
+    rows.forEach((r) => { r.sales_rep_name = nameById.get(r.orders.sales_rep_id) || '—' })
+  }
+  return rows
+}
+
+/** Just the count — cheap, for the sidebar badge. */
+export async function countPendingApprovals() {
+  const { count, error } = await supabase
+    .from('order_items')
+    .select('id', { count: 'exact', head: true })
+    .eq('approval_status', 'pending')
+  if (error) { console.error('count pending approvals failed', error); return 0 }
+  return count || 0
+}
+
+/** Approve a special-priced line — it becomes normally billable immediately. */
+export async function approveSpecialPrice(itemId, adminName, adminId) {
+  const { error } = await supabase
+    .from('order_items')
+    .update({ approval_status: 'approved', approved_by: adminName || null, approved_by_id: adminId || null, approved_at: new Date().toISOString() })
+    .eq('id', itemId)
+    .eq('approval_status', 'pending') // idempotency guard
+  if (error) throw error
+}
+
+/** Reject a special-priced line — permanently excluded from billing with a reason. */
+export async function rejectSpecialPrice(itemId, adminName, adminId, reason) {
+  const { error } = await supabase
+    .from('order_items')
+    .update({ approval_status: 'rejected', approved_by: adminName || null, approved_by_id: adminId || null, approved_at: new Date().toISOString(), approval_reason: reason || null })
+    .eq('id', itemId)
+    .eq('approval_status', 'pending')
+  if (error) throw error
 }

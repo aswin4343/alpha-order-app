@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
 import AdminShell from '../components/AdminShell.jsx'
 import AdminDashboard from '../pages/AdminDashboard.jsx'
@@ -10,6 +10,8 @@ import ReportPanel from '../components/ReportPanel.jsx'
 import AdminBillingView from '../pages/AdminBillingView.jsx'
 import AdminQcView from '../pages/AdminQcView.jsx'
 import AdminDeliveryView from '../pages/AdminDeliveryView.jsx'
+import AdminApprovalsPage from '../pages/AdminApprovalsPage.jsx'
+import { countPendingApprovals } from '../utils/cloudSync.js'
 
 /**
  * Admin experience: a persistent sidebar shell (AdminShell) wrapping whichever
@@ -27,12 +29,24 @@ export default function AdminApp() {
   const { profile, signOut } = useAuth()
   const [section, setSection] = useState('dashboard')
 
+  // Live count for the sidebar badge — refreshed on mount and periodically,
+  // plus immediately after visiting Approvals (so acting on one doesn't leave
+  // a stale number behind).
+  const [approvalsCount, setApprovalsCount] = useState(0)
+  useEffect(() => {
+    const refresh = () => countPendingApprovals().then(setApprovalsCount).catch(() => {})
+    refresh()
+    const id = setInterval(refresh, 60000)
+    return () => clearInterval(id)
+  }, [])
+
   return (
     <AdminShell
       activeKey={section}
       onNavigate={setSection}
       profileName={profile?.full_name}
       onSignOut={signOut}
+      badges={{ approvals: approvalsCount }}
     >
       {section === 'dashboard' && (
         <AdminDashboard
@@ -68,6 +82,7 @@ export default function AdminApp() {
       {section === 'billing' && <AdminBillingView />}
       {section === 'qc' && <AdminQcView />}
       {section === 'delivery' && <AdminDeliveryView />}
+      {section === 'approvals' && <AdminApprovalsPage />}
 
       {/* Reachable via the Dashboard's existing shortcuts, not their own nav
           item yet — kept exactly as the old routing worked. */}

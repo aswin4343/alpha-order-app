@@ -10,6 +10,7 @@ const NAV_ITEMS = [
   { key: 'sales', label: 'Sales', icon: '🧑‍💼', soon: true },
   { key: 'orders', label: 'Orders', icon: '🛒', soon: true },
   { key: 'billing', label: 'Billing', icon: '🧾' },
+  { key: 'approvals', label: 'Price Approvals', icon: '🛡️' },
   { key: 'qc', label: 'Quality Check', icon: '✅' },
   { key: 'delivery', label: 'Delivery', icon: '🚚' },
   { key: 'customers', label: 'Customers', icon: '🏪', soon: true },
@@ -27,7 +28,7 @@ const NAV_ITEMS = [
  * supplies the surrounding navigation chrome. Each section renders via the
  * `children` passed in by AdminApp for the current route.
  */
-export default function AdminShell({ activeKey, onNavigate, profileName, onSignOut, children }) {
+export default function AdminShell({ activeKey, onNavigate, profileName, onSignOut, badges, children }) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const activeItem = NAV_ITEMS.find((n) => n.key === activeKey)
 
@@ -35,6 +36,7 @@ export default function AdminShell({ activeKey, onNavigate, profileName, onSignO
     <nav className="flex-1 overflow-y-auto py-2">
       {NAV_ITEMS.map((item) => {
         const isActive = item.key === activeKey
+        const count = badges?.[item.key]
         return (
           <button
             key={item.key}
@@ -55,6 +57,11 @@ export default function AdminShell({ activeKey, onNavigate, profileName, onSignO
             <span className="flex-1">{item.label}</span>
             {item.soon && (
               <span className="text-[9px] font-semibold text-slate-300 bg-slate-100 px-1.5 py-0.5 rounded">SOON</span>
+            )}
+            {!item.soon && count > 0 && (
+              <span className="min-w-[18px] h-[18px] px-1 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center">
+                {count > 99 ? '99+' : count}
+              </span>
             )}
           </button>
         )
