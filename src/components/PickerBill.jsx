@@ -332,82 +332,59 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
     )
   }
 
-  const halvesContent = halves && (
-    <>
-      {sheets.map((pair, sheetIdx) => {
-        const isLastSheet = sheetIdx === sheets.length - 1
-        return (
-          <div
-            key={sheetIdx}
-            className="wh-sheet"
-            style={{
-              width: `${PAGE_W_MM}mm`,
-              // Deliberately NO explicit height/overflow here. @page already
-              // defines the physical page as 297mm; asserting height:297mm
-              // AGAIN on this wrapper creates two independent sources of
-              // truth for the same dimension, and any sub-pixel disagreement
-              // between them (print-engine rounding) can make the sheet
-              // render as empty. The two 148.5mm-tall halves inside stack
-              // naturally to exactly 297mm — that alone is correct and
-              // sufficient, with no redundant assertion to conflict with it.
-              breakAfter: isLastSheet ? 'auto' : 'page',
-              pageBreakAfter: isLastSheet ? 'auto' : 'always'
-            }}
-          >
-            {pair.map((h, j) => {
-              const globalIndex = sheetIdx * 2 + j
-              const isLastHalfOverall = globalIndex === halves.length - 1
-              return renderHalf(h, globalIndex, isLastHalfOverall)
-            })}
-          </div>
-        )
-      })}
-    </>
-  )
-
+  // --- Print mechanism -----------------------------------------------------
+  // Deliberately as SIMPLE as FullBill.jsx's proven-working approach: render
+  // once, directly (no portal, no #root-hiding, no separate print window),
+  // print with plain window.print(), and hide only the screen-only decorative
+  // wrapper via a print stylesheet. Every more elaborate isolation technique
+  // tried for this A4-portrait layout (createPortal+#root-hide, then a
+  // separate blob: window) produced a blank PDF in both Brave and Chrome —
+  // FullBill's much simpler pattern is proven reliable, so the Warehouse Slip
+  // now follows it exactly, keeping only the height-measured pagination logic
+  // above (which was never the problem) and the @page A4 portrait rule the
+  // physical cutting process requires.
   return (
     <div className="bg-white">
       <style>{`
-        /* No in-page print CSS needed anymore — the Warehouse Slip prints via
-           a genuinely separate window (see printWarehouseSlip in
-           BillingDashboard.jsx), which carries its own @page/print rules. */
-        .no-print-inline { }
+        @media print {
+          @page { size: A4 portrait; margin: 0; }
+          .no-print-inline { display: none !important; }
+          body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          .wh-print { box-shadow: none !important; }
+          .wh-sheet tr { break-inside: avoid !important; page-break-inside: avoid !important; }
+          .wh-sheet thead { display: table-header-group; }
+        }
       `}</style>
 
-      {/* Hidden measurement pass — always rendered so refs stay populated,
-          real screen/print output only appears once heights are known. */}
+      {/* Hidden measurement pass — always rendered so refs stay populated. */}
       <MeasurementPass />
 
-      {/* On-screen preview — the exact same computed sheets/halves, just with
-          a visible gap + shadow between physical A4 sheets for readability
-          (screen-only styling; the print copy below is zero-gap and uses the
-          real @page A4 portrait boundaries). */}
+      {/* The ONE real render — shown on screen (with a shadow/gap between
+          physical sheets for readability) and printed AS-IS via plain
+          window.print(); the print stylesheet above strips the screen-only
+          shadow/gap so sheets sit flush against the physical page edges. */}
       {halves && (
-        <div className="flex flex-col items-center gap-4 py-4 overflow-x-auto">
-          {sheets.map((pair, sheetIdx) => (
-            <div key={sheetIdx} className="shadow-2xl rounded-lg overflow-hidden shrink-0 bg-white" style={{ width: `${PAGE_W_MM}mm` }}>
-              {pair.map((h, j) => {
-                const globalIndex = sheetIdx * 2 + j
-                const isLastHalfOverall = globalIndex === halves.length - 1
-                return renderHalf(h, globalIndex, isLastHalfOverall)
-              })}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Hidden export copy — NOT a portal, just a normal hidden element under
-          #root. The Warehouse Slip prints via a genuinely separate window
-          (see printWarehouseSlip in BillingDashboard.jsx), which reads this
-          node's outerHTML. This replaces the previous createPortal + #root
-          -hiding technique, which proved unreliable for this A4-portrait
-          layout across both Brave and Chrome (blank PDF output) — a fully
-          separate print window sidesteps that entire mechanism, using the
-          same approach already proven correct for the other print reports in
-          this app. */}
-      {halves && (
-        <div id="warehouse-slip-export" aria-hidden="true" style={{ position: 'absolute', top: 0, left: '-9999px' }}>
-          {halvesContent}
+        <div className="wh-print flex flex-col items-center gap-4 py-4 overflow-x-auto">
+          {sheets.map((pair, sheetIdx) => {
+            const isLastSheet = sheetIdx === sheets.length - 1
+            return (
+              <div
+                key={sheetIdx}
+                className="wh-sheet shadow-2xl rounded-lg overflow-hidden shrink-0 bg-white"
+                style={{
+                  width: `${PAGE_W_MM}mm`,
+                  breakAfter: isLastSheet ? 'auto' : 'page',
+                  pageBreakAfter: isLastSheet ? 'auto' : 'always'
+                }}
+              >
+                {pair.map((h, j) => {
+                  const globalIndex = sheetIdx * 2 + j
+                  const isLastHalfOverall = globalIndex === halves.length - 1
+                  return renderHalf(h, globalIndex, isLastHalfOverall)
+                })}
+              </div>
+            )
+          })}
         </div>
       )}
     </div>
