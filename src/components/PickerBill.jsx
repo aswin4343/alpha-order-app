@@ -102,7 +102,8 @@ const HALF_H_MM = PAGE_H_MM / 2       // 148.5 — the physical cut boundary
 const PAD_MM = 6                      // inner safe-print margin, inside each half's own box
 const CONTENT_W_MM = PAGE_W_MM - PAD_MM * 2   // 198mm usable width
 const CONTENT_H_MM = HALF_H_MM - PAD_MM * 2   // 136.5mm usable height PER HALF
-const SAFETY_MM = 1.5                 // rounding buffer so a half is never right at the edge
+const SAFETY_MM = 4                   // rounding buffer so a half is never right at the edge
+                                       // (covers small screen-vs-print rendering differences)
 // CSS's fixed reference ratio (1in = 96px = 25.4mm) — constant regardless of
 // the viewer's actual monitor DPI; this is what makes measuring in mm-sized
 // DOM elements a reliable stand-in for what will physically print.
@@ -283,43 +284,76 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
   )
 
   // --- Real output (screen preview AND print) — both driven by the SAME
-  // measured `halves`, so what you preview is exactly what prints. -------
+  // measured `halves`, so what you preview is exactly what prints. Halves are
+  // grouped into PAIRS (one physical A4 sheet each) and each pair is wrapped
+  // in an outer container hard-locked to EXACTLY 297mm with overflow:hidden.
+  // This is essential: the two 148.5mm halves sum to exactly 297mm with zero
+  // slack, and print rendering can measure text a fraction of a millimeter
+  // differently than the on-screen measurement pass (different font
+  // hinting/DPI handling) — without this outer clamp, that tiny discrepancy
+  // pushes the second half onto a phantom extra "page 2", which in turn was
+  // producing the blank first page. Clipping at the sheet level absorbs any
+  // such rounding error while each half itself stays exactly 148.5mm tall for
+  // the physical cut. -------------------------------------------------------
+  const sheets = []
+  for (let i = 0; i < (halves || []).length; i += 2) sheets.push([halves[i], halves[i + 1]].filter(Boolean))
+
+  const renderHalf = (h, i, isLastHalfOverall) => {
+    const isBottomOfSheet = i % 2 === 1
+    return (
+      <div
+        key={i}
+        style={{
+          width: `${PAGE_W_MM}mm`,
+          height: `${HALF_H_MM}mm`,
+          padding: `${PAD_MM}mm`,
+          boxSizing: 'border-box',
+          overflow: 'hidden',
+          borderTop: isBottomOfSheet ? '1px dashed #94a3b8' : 'none',
+          position: 'relative',
+          background: '#fff'
+        }}
+      >
+        {isBottomOfSheet && (
+          <span
+            className="no-print-inline"
+            style={{ position: 'absolute', top: '-9px', left: '50%', transform: 'translateX(-50%)', background: '#fff', padding: '0 6px', fontSize: '9px', color: '#94a3b8' }}
+          >
+            ✂ cut here — 148.5mm
+          </span>
+        )}
+        {h.isFirstOfSheet ? <Header /> : (
+          <div className="text-[10px] text-slate-400 mb-2">{continuedLabel}</div>
+        )}
+        <ProductTable rows={h.rows} startIndex={h.startIndex} />
+        {isLastHalfOverall && (
+          <div className="mt-2 text-[9px] text-slate-400 text-center">{summaryLine}</div>
+        )}
+      </div>
+    )
+  }
+
   const halvesContent = halves && (
     <>
-      {halves.map((h, i) => {
-        const isBottomOfSheet = i % 2 === 1
-        const isLastHalf = i === halves.length - 1
+      {sheets.map((pair, sheetIdx) => {
+        const isLastSheet = sheetIdx === sheets.length - 1
         return (
           <div
-            key={i}
-            className="wh-half"
+            key={sheetIdx}
+            className="wh-sheet"
             style={{
               width: `${PAGE_W_MM}mm`,
-              height: `${HALF_H_MM}mm`,
-              padding: `${PAD_MM}mm`,
-              boxSizing: 'border-box',
+              height: `${PAGE_H_MM}mm`,
               overflow: 'hidden',
-              breakAfter: isBottomOfSheet && !isLastHalf ? 'page' : 'auto',
-              borderTop: isBottomOfSheet ? '1px dashed #94a3b8' : 'none',
-              position: 'relative',
-              background: '#fff'
+              breakAfter: isLastSheet ? 'auto' : 'page',
+              pageBreakAfter: isLastSheet ? 'auto' : 'always'
             }}
           >
-            {isBottomOfSheet && (
-              <span
-                className="no-print-inline"
-                style={{ position: 'absolute', top: '-9px', left: '50%', transform: 'translateX(-50%)', background: '#fff', padding: '0 6px', fontSize: '9px', color: '#94a3b8' }}
-              >
-                ✂ cut here — 148.5mm
-              </span>
-            )}
-            {h.isFirstOfSheet ? <Header /> : (
-              <div className="text-[10px] text-slate-400 mb-2">{continuedLabel}</div>
-            )}
-            <ProductTable rows={h.rows} startIndex={h.startIndex} />
-            {isLastHalf && (
-              <div className="mt-2 text-[9px] text-slate-400 text-center">{summaryLine}</div>
-            )}
+            {pair.map((h, j) => {
+              const globalIndex = sheetIdx * 2 + j
+              const isLastHalfOverall = globalIndex === halves.length - 1
+              return renderHalf(h, globalIndex, isLastHalfOverall)
+            })}
           </div>
         )
       })}
@@ -341,8 +375,13 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
           .wh-print-portal { display: block !important; }
           .no-print, .no-print-inline { display: none !important; }
 
-          .wh-half tr { break-inside: avoid !important; page-break-inside: avoid !important; }
-          .wh-half thead { display: table-header-group; }
+          /* Each .wh-sheet is hard-locked to exactly 297mm and clips any
+             stray sub-millimeter overflow, so it can never spill onto a
+             phantom extra page regardless of tiny print-vs-screen text
+             rendering differences. */
+          .wh-sheet { break-inside: avoid !important; page-break-inside: avoid !important; }
+          .wh-sheet tr { break-inside: avoid !important; page-break-inside: avoid !important; }
+          .wh-sheet thead { display: table-header-group; }
         }
         /* The print portal is hidden on screen; it only appears when printing. */
         .wh-print-portal { display: none; }
@@ -352,44 +391,21 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
           real screen/print output only appears once heights are known. */}
       <MeasurementPass />
 
-      {/* On-screen preview — the exact same computed halves, just with a
-          visible gap + shadow between physical slips for readability
-          (screen-only styling; the print copy below has zero gap and uses
-          the real @page A4 portrait boundaries). */}
+      {/* On-screen preview — the exact same computed sheets/halves, just with
+          a visible gap + shadow between physical A4 sheets for readability
+          (screen-only styling; the print copy below is zero-gap and uses the
+          real @page A4 portrait boundaries). */}
       {halves && (
-        <div className="flex flex-col items-center gap-3 py-4 overflow-x-auto">
-          {halves.map((h, i) => {
-            const isBottomOfSheet = i % 2 === 1
-            const isLastHalf = i === halves.length - 1
-            return (
-              <div key={i} className="shadow-2xl rounded-lg overflow-hidden shrink-0 bg-white" style={{ width: `${PAGE_W_MM}mm` }}>
-                <div
-                  style={{
-                    width: `${PAGE_W_MM}mm`,
-                    height: `${HALF_H_MM}mm`,
-                    padding: `${PAD_MM}mm`,
-                    boxSizing: 'border-box',
-                    overflow: 'hidden',
-                    borderTop: isBottomOfSheet ? '1px dashed #94a3b8' : 'none',
-                    position: 'relative'
-                  }}
-                >
-                  {isBottomOfSheet && (
-                    <span style={{ position: 'absolute', top: '-9px', left: '50%', transform: 'translateX(-50%)', background: '#fff', padding: '0 6px', fontSize: '9px', color: '#94a3b8' }}>
-                      ✂ cut here — 148.5mm
-                    </span>
-                  )}
-                  {h.isFirstOfSheet ? <Header /> : (
-                    <div className="text-[10px] text-slate-400 mb-2">{continuedLabel}</div>
-                  )}
-                  <ProductTable rows={h.rows} startIndex={h.startIndex} />
-                  {isLastHalf && (
-                    <div className="mt-2 text-[9px] text-slate-400 text-center">{summaryLine}</div>
-                  )}
-                </div>
-              </div>
-            )
-          })}
+        <div className="flex flex-col items-center gap-4 py-4 overflow-x-auto">
+          {sheets.map((pair, sheetIdx) => (
+            <div key={sheetIdx} className="shadow-2xl rounded-lg overflow-hidden shrink-0 bg-white" style={{ width: `${PAGE_W_MM}mm` }}>
+              {pair.map((h, j) => {
+                const globalIndex = sheetIdx * 2 + j
+                const isLastHalfOverall = globalIndex === halves.length - 1
+                return renderHalf(h, globalIndex, isLastHalfOverall)
+              })}
+            </div>
+          ))}
         </div>
       )}
 
