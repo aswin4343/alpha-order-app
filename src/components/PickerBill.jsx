@@ -223,13 +223,28 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
         @media print {
           .no-print-inline { display: none !important; }
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          .wh-sheet { box-shadow: none !important; }
+          /* overflow:hidden (+ border-radius) on an ancestor of a <table> is a
+             known Chromium print-rendering quirk that can make the table
+             disappear from print output entirely, regardless of content
+             size — exactly the symptom here (even a single-row slip printed
+             blank). FullBill's print wrapper has neither property; neutralise
+             both here the same way, matching it exactly. */
+          .wh-sheet { box-shadow: none !important; overflow: visible !important; border-radius: 0 !important; }
           .wh-sheet tr { break-inside: avoid !important; page-break-inside: avoid !important; }
           .wh-sheet thead { display: table-header-group; }
         }
       `}</style>
 
-      <div className="flex flex-col items-center gap-4 py-4">
+      {/* THE FIX: src/index.css has a GLOBAL print rule that hides the entire
+          page (`body * { visibility: hidden }`) and rescues only elements
+          carrying the `.picker-bill-print` / `.full-bill-print` class. This
+          class had been lost from this component across several rewrites —
+          FullBill.jsx still has `.full-bill-print` on its wrapper, which is
+          the actual reason View Bill printing kept working throughout this
+          whole investigation, independent of anything in THIS file's own
+          <style> tag. Restoring the class is the real fix; everything below
+          it was already correct. */}
+      <div className="picker-bill-print flex flex-col items-center gap-4 py-4">
         {sheets.map((pair, sheetIdx) => (
           <div key={sheetIdx} className="wh-sheet shadow-2xl rounded-lg overflow-hidden bg-white w-full max-w-[210mm] mx-auto">
             {pair.map((h, j) => {
