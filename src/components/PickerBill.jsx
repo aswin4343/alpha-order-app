@@ -342,8 +342,14 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
             className="wh-sheet"
             style={{
               width: `${PAGE_W_MM}mm`,
-              height: `${PAGE_H_MM}mm`,
-              overflow: 'hidden',
+              // Deliberately NO explicit height/overflow here. @page already
+              // defines the physical page as 297mm; asserting height:297mm
+              // AGAIN on this wrapper creates two independent sources of
+              // truth for the same dimension, and any sub-pixel disagreement
+              // between them (print-engine rounding) can make the sheet
+              // render as empty. The two 148.5mm-tall halves inside stack
+              // naturally to exactly 297mm — that alone is correct and
+              // sufficient, with no redundant assertion to conflict with it.
               breakAfter: isLastSheet ? 'auto' : 'page',
               pageBreakAfter: isLastSheet ? 'auto' : 'always'
             }}
