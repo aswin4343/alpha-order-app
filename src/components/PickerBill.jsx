@@ -70,37 +70,24 @@ function CopyableProductName({ name }) {
 }
 
 // ============================================================================
-// PHYSICAL PRINTING MODEL
+// PHYSICAL PRINTING MODEL — A5 portrait, browser-paginated
 //
-// The Warehouse Slip prints on ONE A4 PORTRAIT sheet, which is then
-// physically cut by hand through the exact center of its height, giving two
-// 210mm x 148.5mm physical slips:
-//   • The TOP half is the real Warehouse Slip: full letterhead + order info
-//     + as many product rows as fit in the remaining space.
-//   • The BOTTOM half is a CONTINUATION — no header/logo/order-info repeats,
-//     just the product table picking up where the top half stopped (serial
-//     numbers continue).
-//   • A long order continues onto additional A4 sheets; each new sheet's
-//     first half gets the full header again (it may end up physically
-//     separated from the first slip after cutting), its second half is again
-//     a plain continuation.
-//
-// ARCHITECTURE NOTE: this deliberately mirrors FullBill.jsx's proven-working
-// print approach — a single synchronous render, Tailwind classes only, no
-// @page override, no DOM-measurement effects. An earlier version computed
-// exact row-fitting from real measured DOM heights (via useLayoutEffect +
-// refs + an off-screen measurement pass), which produced a completely blank
-// print/PDF across repeated attempts in both Brave and Chrome, while
-// FullBill's simple synchronous/class-based rendering always printed
-// correctly. Rather than keep patching within that fragile two-pass
-// architecture, this uses a conservative, FIXED per-half row budget —
-// computed once as a plain constant, not measured — with row-level
-// `break-inside: avoid` as a safety net so a row can never be visually split
-// even if a particular product name wraps onto two lines. This trades a
-// little packing precision for the same reliability FullBill already has.
+// The Warehouse Slip prints directly on real A5 paper (148mm x 210mm
+// portrait) via `@page { size: A5 portrait }`. This is ONE continuous
+// document — the company header appears once, at the top, followed by a
+// single uninterrupted product table. When the table is longer than one A5
+// page, the BROWSER'S OWN print pagination naturally continues it onto
+// additional A5 pages; nothing here pre-computes page counts or splits the
+// product array in JavaScript. `break-inside: avoid` on each row is the only
+// pagination-related rule — it tells the browser "never cut a row in half",
+// so a row that doesn't fully fit flows whole onto the next page instead.
+// Because the header is a normal, single block above the table (not part of
+// a repeating <thead> and never duplicated in the DOM), it can only ever
+// appear once, at the very top — there is nothing to "turn off" for later
+// pages. The table's own column-header row is allowed to repeat via
+// `display: table-header-group`, which is the standard way to keep column
+// labels readable across pages without repeating the company letterhead.
 // ============================================================================
-const ROWS_FIRST_HALF = 5          // header eats real space; fewer rows fit
-const ROWS_CONTINUATION_HALF = 10  // no header — more room for rows
 
 export default function PickerBill({ brand, shopName, route, salesRepName, orderDate, orderTime, orderRef, items }) {
   const company = companyFor(brand)
@@ -119,163 +106,97 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
   const totQ = all.reduce((s, i) => s + (Number(i.qty) || 0), 0)
   const totF = all.reduce((s, i) => s + (Number(i.free_qty) || 0), 0)
   const totT = totQ + totF
-  const continuedLabel = `${company.name} · Warehouse Slip · ${orderRef || ''} · continued`
   const summaryLine = `${all.length} product line(s) · QTY ${totQ} · F QTY ${totF} · TOTAL QTY ${totT}`
-
-  // Synchronous pagination — a plain function of props, computed during
-  // render (no effects, no measurement, no state). Halves alternate
-  // first-of-sheet (full header) / continuation (compact label), exactly
-  // like before; only HOW the row count per half is decided has changed.
-  const halves = []
-  {
-    let idx = 0
-    let slCounter = 0
-    if (all.length === 0) {
-      halves.push({ isFirstOfSheet: true, rows: [], startIndex: 0 })
-    }
-    while (idx < all.length) {
-      const isFirstOfSheet = halves.length % 2 === 0
-      const budget = isFirstOfSheet ? ROWS_FIRST_HALF : ROWS_CONTINUATION_HALF
-      const rows = all.slice(idx, idx + budget)
-      halves.push({ isFirstOfSheet, rows, startIndex: slCounter })
-      idx += rows.length
-      slCounter += rows.length
-    }
-  }
-  const sheets = []
-  for (let i = 0; i < halves.length; i += 2) sheets.push([halves[i], halves[i + 1]].filter(Boolean))
-
-  const Header = () => (
-    <>
-      {/* Letterhead — ONE brand-correct logo (never both). First half of each
-          physical sheet only — never on a continuation half. */}
-      <div className="border-b-2 border-slate-800 pb-2 mb-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="text-left min-w-0">
-            <h1 className="text-xl font-black tracking-wide text-slate-900 leading-tight">{company.name}</h1>
-            <p className="text-xs text-slate-600">{company.tagline}</p>
-            <p className="text-[11px] text-slate-500">{company.address}</p>
-            <p className="text-[10px] text-slate-400">
-              {company.gstin ? `GSTIN: ${company.gstin}` : ''}{company.fssai ? `  ·  FSSAI: ${company.fssai}` : ''}
-            </p>
-          </div>
-          <img src={brandLogo.src} alt={brandLogo.alt} className="h-12 w-auto object-contain shrink-0" style={{ printColorAdjust: 'exact', WebkitPrintColorAdjust: 'exact' }} />
-        </div>
-      </div>
-
-      <div className="text-center mb-3">
-        <span className="inline-block px-3 py-1 rounded-full bg-slate-900 text-white text-xs font-black tracking-widest">
-          WAREHOUSE SLIP
-        </span>
-      </div>
-
-      {/* Order meta */}
-      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs mb-4 border border-slate-200 rounded-lg p-3">
-        <div><span className="font-semibold text-slate-500">SHOP / BUYER:</span> <span className="font-bold text-slate-800">{shopName}{route ? `, ${route}` : ''}</span></div>
-        <div><span className="font-semibold text-slate-500">ORDER REF:</span> <span className="font-bold text-slate-800">{orderRef || '—'}</span></div>
-        <div><span className="font-semibold text-slate-500">SALES REPRESENTATIVE:</span> <span className="font-bold text-slate-800">{salesRepName || '—'}</span></div>
-        <div><span className="font-semibold text-slate-500">DATE:</span> <span className="font-bold text-slate-800">{prettyDate}</span> {orderTime ? <span className="ml-2"><span className="font-semibold text-slate-500">TIME:</span> <span className="font-bold text-slate-800">{orderTime}</span></span> : null}</div>
-      </div>
-    </>
-  )
-
-  const ProductTable = ({ rows, startIndex }) => (
-    <table className="w-full text-xs border-collapse">
-      <thead>
-        <tr className="bg-slate-900 text-white">
-          <th className="border border-slate-700 px-2 py-1.5 text-left w-8">SL</th>
-          <th className="border border-slate-700 px-2 py-1.5 text-left">PRODUCT NAME</th>
-          <th className="border border-slate-700 px-2 py-1.5 text-right w-16">MRP</th>
-          <th className="border border-slate-700 px-2 py-1.5 text-center w-14">UNIT</th>
-          <th className="border border-slate-700 px-2 py-1.5 text-center w-12">QTY</th>
-          <th className="border border-slate-700 px-2 py-1.5 text-center w-12">F QTY</th>
-          <th className="border border-slate-700 px-2 py-1.5 text-center w-16 text-sm font-black bg-slate-800">TOTAL QTY</th>
-          <th className="border border-slate-700 px-2 py-1.5 text-center w-14">CHECK</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((it, j) => {
-          const sl = startIndex + j + 1
-          return (
-            <tr key={sl} className={sl % 2 ? 'bg-white' : 'bg-slate-50'}>
-              <td className="border border-slate-300 px-2 py-2 text-slate-600">{sl}</td>
-              <td className="border border-slate-300 px-2 py-2"><CopyableProductName name={it.name} /></td>
-              <td className="border border-slate-300 px-2 py-2 text-right text-slate-700">{it.mrp != null ? `₹${it.mrp}` : '—'}</td>
-              <td className="border border-slate-300 px-2 py-2 text-center text-slate-700">{it.unit || '-'}</td>
-              <td className="border border-slate-300 px-2 py-2 text-center font-bold text-slate-900">{Number(it.qty) || 0}</td>
-              <td className="border border-slate-300 px-2 py-2 text-center font-bold text-emerald-700">{Number(it.free_qty) || 0}</td>
-              <td className="border-2 border-slate-800 px-2 py-2 text-center text-sm font-black text-slate-900 bg-slate-100">{(Number(it.qty) || 0) + (Number(it.free_qty) || 0)}</td>
-              <td className="border border-slate-300 px-2 py-2 text-center"><span className="inline-block h-5 w-5 border-2 border-slate-800 rounded-sm" /></td>
-            </tr>
-          )
-        })}
-      </tbody>
-    </table>
-  )
 
   return (
     <div className="bg-white">
-      {/* Print CSS mirrors FullBill.jsx exactly: no @page override (the
-          browser's own print dialog handles paper size/orientation, same as
-          every other bill in this app), just color-adjust + hiding
-          screen-only decoration + keeping rows intact across a page break. */}
+      {/* Print CSS: real A5 portrait paper, printer-safe margins, content
+          allowed to use the full A5 width (no A4-sized max-width), rows never
+          split across a page break, product names wrap instead of cropping.
+          The screen-only shadow/rounded-corner card styling is neutralised
+          for print — overflow specifically must be reset to visible, since
+          overflow:hidden on an ancestor of a <table> is a known Chromium
+          print bug that can make the whole table vanish from print output. */}
       <style>{`
         @media print {
+          @page { size: A5 portrait; margin: 6mm; }
           .no-print-inline { display: none !important; }
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          /* overflow:hidden (+ border-radius) on an ancestor of a <table> is a
-             known Chromium print-rendering quirk that can make the table
-             disappear from print output entirely, regardless of content
-             size — exactly the symptom here (even a single-row slip printed
-             blank). FullBill's print wrapper has neither property; neutralise
-             both here the same way, matching it exactly. */
-          .wh-sheet { box-shadow: none !important; overflow: visible !important; border-radius: 0 !important; }
-          .wh-sheet tr { break-inside: avoid !important; page-break-inside: avoid !important; }
-          .wh-sheet thead { display: table-header-group; }
+          .wh-slip-print { box-shadow: none !important; overflow: visible !important; border-radius: 0 !important; max-width: none !important; }
+          .wh-slip-print tr { break-inside: avoid !important; page-break-inside: avoid !important; }
+          .wh-slip-print thead { display: table-header-group; }
         }
       `}</style>
 
-      {/* THE FIX: src/index.css has a GLOBAL print rule that hides the entire
-          page (`body * { visibility: hidden }`) and rescues only elements
-          carrying the `.picker-bill-print` / `.full-bill-print` class. This
-          class had been lost from this component across several rewrites —
-          FullBill.jsx still has `.full-bill-print` on its wrapper, which is
-          the actual reason View Bill printing kept working throughout this
-          whole investigation, independent of anything in THIS file's own
-          <style> tag. Restoring the class is the real fix; everything below
-          it was already correct. */}
-      <div className="picker-bill-print flex flex-col items-center gap-4 py-4">
-        {sheets.map((pair, sheetIdx) => (
-          <div key={sheetIdx} className="wh-sheet shadow-2xl rounded-lg overflow-hidden bg-white w-full max-w-[210mm] mx-auto">
-            {pair.map((h, j) => {
-              const globalIndex = sheetIdx * 2 + j
-              const isBottomOfSheet = globalIndex % 2 === 1
-              const isLastHalfOverall = globalIndex === halves.length - 1
+      {/* .picker-bill-print is required: src/index.css has a global print
+          rule (`body * { visibility: hidden }`) that hides the entire page
+          during print and rescues only elements carrying this class (or
+          `.full-bill-print`, used by the Full Bill). Without it, nothing in
+          this component would ever appear in print output. */}
+      <div className="picker-bill-print wh-slip-print shadow-2xl rounded-lg overflow-hidden bg-white w-full max-w-2xl mx-auto p-4 sm:p-6">
+        {/* Letterhead — appears ONCE, above the table, never repeated. */}
+        <div className="border-b-2 border-slate-800 pb-2 mb-3">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-left min-w-0">
+              <h1 className="text-xl font-black tracking-wide text-slate-900 leading-tight">{company.name}</h1>
+              <p className="text-xs text-slate-600">{company.tagline}</p>
+              <p className="text-[11px] text-slate-500">{company.address}</p>
+              <p className="text-[10px] text-slate-400">
+                {company.gstin ? `GSTIN: ${company.gstin}` : ''}{company.fssai ? `  ·  FSSAI: ${company.fssai}` : ''}
+              </p>
+            </div>
+            <img src={brandLogo.src} alt={brandLogo.alt} className="h-12 w-auto object-contain shrink-0" style={{ printColorAdjust: 'exact', WebkitPrintColorAdjust: 'exact' }} />
+          </div>
+        </div>
+
+        <div className="text-center mb-3">
+          <span className="inline-block px-3 py-1 rounded-full bg-slate-900 text-white text-xs font-black tracking-widest">
+            WAREHOUSE SLIP
+          </span>
+        </div>
+
+        <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs mb-4 border border-slate-200 rounded-lg p-3">
+          <div><span className="font-semibold text-slate-500">SHOP / BUYER:</span> <span className="font-bold text-slate-800">{shopName}{route ? `, ${route}` : ''}</span></div>
+          <div><span className="font-semibold text-slate-500">ORDER REF:</span> <span className="font-bold text-slate-800">{orderRef || '—'}</span></div>
+          <div><span className="font-semibold text-slate-500">SALES REPRESENTATIVE:</span> <span className="font-bold text-slate-800">{salesRepName || '—'}</span></div>
+          <div><span className="font-semibold text-slate-500">DATE:</span> <span className="font-bold text-slate-800">{prettyDate}</span> {orderTime ? <span className="ml-2"><span className="font-semibold text-slate-500">TIME:</span> <span className="font-bold text-slate-800">{orderTime}</span></span> : null}</div>
+        </div>
+
+        {/* ONE continuous table — the browser paginates this naturally when
+            printed on A5; no product-count-based logic here at all. */}
+        <table className="w-full text-xs border-collapse">
+          <thead>
+            <tr className="bg-slate-900 text-white">
+              <th className="border border-slate-700 px-2 py-1.5 text-left w-8">SL</th>
+              <th className="border border-slate-700 px-2 py-1.5 text-left">PRODUCT NAME</th>
+              <th className="border border-slate-700 px-2 py-1.5 text-right w-16">MRP</th>
+              <th className="border border-slate-700 px-2 py-1.5 text-center w-14">UNIT</th>
+              <th className="border border-slate-700 px-2 py-1.5 text-center w-12">QTY</th>
+              <th className="border border-slate-700 px-2 py-1.5 text-center w-12">F QTY</th>
+              <th className="border border-slate-700 px-2 py-1.5 text-center w-16 text-sm font-black bg-slate-800">TOTAL QTY</th>
+              <th className="border border-slate-700 px-2 py-1.5 text-center w-14">CHECK</th>
+            </tr>
+          </thead>
+          <tbody>
+            {all.map((it, idx) => {
+              const sl = idx + 1
               return (
-                <div
-                  key={j}
-                  className={`p-4 sm:p-6 ${isBottomOfSheet ? 'border-t border-dashed border-slate-400 relative' : ''}`}
-                >
-                  {isBottomOfSheet && (
-                    <span className="no-print-inline absolute -top-2 left-1/2 -translate-x-1/2 bg-white px-2 text-[9px] text-slate-400">
-                      ✂ cut here
-                    </span>
-                  )}
-                  {h.isFirstOfSheet ? <Header /> : (
-                    <div className="text-[10px] text-slate-400 mb-2">{continuedLabel}</div>
-                  )}
-                  <ProductTable rows={h.rows} startIndex={h.startIndex} />
-                  {isLastHalfOverall && (
-                    <div className="mt-3 text-[10px] text-slate-400 text-center">
-                      {summaryLine}
-                      <span className="ml-2 opacity-60">· build v50</span>
-                    </div>
-                  )}
-                </div>
+                <tr key={sl} className={sl % 2 ? 'bg-white' : 'bg-slate-50'}>
+                  <td className="border border-slate-300 px-2 py-2 text-slate-600">{sl}</td>
+                  <td className="border border-slate-300 px-2 py-2 break-words"><CopyableProductName name={it.name} /></td>
+                  <td className="border border-slate-300 px-2 py-2 text-right text-slate-700">{it.mrp != null ? `₹${it.mrp}` : '—'}</td>
+                  <td className="border border-slate-300 px-2 py-2 text-center text-slate-700">{it.unit || '-'}</td>
+                  <td className="border border-slate-300 px-2 py-2 text-center font-bold text-slate-900">{Number(it.qty) || 0}</td>
+                  <td className="border border-slate-300 px-2 py-2 text-center font-bold text-emerald-700">{Number(it.free_qty) || 0}</td>
+                  <td className="border-2 border-slate-800 px-2 py-2 text-center text-sm font-black text-slate-900 bg-slate-100">{(Number(it.qty) || 0) + (Number(it.free_qty) || 0)}</td>
+                  <td className="border border-slate-300 px-2 py-2 text-center"><span className="inline-block h-5 w-5 border-2 border-slate-800 rounded-sm" /></td>
+                </tr>
               )
             })}
-          </div>
-        ))}
+          </tbody>
+        </table>
+
+        <div className="mt-3 text-[10px] text-slate-400 text-center">{summaryLine}</div>
       </div>
     </div>
   )
