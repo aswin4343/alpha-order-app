@@ -101,11 +101,20 @@ function CopyableProductName({ name }) {
 // content and produced blank pages. Portaling the print copy to a direct
 // child of <body> removes that ancestor entirely.
 // ============================================================================
-const PAGE_W_MM = 210
-const PAGE_H_MM = 148
+// ---------------------------------------------------------------------------
+// ORIENTATION — the single switch that drives everything below (the @page
+// rule, the page box dimensions, and therefore how many rows fit per page).
+// Flip this one value to swap the whole slip between orientations; nothing
+// else needs editing.
+//   'portrait'  -> A5 portrait,  148mm wide x 210mm tall
+//   'landscape' -> A5 landscape, 210mm wide x 148mm tall
+const ORIENTATION = 'portrait'
+
+const PAGE_W_MM = ORIENTATION === 'landscape' ? 210 : 148
+const PAGE_H_MM = ORIENTATION === 'landscape' ? 148 : 210
 const PAD_MM = 4
-const CONTENT_W_MM = PAGE_W_MM - PAD_MM * 2   // 202mm usable width
-const CONTENT_H_MM = PAGE_H_MM - PAD_MM * 2   // 140mm usable height per page
+const CONTENT_W_MM = PAGE_W_MM - PAD_MM * 2
+const CONTENT_H_MM = PAGE_H_MM - PAD_MM * 2
 const SAFETY_MM = 3                            // buffer for print-vs-screen rendering differences
 const PX_PER_MM = 96 / 25.4                    // CSS reference ratio, constant regardless of monitor DPI
 
@@ -289,14 +298,11 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
     <div className="bg-white">
       <style>{`
         @media print {
-          /* Canonical named size + orientation keyword. Chrome maps A5 to
-             148x210mm and the landscape keyword swaps it to 210x148mm.
-             This form is honoured more reliably than raw dimensions
-             (size: 210mm 148mm), which some drivers accept as a page box
-             while still defaulting the dialog to portrait — the cause of the
-             slip being laid out 210mm wide on a 148mm-wide portrait sheet
-             and clipped down the left. */
-          @page { size: A5 landscape; margin: 0; }
+          /* Canonical named size + orientation keyword — Chrome maps this
+             reliably and makes the print dialog default to the right
+             orientation. Both this and the page box below come from the
+             single ORIENTATION constant, so they can never disagree. */
+          @page { size: A5 ${ORIENTATION}; margin: 0; }
           .no-print-inline { display: none !important; }
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 
@@ -314,8 +320,8 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
              the slip fall back into the flow behind all that hidden content —
              the cause of the empty band above and below. Width is pinned to
              the real page width so the box is never measured against body. */
-          .wh-slip-root { width: 210mm !important; max-width: 210mm !important; overflow: visible !important; }
-          .print-page { width: 210mm !important; height: 148mm !important; box-shadow: none !important; border-radius: 0 !important; }
+          .wh-slip-root { width: ${PAGE_W_MM}mm !important; max-width: ${PAGE_W_MM}mm !important; overflow: visible !important; }
+          .print-page { width: ${PAGE_W_MM}mm !important; height: ${PAGE_H_MM}mm !important; box-shadow: none !important; border-radius: 0 !important; }
           .print-page tr { break-inside: avoid !important; page-break-inside: avoid !important; }
         }
       `}</style>
