@@ -61,7 +61,7 @@ function CopyableProductName({ name }) {
     <button
       type="button"
       onClick={onCopy}
-      className="text-left font-semibold text-slate-800 hover:text-brand-700 active:text-brand-800"
+      className="text-left font-semibold text-slate-800 hover:text-brand-700 active:text-brand-800 whitespace-nowrap"
       title="Tap to copy product name"
     >
       {name}
@@ -158,20 +158,21 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
   // Explicit column widths summing to exactly 100%, mirroring the old
   // half-page template's model (it declared every column width rather than
   // letting the table auto-size). With `table-fixed` this guarantees the
-  // table can never grow wider than the page no matter how long a product
-  // name is — long names wrap inside their own column instead of pushing the
-  // table into overflow. PRODUCT NAME takes the dominant share, as it did in
-  // the old layout (33% there across 14 columns; 46% here across 8).
+  // table can never grow wider than the page.
+  // PRODUCT NAME is deliberately given the dominant share (55%) and the
+  // numeric columns are trimmed to the minimum that still reads clearly,
+  // because product names must stay on ONE line and therefore need every
+  // millimetre of width that can be spared.
   const SlipColgroup = () => (
     <colgroup>
-      <col style={{ width: '4%' }} />
-      <col style={{ width: '46%' }} />
+      <col style={{ width: '5%' }} />
+      <col style={{ width: '55%' }} />
+      <col style={{ width: '7%' }} />
       <col style={{ width: '8%' }} />
-      <col style={{ width: '9%' }} />
+      <col style={{ width: '6%' }} />
+      <col style={{ width: '6%' }} />
       <col style={{ width: '7%' }} />
-      <col style={{ width: '7%' }} />
-      <col style={{ width: '10%' }} />
-      <col style={{ width: '9%' }} />
+      <col style={{ width: '6%' }} />
     </colgroup>
   )
 
@@ -191,7 +192,7 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
   const ProductRow = ({ it, sl, innerRef }) => (
     <tr ref={innerRef} className={sl % 2 ? 'bg-white' : 'bg-slate-50'}>
       <td className="border border-slate-300 px-1 py-1.5 text-center text-slate-600">{sl}</td>
-      <td className="border border-slate-300 px-2 py-1.5 break-words"><CopyableProductName name={it.name} /></td>
+      <td className="wh-name border border-slate-300 px-1 py-1.5 whitespace-nowrap"><CopyableProductName name={it.name} /></td>
       <td className="border border-slate-300 px-1 py-1.5 text-right text-slate-700">{it.mrp != null ? `₹${it.mrp}` : '—'}</td>
       <td className="border border-slate-300 px-1 py-1.5 text-center text-slate-700">{it.unit || '-'}</td>
       <td className="border border-slate-300 px-1 py-1.5 text-center font-bold text-slate-900">{Number(it.qty) || 0}</td>
@@ -323,6 +324,10 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
           .wh-slip-root { width: ${PAGE_W_MM}mm !important; max-width: ${PAGE_W_MM}mm !important; overflow: visible !important; }
           .print-page { width: ${PAGE_W_MM}mm !important; height: ${PAGE_H_MM}mm !important; box-shadow: none !important; border-radius: 0 !important; }
           .print-page tr { break-inside: avoid !important; page-break-inside: avoid !important; }
+          /* Product names must stay on ONE line in the real print output too,
+             not only in the on-screen preview — enforced explicitly here so
+             no inherited or competing rule can reintroduce wrapping. */
+          .print-page .wh-name, .print-page .wh-name * { white-space: nowrap !important; }
         }
       `}</style>
 

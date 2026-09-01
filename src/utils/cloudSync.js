@@ -3227,6 +3227,7 @@ export async function loadPendingStockOuts(repId) {
     .eq('removed', true)
     .eq('change_reason', 'Stock Out')
     .is('rescheduled_order_id', null)
+    .is('pending_dismissed_at', null)
     .eq('orders.sales_rep_id', repId)
     .eq('orders.hidden', false)
     .order('edited_at', { ascending: false })
@@ -3435,5 +3436,25 @@ export async function rejectSpecialPrice(itemId, adminName, adminId, reason) {
     .update({ approval_status: 'rejected', approved_by: adminName || null, approved_by_id: adminId || null, approved_at: new Date().toISOString(), approval_reason: reason || null })
     .eq('id', itemId)
     .eq('approval_status', 'pending')
+  if (error) throw error
+}
+
+/**
+ * "Delete" a pending stock-out item from the rep's Pending Orders list.
+ *
+ * Deliberately non-destructive — it stamps the line as dismissed rather than
+ * deleting anything. The parent order is untouched (it is already verified
+ * and billed; deleting it would destroy invoice data) and the original
+ * "removed as Stock Out" record is preserved, so billing history and the
+ * Partial Verification report stay complete. Guarded so an already-dismissed
+ * or already-rescheduled line can't be dismissed again.
+ */
+export async function dismissPendingStockOut(itemId, repName) {
+  const { error } = await supabase
+    .from('order_items')
+    .update({ pending_dismissed_at: new Date().toISOString(), pending_dismissed_by: repName || null })
+    .eq('id', itemId)
+    .is('pending_dismissed_at', null)
+    .is('rescheduled_order_id', null)
   if (error) throw error
 }

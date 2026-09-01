@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react'
-import { rescheduleStockOutItem } from '../utils/cloudSync.js'
+import { rescheduleStockOutItem, dismissPendingStockOut } from '../utils/cloudSync.js'
 import { CloseIcon } from './Icons.jsx'
 
 const istDateStr = (iso) =>
@@ -23,9 +23,26 @@ const todayStr = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/
  */
 export default function PendingOrdersModal({ items, repId, repName, onClose, onRescheduled }) {
   const [dateFor, setDateFor] = useState(null)   // item.id currently choosing a date for
+  const [confirmingDelete, setConfirmingDelete] = useState(null) // item.id awaiting delete confirmation
   const [pickedDate, setPickedDate] = useState('')
   const [busyId, setBusyId] = useState(null)
   const [result, setResult] = useState(null)     // { itemId, isAddon } — success banner
+
+  const confirmDelete = async (item) => {
+    setBusyId(item.id)
+    try {
+      await dismissPendingStockOut(item.id, repName)
+      setConfirmingDelete(null)
+      // Same callback the reschedule path uses — it reloads the list, which
+      // both removes the card and updates the header count in one go.
+      onRescheduled?.(item.id)
+    } catch (e) {
+      console.error(e)
+      alert(e.message || 'Could not remove this pending order.')
+    } finally {
+      setBusyId(null)
+    }
+  }
 
   const groups = useMemo(() => {
     const byDay = new Map()
@@ -39,6 +56,7 @@ export default function PendingOrdersModal({ items, repId, repName, onClose, onR
 
   const startReschedule = (item) => {
     setDateFor(item.id)
+    setConfirmingDelete(null)
     setPickedDate('')
     setResult(null)
   }
@@ -104,6 +122,26 @@ export default function PendingOrdersModal({ items, repId, repName, onClose, onR
                       <p className="text-xs font-semibold text-emerald-700 mt-2">
                         ✓ Rescheduled — {result.isAddon ? 'added to the existing order for that date.' : 'a new order was created for that date.'}
                       </p>
+                    ) : confirmingDelete === it.id ? (
+                      <div className="mt-2 rounded-lg border border-red-200 bg-red-50 p-2">
+                        <p className="text-xs font-bold text-red-800">Cancel this pending order?</p>
+                        <p className="text-[11px] text-red-700 mt-0.5">This will be removed from Pending Orders. The original order and its billing history are not affected.</p>
+                        <div className="flex gap-2 mt-2">
+                          <button
+                            onClick={() => setConfirmingDelete(null)}
+                            className="flex-1 rounded-lg border border-slate-300 bg-white text-slate-600 text-xs font-semibold py-2"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            onClick={() => confirmDelete(it)}
+                            disabled={busyId === it.id}
+                            className="flex-1 rounded-lg bg-red-600 text-white text-xs font-bold py-2 disabled:bg-slate-300"
+                          >
+                            {busyId === it.id ? '…' : 'Delete'}
+                          </button>
+                        </div>
+                      </div>
                     ) : dateFor === it.id ? (
                       <div className="flex items-center gap-2 mt-2">
                         <input
@@ -111,24 +149,32 @@ export default function PendingOrdersModal({ items, repId, repName, onClose, onR
                           min={todayStr()}
                           value={pickedDate}
                           onChange={(e) => setPickedDate(e.target.value)}
-                          className="flex-1 rounded-lg border border-slate-200 px-2 py-1.5 text-sm outline-none focus:border-brand-500"
+                          className="flex-1 min-w-0 rounded-lg border border-slate-200 px-2 py-1.5 text-sm outline-none focus:border-brand-500"
                         />
                         <button
                           onClick={() => confirmReschedule(it)}
                           disabled={!pickedDate || busyId === it.id}
-                          className="rounded-lg bg-brand-600 text-white text-xs font-bold px-3 py-1.5 disabled:bg-slate-300"
+                          className="shrink-0 rounded-lg bg-brand-600 text-white text-xs font-bold px-3 py-1.5 disabled:bg-slate-300"
                         >
                           {busyId === it.id ? '…' : 'Confirm'}
                         </button>
-                        <button onClick={() => setDateFor(null)} className="text-xs font-semibold text-slate-500 px-2">Cancel</button>
+                        <button onClick={() => setDateFor(null)} className="shrink-0 text-xs font-semibold text-slate-500 px-1">Cancel</button>
                       </div>
                     ) : (
-                      <button
-                        onClick={() => startReschedule(it)}
-                        className="mt-2 w-full rounded-lg bg-white border border-amber-300 text-amber-800 text-xs font-bold py-2"
-                      >
-                        Reschedule
-                      </button>
+                      <div className="flex gap-2 mt-2">
+                        <button
+                          onClick={() => startReschedule(it)}
+                          className="flex-1 min-w-0 rounded-lg bg-white border border-amber-300 text-amber-800 text-xs font-bold py-2"
+                        >
+                          RESCHEDULE
+                        </button>
+                        <button
+                          onClick={() => { setConfirmingDelete(it.id); setDateFor(null) }}
+                          className="flex-1 min-w-0 rounded-lg bg-white border border-red-300 text-red-700 text-xs font-bold py-2"
+                        >
+                          DELETE
+                        </button>
+                      </div>
                     )}
                   </div>
                 ))}

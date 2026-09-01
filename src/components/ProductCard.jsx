@@ -96,8 +96,15 @@ function PriceSelector({ product, override, onOverride, lastPrice, defaultPriceT
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
 
-  const options = [
-    { type: 'MRP', value: product.mrp },
+  // Selectable price options. MRP is deliberately NOT offered as a
+  // selectable chip — it is already shown once as a display-only tag on the
+  // card, and having it in both places was a confusing duplicate.
+  //
+  // The one exception is a product that has NO retail and NO wholesale price:
+  // dropping MRP there would leave the selector with nothing to choose and it
+  // would render nothing at all, so the rep could not price the line. In that
+  // case only, MRP is kept so the product stays orderable.
+  const sellingOptions = [
     { type: 'RETAIL', value: product.retail },
     { type: 'WHOLESALE', value: product.wholesale },
     // "Last Price" — this customer's most recent price for this product. Only
@@ -107,6 +114,10 @@ function PriceSelector({ product, override, onOverride, lastPrice, defaultPriceT
     // finalRate = lastPrice, which flows to Billing unchanged.
     { type: 'LAST', value: lastPrice }
   ].filter((o) => o.value != null && o.value !== '')
+
+  const options = sellingOptions.length > 0
+    ? sellingOptions
+    : [{ type: 'MRP', value: product.mrp }].filter((o) => o.value != null && o.value !== '')
 
   if (options.length === 0) return null
 
