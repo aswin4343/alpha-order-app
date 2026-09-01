@@ -270,7 +270,22 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
           @page { size: 210mm 148mm; margin: 0; }
           .no-print-inline { display: none !important; }
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          .wh-slip-root { position: static !important; overflow: visible !important; width: 100% !important; }
+
+          /* The on-screen copy must be removed from the print FLOW, not just
+             hidden. index.css uses visibility:hidden, which still reserves
+             full layout space — that reserved space was pushing the printed
+             slip down the page and leaving a large empty band above it. */
+          .wh-screen-copy { display: none !important; }
+
+          /* Deliberately NOT overriding position here. index.css pins
+             .picker-bill-print with position:absolute; top:0; left:0, which
+             lifts it out of the flow of the hidden (but still space-taking)
+             app UI and anchors it to the page's top-left corner. A previous
+             version forced position:static, which cancelled that pin and let
+             the slip fall back into the flow behind all that hidden content —
+             the cause of the empty band above and below. Width is pinned to
+             the real page width so the box is never measured against body. */
+          .wh-slip-root { width: 210mm !important; max-width: 210mm !important; overflow: visible !important; }
           .print-page { width: 210mm !important; height: 148mm !important; box-shadow: none !important; border-radius: 0 !important; }
           .print-page tr { break-inside: avoid !important; page-break-inside: avoid !important; }
         }
@@ -283,7 +298,7 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
           so the global print rule hides this copy during printing and only
           the portaled copy below is printed (no ghost double-render). */}
       {pages && (
-        <div className="flex flex-col items-center gap-4 py-4 overflow-x-auto">
+        <div className="wh-screen-copy flex flex-col items-center gap-4 py-4 overflow-x-auto">
           {pages.map((p, i) => (
             <div key={i} className="shadow-2xl rounded-lg overflow-hidden bg-white shrink-0" style={{ width: `${PAGE_W_MM}mm` }}>
               {renderPage(p, i, i === pages.length - 1)}
