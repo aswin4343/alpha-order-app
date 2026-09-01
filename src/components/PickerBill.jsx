@@ -1,11 +1,12 @@
 import { useState, useRef, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { ALPHA_LOGO, ZEDGO_LOGO } from '../assets/logos.js'
-// (ALPHA_LOGO / ZEDGO_LOGO are used by brandLogoFor below.)
 
-// Placeholder company letterhead details — swap in real GSTIN/FSSAI/address
-// once available. Keyed by the exact `orders.brand` values already in use
-// throughout the app (see BRANDS in utils/whatsapp.js).
+// NOTE: COMPANY_INFO / companyFor / brandLogoFor are NOT used by the
+// Warehouse Slip itself any more — the slip now starts at the "WAREHOUSE
+// SLIP" title with no company letterhead (see PRINT MODEL below). They stay
+// exported because FullBill.jsx imports both companyFor and brandLogoFor for
+// the customer-facing Full Bill, which is unchanged.
 export const COMPANY_INFO = {
   'ALPHA TRADE LINKS': {
     name: 'ALPHA TRADE LINKS',
@@ -40,8 +41,7 @@ export function brandLogoFor(brand) {
 }
 
 /** Short, stable order reference from the existing order id — no separate
- * numbering system invented, per the requirement ("use the existing Alpha
- * Flow order identification system if one already exists"). */
+ * numbering system invented. */
 export function orderRefFrom(orderId) {
   return orderId ? orderId.slice(0, 8).toUpperCase() : '—'
 }
@@ -54,7 +54,7 @@ function CopyableProductName({ name }) {
       setCopied(true)
       setTimeout(() => setCopied(false), 1200)
     } catch {
-      // Clipboard API unavailable — silently no-op, printed bill unaffected.
+      // Clipboard API unavailable — silently no-op, printed slip unaffected.
     }
   }
   return (
@@ -71,48 +71,45 @@ function CopyableProductName({ name }) {
 }
 
 // ============================================================================
-// PHYSICAL PRINTING MODEL — A5 LANDSCAPE, explicit measured pages
+// PRINT MODEL — A5 LANDSCAPE (210mm x 148mm)
 //
-// Paper: 210mm (width) x 148mm (height), landscape. Each physical A5 sheet is
-// its own explicit `.print-page` — NOT relied on the browser's automatic
-// content-driven pagination, per this iteration's explicit requirement.
-// Instead: render every row off-screen at the REAL print width first, MEASURE
-// its actual height, then greedily pack rows into successive pages up to the
-// real available height, moving any row that wouldn't fully fit to the next
-// page. Nothing here is a fixed row-per-page count.
+// The slip starts at the "WAREHOUSE SLIP" title. There is deliberately NO
+// company letterhead (name / address / GSTIN / FSSAI / logo) — this is an
+// internal picking document, and the agreed reference layout begins at the
+// title. The customer-facing Full Bill still carries the full letterhead and
+// is untouched.
 //
-// Page 1 gets the company header + order info; pages 2+ start directly with
-// products (the header block exists in the DOM exactly once, only on page
-// 1's content, so there is nothing to "turn off" for later pages). The
-// product table's column-header row IS allowed to repeat on every page
-// (explicitly permitted) via a plain repeated <thead>-style row — it is
-// measured and budgeted for on every page.
+// Each physical A5 sheet is its own explicit `.print-page` box sized exactly
+// 210mm x 148mm, so the slip fills the sheet rather than sitting as a small
+// centred block. Padding is kept small (4mm) because @page already sets
+// margin: 0 — stacking a large inner padding on top of a page margin is what
+// previously left wide unused bands down both sides.
 //
-// WHY A PORTAL: src/index.css has a global print rule that rescues content
-// tagged `.picker-bill-print` from `body * { visibility: hidden }` by
-// setting `position: absolute` on it. This component normally sits inside
-// the billing modal, which uses `position: fixed inset-0` — and
-// `position: fixed` ancestors are specifically designed to repeat on every
-// printed page. An absolutely-positioned box inside a repeating fixed
-// ancestor inherits that per-page repetition, which previously caused
-// duplicated headers / blank pages. Portaling the print-only copy to a
-// direct child of <body>, and overriding its position back to static,
-// removes the fixed ancestor entirely so explicit multi-page output behaves
-// predictably.
+// PAGINATION: rows are rendered off-screen at the true print width, their
+// real heights measured, then greedily packed into successive pages up to the
+// genuine available height. Nothing is a fixed rows-per-page count, so a
+// wrapped two-line product name simply consumes more of the budget. A row
+// that would not fully fit moves whole to the next page (never split). Page 1
+// carries the title + order info; later pages continue with product rows
+// only. The column-header row repeats on every page for readability.
+//
+// WHY A PORTAL: index.css has a global print rule that hides the page
+// (`body * { visibility: hidden }`) and rescues only `.picker-bill-print`,
+// giving it `position: absolute`. This component renders inside the billing
+// modal, which is `position: fixed` — and fixed ancestors are designed to
+// repeat their contents on every printed page, which previously duplicated
+// content and produced blank pages. Portaling the print copy to a direct
+// child of <body> removes that ancestor entirely.
 // ============================================================================
 const PAGE_W_MM = 210
 const PAGE_H_MM = 148
-const PAD_X_MM = 6
-const PAD_Y_MM = 5
-const CONTENT_W_MM = PAGE_W_MM - PAD_X_MM * 2   // 198mm usable width
-const CONTENT_H_MM = PAGE_H_MM - PAD_Y_MM * 2   // 138mm usable height per page
-const SAFETY_MM = 3                              // buffer for print-vs-screen rendering differences
-const PX_PER_MM = 96 / 25.4                       // CSS's fixed reference ratio — constant regardless of monitor DPI
+const PAD_MM = 4
+const CONTENT_W_MM = PAGE_W_MM - PAD_MM * 2   // 202mm usable width
+const CONTENT_H_MM = PAGE_H_MM - PAD_MM * 2   // 140mm usable height per page
+const SAFETY_MM = 3                            // buffer for print-vs-screen rendering differences
+const PX_PER_MM = 96 / 25.4                    // CSS reference ratio, constant regardless of monitor DPI
 
-export default function PickerBill({ brand, shopName, route, salesRepName, orderDate, orderTime, orderRef, items }) {
-  const company = companyFor(brand)
-  const brandLogo = brandLogoFor(brand)
-
+export default function PickerBill({ shopName, route, salesRepName, orderDate, orderTime, orderRef, items }) {
   const prettyDate = (() => {
     if (!orderDate) return '—'
     const d = new Date(orderDate.length <= 10 ? `${orderDate}T00:00:00` : orderDate)
@@ -126,79 +123,65 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
   const totQ = all.reduce((s, i) => s + (Number(i.qty) || 0), 0)
   const totF = all.reduce((s, i) => s + (Number(i.free_qty) || 0), 0)
   const totT = totQ + totF
-  const summaryLine = `${all.length} product line(s) · QTY ${totQ} · F QTY ${totF} · TOTAL QTY ${totT}`
+  const summaryLine = `${all.length} product total  |  QTY ${totQ}  |  F QTY ${totF}  |  TOTAL QTY ${totT}`
 
-  const Header = () => (
+  // Page-1 header: title + order info only. No company letterhead.
+  const SlipHeader = () => (
     <>
-      <div className="border-b-2 border-slate-800 pb-2 mb-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="text-left min-w-0">
-            <h1 className="text-xl font-black tracking-wide text-slate-900 leading-tight">{company.name}</h1>
-            <p className="text-xs text-slate-600">{company.tagline}</p>
-            <p className="text-[11px] text-slate-500">{company.address}</p>
-            <p className="text-[10px] text-slate-400">
-              {company.gstin ? `GSTIN: ${company.gstin}` : ''}{company.fssai ? `  ·  FSSAI: ${company.fssai}` : ''}
-            </p>
-          </div>
-          <img src={brandLogo.src} alt={brandLogo.alt} className="h-12 w-auto object-contain shrink-0" style={{ printColorAdjust: 'exact', WebkitPrintColorAdjust: 'exact' }} />
-        </div>
-      </div>
-      <div className="text-center mb-3">
-        <span className="inline-block px-3 py-1 rounded-full bg-slate-900 text-white text-xs font-black tracking-widest">
+      <div className="text-center mb-2">
+        <span className="inline-block px-4 py-1 rounded-full bg-slate-900 text-white text-xs font-black tracking-widest">
           WAREHOUSE SLIP
         </span>
       </div>
-      <div className="grid grid-cols-2 gap-x-4 gap-y-1 text-xs mb-3 border border-slate-200 rounded-lg p-3">
-        <div><span className="font-semibold text-slate-500">SHOP / BUYER:</span> <span className="font-bold text-slate-800">{shopName}{route ? `, ${route}` : ''}</span></div>
-        <div><span className="font-semibold text-slate-500">ORDER REF:</span> <span className="font-bold text-slate-800">{orderRef || '—'}</span></div>
-        <div><span className="font-semibold text-slate-500">SALES REPRESENTATIVE:</span> <span className="font-bold text-slate-800">{salesRepName || '—'}</span></div>
-        <div><span className="font-semibold text-slate-500">DATE:</span> <span className="font-bold text-slate-800">{prettyDate}</span> {orderTime ? <span className="ml-2"><span className="font-semibold text-slate-500">TIME:</span> <span className="font-bold text-slate-800">{orderTime}</span></span> : null}</div>
+      <div className="flex justify-between items-start gap-4 text-[11px] mb-2">
+        <div className="min-w-0">
+          <div><span className="font-semibold text-slate-500">SHOP / BUYER :</span> <span className="font-bold text-slate-800">{shopName}{route ? `, ${route}` : ''}</span></div>
+          <div><span className="font-semibold text-slate-500">SALES REPRESENTATIVE :</span> <span className="font-bold text-slate-800">{salesRepName || '—'}</span></div>
+        </div>
+        <div className="text-right shrink-0">
+          <div><span className="font-semibold text-slate-500">ORDER REF :</span> <span className="font-bold text-slate-800">{orderRef || '—'}</span></div>
+          <div><span className="font-semibold text-slate-500">DATE :</span> <span className="font-bold text-slate-800">{prettyDate}</span>{orderTime ? <> <span className="font-semibold text-slate-500">TIME :</span> <span className="font-bold text-slate-800">{orderTime}</span></> : null}</div>
+        </div>
       </div>
     </>
   )
 
-  const TableHead = () => (
-    <thead>
-      <tr className="bg-slate-900 text-white">
-        <th className="border border-slate-700 px-2 py-1.5 text-left w-8">SL</th>
-        <th className="border border-slate-700 px-2 py-1.5 text-left">PRODUCT NAME</th>
-        <th className="border border-slate-700 px-2 py-1.5 text-right w-16">MRP</th>
-        <th className="border border-slate-700 px-2 py-1.5 text-center w-14">UNIT</th>
-        <th className="border border-slate-700 px-2 py-1.5 text-center w-12">QTY</th>
-        <th className="border border-slate-700 px-2 py-1.5 text-center w-12">F QTY</th>
-        <th className="border border-slate-700 px-2 py-1.5 text-center w-16 text-sm font-black bg-slate-800">TOTAL QTY</th>
-        <th className="border border-slate-700 px-2 py-1.5 text-center w-14">CHECK</th>
-      </tr>
-    </thead>
+  const HeadRow = () => (
+    <tr className="bg-slate-900 text-white">
+      <th className="border border-slate-700 px-2 py-1 text-left w-8">SL</th>
+      <th className="border border-slate-700 px-2 py-1 text-left">PRODUCT NAME</th>
+      <th className="border border-slate-700 px-2 py-1 text-right w-16">MRP</th>
+      <th className="border border-slate-700 px-2 py-1 text-center w-14">UNIT</th>
+      <th className="border border-slate-700 px-2 py-1 text-center w-12">QTY</th>
+      <th className="border border-slate-700 px-2 py-1 text-center w-12">F QTY</th>
+      <th className="border border-slate-700 px-2 py-1 text-center w-16 bg-slate-800">TOTAL QTY</th>
+      <th className="border border-slate-700 px-2 py-1 text-center w-14">CHECK</th>
+    </tr>
   )
 
   const ProductRow = ({ it, sl, innerRef }) => (
     <tr ref={innerRef} className={sl % 2 ? 'bg-white' : 'bg-slate-50'}>
-      <td className="border border-slate-300 px-2 py-2 text-slate-600">{sl}</td>
-      <td className="border border-slate-300 px-2 py-2 break-words"><CopyableProductName name={it.name} /></td>
-      <td className="border border-slate-300 px-2 py-2 text-right text-slate-700">{it.mrp != null ? `₹${it.mrp}` : '—'}</td>
-      <td className="border border-slate-300 px-2 py-2 text-center text-slate-700">{it.unit || '-'}</td>
-      <td className="border border-slate-300 px-2 py-2 text-center font-bold text-slate-900">{Number(it.qty) || 0}</td>
-      <td className="border border-slate-300 px-2 py-2 text-center font-bold text-emerald-700">{Number(it.free_qty) || 0}</td>
-      <td className="border-2 border-slate-800 px-2 py-2 text-center text-sm font-black text-slate-900 bg-slate-100">{(Number(it.qty) || 0) + (Number(it.free_qty) || 0)}</td>
-      <td className="border border-slate-300 px-2 py-2 text-center"><span className="inline-block h-5 w-5 border-2 border-slate-800 rounded-sm" /></td>
+      <td className="border border-slate-300 px-2 py-1.5 text-slate-600">{sl}</td>
+      <td className="border border-slate-300 px-2 py-1.5 break-words"><CopyableProductName name={it.name} /></td>
+      <td className="border border-slate-300 px-2 py-1.5 text-right text-slate-700">{it.mrp != null ? `₹${it.mrp}` : '—'}</td>
+      <td className="border border-slate-300 px-2 py-1.5 text-center text-slate-700">{it.unit || '-'}</td>
+      <td className="border border-slate-300 px-2 py-1.5 text-center font-bold text-slate-900">{Number(it.qty) || 0}</td>
+      <td className="border border-slate-300 px-2 py-1.5 text-center font-bold text-emerald-700">{Number(it.free_qty) || 0}</td>
+      <td className="border-2 border-slate-800 px-2 py-1.5 text-center font-black text-slate-900 bg-slate-100">{(Number(it.qty) || 0) + (Number(it.free_qty) || 0)}</td>
+      <td className="border border-slate-300 px-2 py-1.5 text-center"><span className="inline-block h-4 w-4 border-2 border-slate-800 rounded-sm" /></td>
     </tr>
   )
 
   const ProductTable = ({ rows, startIndex }) => (
-    <table className="w-full text-xs border-collapse">
-      <TableHead />
+    <table className="w-full text-[11px] border-collapse table-auto">
+      <thead><HeadRow /></thead>
       <tbody>
         {rows.map((it, j) => <ProductRow key={startIndex + j} it={it} sl={startIndex + j + 1} />)}
       </tbody>
     </table>
   )
 
-  // --- Measurement pass ------------------------------------------------
-  // Renders the header, the table's column-header row, and EVERY product row
-  // off-screen at the real 198mm print width, then measures each one's
-  // actual height in millimeters. This drives the pagination below — nothing
-  // here is a fixed row count.
+  // --- Measurement pass: real rendered heights at the true print width -----
   const measureHeaderRef = useRef(null)
   const measureTheadRef = useRef(null)
   const measureSummaryRef = useRef(null)
@@ -212,9 +195,6 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
     const summaryMM = mm(measureSummaryRef.current)
     const rowHeightsMM = all.map((_, i) => mm(measureRowRefs.current[i]))
 
-    // Reserve room for the summary line on every page (not just whichever
-    // turns out to be last) — a small, deliberately conservative safety
-    // margin so no page ever risks overflowing its own 148mm height.
     const availFirst = CONTENT_H_MM - headerMM - theadMM - summaryMM - SAFETY_MM
     const availRest = CONTENT_H_MM - theadMM - summaryMM - SAFETY_MM
 
@@ -233,8 +213,8 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
         used += h
         idx++
       }
-      // Never stall: if even one row alone exceeds the budget, place it by
-      // itself rather than looping forever.
+      // Never stall: a single row taller than the budget gets its own page
+      // rather than looping forever.
       if (rowsForPage.length === 0) { rowsForPage.push(all[idx]); idx++ }
       result.push({ isFirstPage, rows: rowsForPage, startIndex: slCounter })
       slCounter += rowsForPage.length
@@ -244,32 +224,21 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     all.map((i) => `${i.name}|${i.qty}|${i.free_qty}|${i.mrp}|${i.unit}`).join(';'),
-    company.name, orderRef, shopName, route, salesRepName, prettyDate, orderTime
+    orderRef, shopName, route, salesRepName, prettyDate, orderTime
   ])
 
   const MeasurementPass = () => (
     <div aria-hidden="true" style={{ position: 'absolute', top: 0, left: '-9999px', width: `${CONTENT_W_MM}mm` }}>
-      <div ref={measureHeaderRef}><Header /></div>
-      <table className="w-full text-xs border-collapse">
-        <thead ref={measureTheadRef}>
-          <tr className="bg-slate-900 text-white">
-            <th className="border border-slate-700 px-2 py-1.5 text-left w-8">SL</th>
-            <th className="border border-slate-700 px-2 py-1.5 text-left">PRODUCT NAME</th>
-            <th className="border border-slate-700 px-2 py-1.5 text-right w-16">MRP</th>
-            <th className="border border-slate-700 px-2 py-1.5 text-center w-14">UNIT</th>
-            <th className="border border-slate-700 px-2 py-1.5 text-center w-12">QTY</th>
-            <th className="border border-slate-700 px-2 py-1.5 text-center w-12">F QTY</th>
-            <th className="border border-slate-700 px-2 py-1.5 text-center w-16 text-sm font-black bg-slate-800">TOTAL QTY</th>
-            <th className="border border-slate-700 px-2 py-1.5 text-center w-14">CHECK</th>
-          </tr>
-        </thead>
+      <div ref={measureHeaderRef}><SlipHeader /></div>
+      <table className="w-full text-[11px] border-collapse table-auto">
+        <thead ref={measureTheadRef}><HeadRow /></thead>
         <tbody>
           {all.map((it, i) => (
             <ProductRow key={i} it={it} sl={i + 1} innerRef={(el) => { measureRowRefs.current[i] = el }} />
           ))}
         </tbody>
       </table>
-      <div ref={measureSummaryRef} className="mt-2 text-[9px] text-center">{summaryLine}</div>
+      <div ref={measureSummaryRef} className="mt-1 text-[10px] text-center">{summaryLine}</div>
     </div>
   )
 
@@ -280,40 +249,39 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
       style={{
         width: `${PAGE_W_MM}mm`,
         height: `${PAGE_H_MM}mm`,
-        padding: `${PAD_Y_MM}mm ${PAD_X_MM}mm`,
+        padding: `${PAD_MM}mm`,
         boxSizing: 'border-box',
         breakAfter: isLastPage ? 'auto' : 'page',
         pageBreakAfter: isLastPage ? 'auto' : 'always',
-        background: '#fff'
+        background: '#fff',
+        overflow: 'hidden'
       }}
     >
-      {p.isFirstPage && <Header />}
+      {p.isFirstPage && <SlipHeader />}
       <ProductTable rows={p.rows} startIndex={p.startIndex} />
-      {isLastPage && <div className="mt-2 text-[9px] text-slate-400 text-center">{summaryLine}</div>}
+      {isLastPage && <div className="mt-1 text-[10px] text-slate-500 text-center">{summaryLine}</div>}
     </div>
   )
 
   return (
     <div className="bg-white">
-      {/* Print CSS: real A5 LANDSCAPE paper. overflow must stay visible on
-          any table ancestor — overflow:hidden is a known Chromium bug that
-          can make a whole table vanish from print output. */}
       <style>{`
         @media print {
           @page { size: 210mm 148mm; margin: 0; }
           .no-print-inline { display: none !important; }
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          .wh-slip-root { position: static !important; overflow: visible !important; }
+          .wh-slip-root { position: static !important; overflow: visible !important; width: 100% !important; }
+          .print-page { width: 210mm !important; height: 148mm !important; box-shadow: none !important; border-radius: 0 !important; }
           .print-page tr { break-inside: avoid !important; page-break-inside: avoid !important; }
         }
       `}</style>
 
-      {/* Hidden measurement pass — always rendered so refs stay populated. */}
       <MeasurementPass />
 
-      {/* On-screen preview — NO rescue class, so the global print rule hides
-          it during print (avoids a duplicate/ghost render alongside the
-          portal copy below). */}
+      {/* On-screen preview — same structure and same renderPage() as the
+          printed copy, so what you see is what prints. No rescue class here,
+          so the global print rule hides this copy during printing and only
+          the portaled copy below is printed (no ghost double-render). */}
       {pages && (
         <div className="flex flex-col items-center gap-4 py-4 overflow-x-auto">
           {pages.map((p, i) => (
@@ -324,10 +292,7 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
         </div>
       )}
 
-      {/* Print-only copy — portaled to a direct child of <body>, escaping the
-          modal's `position: fixed` ancestor (see comment block above for
-          why that matters for reliable multi-page output). Both the rescue
-          class and the print-CSS-target class live on this SAME element. */}
+      {/* Print-only copy, portaled out of the fixed-position modal. */}
       {pages && createPortal(
         <div className="picker-bill-print wh-slip-root bg-white">
           {pages.map((p, i) => renderPage(p, i, i === pages.length - 1))}
