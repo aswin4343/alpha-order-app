@@ -146,34 +146,55 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
     </>
   )
 
+  // Explicit column widths summing to exactly 100%, mirroring the old
+  // half-page template's model (it declared every column width rather than
+  // letting the table auto-size). With `table-fixed` this guarantees the
+  // table can never grow wider than the page no matter how long a product
+  // name is — long names wrap inside their own column instead of pushing the
+  // table into overflow. PRODUCT NAME takes the dominant share, as it did in
+  // the old layout (33% there across 14 columns; 46% here across 8).
+  const SlipColgroup = () => (
+    <colgroup>
+      <col style={{ width: '4%' }} />
+      <col style={{ width: '46%' }} />
+      <col style={{ width: '8%' }} />
+      <col style={{ width: '9%' }} />
+      <col style={{ width: '7%' }} />
+      <col style={{ width: '7%' }} />
+      <col style={{ width: '10%' }} />
+      <col style={{ width: '9%' }} />
+    </colgroup>
+  )
+
   const HeadRow = () => (
     <tr className="bg-slate-900 text-white">
-      <th className="border border-slate-700 px-2 py-1 text-left w-8">SL</th>
+      <th className="border border-slate-700 px-1 py-1 text-center">SL</th>
       <th className="border border-slate-700 px-2 py-1 text-left">PRODUCT NAME</th>
-      <th className="border border-slate-700 px-2 py-1 text-right w-16">MRP</th>
-      <th className="border border-slate-700 px-2 py-1 text-center w-14">UNIT</th>
-      <th className="border border-slate-700 px-2 py-1 text-center w-12">QTY</th>
-      <th className="border border-slate-700 px-2 py-1 text-center w-12">F QTY</th>
-      <th className="border border-slate-700 px-2 py-1 text-center w-16 bg-slate-800">TOTAL QTY</th>
-      <th className="border border-slate-700 px-2 py-1 text-center w-14">CHECK</th>
+      <th className="border border-slate-700 px-1 py-1 text-right">MRP</th>
+      <th className="border border-slate-700 px-1 py-1 text-center">UNIT</th>
+      <th className="border border-slate-700 px-1 py-1 text-center">QTY</th>
+      <th className="border border-slate-700 px-1 py-1 text-center">F QTY</th>
+      <th className="border border-slate-700 px-1 py-1 text-center bg-slate-800">TOTAL QTY</th>
+      <th className="border border-slate-700 px-1 py-1 text-center">CHECK</th>
     </tr>
   )
 
   const ProductRow = ({ it, sl, innerRef }) => (
     <tr ref={innerRef} className={sl % 2 ? 'bg-white' : 'bg-slate-50'}>
-      <td className="border border-slate-300 px-2 py-1.5 text-slate-600">{sl}</td>
+      <td className="border border-slate-300 px-1 py-1.5 text-center text-slate-600">{sl}</td>
       <td className="border border-slate-300 px-2 py-1.5 break-words"><CopyableProductName name={it.name} /></td>
-      <td className="border border-slate-300 px-2 py-1.5 text-right text-slate-700">{it.mrp != null ? `₹${it.mrp}` : '—'}</td>
-      <td className="border border-slate-300 px-2 py-1.5 text-center text-slate-700">{it.unit || '-'}</td>
-      <td className="border border-slate-300 px-2 py-1.5 text-center font-bold text-slate-900">{Number(it.qty) || 0}</td>
-      <td className="border border-slate-300 px-2 py-1.5 text-center font-bold text-emerald-700">{Number(it.free_qty) || 0}</td>
-      <td className="border-2 border-slate-800 px-2 py-1.5 text-center font-black text-slate-900 bg-slate-100">{(Number(it.qty) || 0) + (Number(it.free_qty) || 0)}</td>
-      <td className="border border-slate-300 px-2 py-1.5 text-center"><span className="inline-block h-4 w-4 border-2 border-slate-800 rounded-sm" /></td>
+      <td className="border border-slate-300 px-1 py-1.5 text-right text-slate-700">{it.mrp != null ? `₹${it.mrp}` : '—'}</td>
+      <td className="border border-slate-300 px-1 py-1.5 text-center text-slate-700">{it.unit || '-'}</td>
+      <td className="border border-slate-300 px-1 py-1.5 text-center font-bold text-slate-900">{Number(it.qty) || 0}</td>
+      <td className="border border-slate-300 px-1 py-1.5 text-center font-bold text-emerald-700">{Number(it.free_qty) || 0}</td>
+      <td className="border-2 border-slate-800 px-1 py-1.5 text-center font-black text-slate-900 bg-slate-100">{(Number(it.qty) || 0) + (Number(it.free_qty) || 0)}</td>
+      <td className="border border-slate-300 px-1 py-1.5 text-center"><span className="inline-block h-4 w-4 border-2 border-slate-800 rounded-sm" /></td>
     </tr>
   )
 
   const ProductTable = ({ rows, startIndex }) => (
-    <table className="w-full text-[11px] border-collapse table-auto">
+    <table className="w-full text-[11px] border-collapse table-fixed">
+      <SlipColgroup />
       <thead><HeadRow /></thead>
       <tbody>
         {rows.map((it, j) => <ProductRow key={startIndex + j} it={it} sl={startIndex + j + 1} />)}
@@ -230,7 +251,8 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
   const MeasurementPass = () => (
     <div aria-hidden="true" style={{ position: 'absolute', top: 0, left: '-9999px', width: `${CONTENT_W_MM}mm` }}>
       <div ref={measureHeaderRef}><SlipHeader /></div>
-      <table className="w-full text-[11px] border-collapse table-auto">
+      <table className="w-full text-[11px] border-collapse table-fixed">
+        <SlipColgroup />
         <thead ref={measureTheadRef}><HeadRow /></thead>
         <tbody>
           {all.map((it, i) => (
@@ -267,7 +289,14 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
     <div className="bg-white">
       <style>{`
         @media print {
-          @page { size: 210mm 148mm; margin: 0; }
+          /* Canonical named size + orientation keyword. Chrome maps A5 to
+             148x210mm and the landscape keyword swaps it to 210x148mm.
+             This form is honoured more reliably than raw dimensions
+             (size: 210mm 148mm), which some drivers accept as a page box
+             while still defaulting the dialog to portrait — the cause of the
+             slip being laid out 210mm wide on a 148mm-wide portrait sheet
+             and clipped down the left. */
+          @page { size: A5 landscape; margin: 0; }
           .no-print-inline { display: none !important; }
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 
