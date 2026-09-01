@@ -122,7 +122,7 @@ export default function PickerBill({ brand, shopName, route, salesRepName, order
           @page { size: A5 portrait; margin: 6mm; }
           .no-print-inline { display: none !important; }
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          .wh-slip-print { box-shadow: none !important; overflow: visible !important; border-radius: 0 !important; max-width: none !important; }
+          .wh-slip-print { box-shadow: none !important; overflow: visible !important; border-radius: 0 !important; width: 100% !important; max-width: none !important; margin: 0 !important; padding: 2mm !important; }
           .wh-slip-print tr { break-inside: avoid !important; page-break-inside: avoid !important; }
           .wh-slip-print thead { display: table-header-group; }
         }
