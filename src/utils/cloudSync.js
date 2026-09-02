@@ -1064,7 +1064,7 @@ export async function renameSalesperson(id, newName) {
 // ---------------------------------------------------------------------------
 
 /** Admin: send an announcement to all reps or a selected list. */
-export async function sendAnnouncement({ title, body, highPriority, audience, repIds, expiresInDays, notifType }) {
+export async function sendAnnouncement({ title, body, highPriority, audience, repIds, expiresInDays, notifType, includeBilling }) {
   const uid = await currentUserId()
   // Optional auto-expiry: expires_at = now + N days. Omitted → never expires
   // (preserves the original behaviour for manual announcements).
@@ -1090,10 +1090,18 @@ export async function sendAnnouncement({ title, body, highPriority, audience, re
   // Determine recipient list.
   let targets = repIds
   if (audience === 'all') {
+    // `includeBilling` widens an "all" announcement to the billing team as
+    // well as sales reps — used by admin product/price updates, which billing
+    // needs to see too. Recipients are stored in the same
+    // announcement_recipients table keyed by user id, so billing members get
+    // the existing bell badge, list and read/unread state with no separate
+    // notification system. Manual announcements leave this off and keep their
+    // original sales-rep-only behaviour.
+    const roles = includeBilling ? ['salesperson', 'billing_team'] : ['salesperson']
     const { data: reps, error: repErr } = await supabase
       .from('profiles')
       .select('id')
-      .eq('role', 'salesperson')
+      .in('role', roles)
     if (repErr) throw repErr
     targets = (reps || []).map((r) => r.id)
   }
@@ -1134,7 +1142,7 @@ export async function loadMyAnnouncements() {
   const uid = await currentUserId()
   const { data, error } = await supabase
     .from('announcement_recipients')
-    .select('id, read_at, announcements(id, title, body, high_priority, created_at, expires_at)')
+    .select('id, read_at, announcements(id, title, body, high_priority, created_at, expires_at, notif_type)')
     .eq('rep_id', uid)
     .order('read_at', { ascending: true, nullsFirst: true })
   if (error) throw error
@@ -1150,6 +1158,7 @@ export async function loadMyAnnouncements() {
       title: r.announcements.title,
       body: r.announcements.body,
       highPriority: r.announcements.high_priority,
+      notifType: r.announcements.notif_type || null,
       createdAt: r.announcements.created_at
     }))
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
@@ -3457,4 +3466,46 @@ export async function dismissPendingStockOut(itemId, repName) {
     .is('pending_dismissed_at', null)
     .is('rescheduled_order_id', null)
   if (error) throw error
+}
+
+/**
+ * Tell the billing team that a rep added products to an order that was
+ * already placed, so an add-on is never missed.
+ *
+ * Reuses the existing announcement infrastructure rather than adding a
+ * parallel one: recipients, read/unread state, the bell badge and the
+ * on-entry popup all already work off announcement_recipients. Targeted
+ * explicitly at billing_team user ids (audience 'billing'), tagged
+ * notif_type 'addon' so the popup shows a "View Bill" action, and
+ * auto-expiring so old add-on alerts don't pile up.
+ *
+ * Non-fatal by design — the caller must not fail an order save just because
+ * the notification could not be sent.
+ */
+export async function notifyBillingOfAddon({ shopName, route, productNames }) {
+  const { data: billing, error: bErr } = await supabase
+    .from('profiles')
+    .select('id')
+    .eq('role', 'billing_team')
+  if (bErr) throw bErr
+  const targets = (billing || []).map((b) => b.id)
+  if (!targets.length) return null
+
+  const names = (productNames || []).filter(Boolean)
+  const body = [
+    'A product has been added to an existing order.',
+    '',
+    `Shop / Buyer: ${shopName || '—'}${route ? `, ${route}` : ''}`,
+    names.length ? `Added: ${names.join(', ')}` : ''
+  ].filter(Boolean).join('\n')
+
+  return sendAnnouncement({
+    title: 'New Product Added',
+    body,
+    highPriority: true,
+    audience: 'billing',
+    repIds: targets,
+    expiresInDays: 3,
+    notifType: 'addon'
+  })
 }

@@ -305,6 +305,17 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, 
               />
             )}
           </>
+        ) : unit === 'Box' ? (
+          // BOX selected: this line bills at the master Wholesale Price
+          // regardless of customer category, so the normal price selector is
+          // replaced by a read-only WP tag. Choosing Piece again brings the
+          // selector — and the customer's normal pricing — straight back.
+          <span className="inline-flex items-baseline gap-0.5 text-[10px] leading-none font-semibold px-1.5 py-1 rounded-md border bg-brand-50 border-brand-200 text-brand-700">
+            <span className="opacity-70">BOX · WP</span>
+            {product.wholesale != null && product.wholesale !== ''
+              ? <span>₹{product.wholesale}</span>
+              : <span className="text-amber-600">—</span>}
+          </span>
         ) : (
           <PriceSelector product={product} override={override} onOverride={onOverride} lastPrice={lastPrice} defaultPriceType={defaultPriceType} />
         )}

@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
-import { saveCloudOrder, currentUserId, countUnreadAnnouncements, listAllRoutes, ensureCloudCustomer, updateCustomerDefaultRoute, loadCustomerLastPrices, loadPendingStockOuts } from '../utils/cloudSync.js'
+import { saveCloudOrder, currentUserId, countUnreadAnnouncements, listAllRoutes, ensureCloudCustomer, updateCustomerDefaultRoute, loadCustomerLastPrices, loadPendingStockOuts, notifyBillingOfAddon } from '../utils/cloudSync.js'
 import PreviousOrdersModal from '../components/PreviousOrdersModal.jsx'
 import PendingOrdersModal from '../components/PendingOrdersModal.jsx'
 import OrderSummaryModal from '../components/OrderSummaryModal.jsx'
@@ -433,6 +433,13 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
               : defaultPriceTypeFor(p, defaultPriceType)),
             finalSellingPrice:
               priceOverrides[id]?.finalRate != null ? priceOverrides[id].finalRate :
+              // BOX unit selected: that line bills at the master Wholesale
+              // Price regardless of customer category. Scoped to THIS line via
+              // its own enteredUnit — other products in the same order, and the
+              // customer's default price type, are untouched. Switching back to
+              // Piece simply stops matching here and the normal chain below
+              // resumes.
+              (enteredUnit === 'Box' && p.wholesale != null) ? p.wholesale :
               // Scheme OFF on a scheme product: the Net Rate no longer applies,
               // so the line bills at the master Wholesale Price — matching
               // exactly what the product card displays in that state.
@@ -745,6 +752,23 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
             ? { phone: customer.phone, gstn: customer.gstn, creditDays: customer.creditDays, email: customer.email }
             : null
         })
+
+        // Add-on alert: if this dispatch contained products added to an order
+        // the rep had already placed, tell billing immediately so it isn't
+        // missed. Deliberately fire-and-forget and wrapped separately — a
+        // failed notification must never fail an order that saved fine.
+        try {
+          const addonNames = items.filter((i) => i.isAddon).map((i) => i.name)
+          if (addonNames.length) {
+            await notifyBillingOfAddon({
+              shopName: customer?.name,
+              route: routeOverride,
+              productNames: addonNames
+            })
+          }
+        } catch (nErr) {
+          console.error('addon notification failed (order saved fine)', nErr)
+        }
       } catch (e) {
         console.error('cloud order save failed', e)
         // Abort the whole dispatch: do not copy, do not open WhatsApp, do not

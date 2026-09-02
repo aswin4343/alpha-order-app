@@ -175,9 +175,12 @@ export default function ProductAdminPage({ onBack }) {
               highPriority: false,
               audience: 'all',
               expiresInDays: 3,
-              notifType: 'product_update'
+              notifType: 'product_update',
+              // Billing needs to see price/product changes too — same
+              // announcement, same read state, no separate system.
+              includeBilling: true
             })
-            annNote = ` ${diff.totalChanges} change(s) announced to all sales reps (expires in 3 days).`
+            annNote = ` ${diff.totalChanges} change(s) announced to all sales reps and the billing team (expires in 3 days).`
           } catch (annErr) {
             console.error('Announcement failed:', annErr)
             annNote = ' (Products updated, but the change announcement could not be sent — you can send one manually.)'
@@ -364,7 +367,7 @@ export default function ProductAdminPage({ onBack }) {
                       ))}
                     </ul>
                     <p className="text-[11px] text-slate-400 mt-2">
-                      An announcement will be sent to all sales reps and auto-expire in 3 days.
+                      An announcement will be sent to all sales reps and the billing team, and auto-expire in 3 days.
                     </p>
                   </>
                 ) : (

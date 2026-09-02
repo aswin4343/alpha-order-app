@@ -4,6 +4,7 @@ import { useApp } from './context/AppContext.jsx'
 import LoginScreen from './pages/LoginScreen.jsx'
 import OrderPage from './pages/OrderPage.jsx'
 import OrderChangeNotifier from './components/OrderChangeNotifier.jsx'
+import AnnouncementPopup from './components/AnnouncementPopup.jsx'
 import SettingsPage from './pages/SettingsPage.jsx'
 import ReturnsPage from './pages/ReturnsPage.jsx'
 import PerformancePage from './pages/PerformancePage.jsx'
@@ -47,7 +48,14 @@ export default function App() {
   // here, so the existing Sales experience is unchanged (backward compatible).
   if (profile.role === 'delivery_admin') return <DeliveryAdminDashboard />
   if (profile.role === 'delivery_rep') return <DeliveryRepDashboard />
-  if (profile.role === 'billing_team') return <BillingDashboard />
+  // Billing sees the same on-entry announcement popup as reps (admin
+  // price/product updates now target both roles).
+  if (profile.role === 'billing_team') return (
+    <>
+      <AnnouncementPopup />
+      <BillingDashboard />
+    </>
+  )
   if (profile.role === 'qc_team') return <QcDashboard />
   if (profile.role === 'purchase_manager') return <PurchaseManagerDashboard />
 
@@ -62,6 +70,7 @@ export default function App() {
   return (
     <>
       {isRep && <OrderChangeNotifier />}
+      {isRep && <AnnouncementPopup />}
       <OrderPage
         onOpenSettings={() => setRoute('settings')}
         onOpenReturns={() => setRoute('returns')}

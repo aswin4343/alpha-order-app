@@ -53,12 +53,12 @@ function mapBillItems(rawItems, products) {
   })
 }
 
+// Billing removal reasons — deliberately only these three. The stored values
+// are unchanged strings, so existing records (including any saved under the
+// removed options) and the Stock Out logic that drives Pending Orders and the
+// Partial Verification report continue to work untouched.
 const CHANGE_REASONS = [
   'Stock Out',
-  'Product Discontinued',
-  'Wrong Product Selected',
-  'Alternate Brand',
-  'Customer Requested Change',
   'Damaged Stock',
   'Others'
 ]
