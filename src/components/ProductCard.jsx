@@ -1,7 +1,7 @@
 import { memo, useState } from 'react'
 import QtyStepper from './QtyStepper.jsx'
 import { schemeBadge, calculateScheme, netRate } from '../utils/schemes.js'
-import { availableUnits, unitOptionLabel } from '../utils/packaging.js'
+import { availableUnits, unitOptionLabel, toPieces } from '../utils/packaging.js'
 import { inventoryStatus, STATUS_DOT } from '../utils/inventoryStatus.js'
 
 const UNITS = ['Piece', 'Box']
@@ -223,12 +223,28 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, 
   // for this order/line. This never touches the product's own configured
   // scheme; it's purely a per-order-line exception held in `override`.
   const schemeOff = override?.schemeEnabled === false
-  const result = selected && !schemeOff ? calculateScheme(qty, product.slabs) : null
 
-  // Effective prices: use a one-time override if the rep set one for this order.
+  // BOX selected: this line bills at the master Wholesale Price regardless of
+  // customer category (see the rate tags below and the matching rule in
+  // OrderPage's finalSellingPrice).
+  const boxSelected = unit === 'Box'
+
+  // Scheme must be calculated on the PIECES actually ordered, not on the raw
+  // entered number. Entering 1 Box of a 24-piece product with a 6+1 scheme is
+  // 24 pieces -> 4 free, but calculating on the entered "1" would find no
+  // scheme at all. The order itself already converts to pieces before saving,
+  // so computing on the entered value here made the card disagree with what
+  // was actually billed.
+  const pieces = selected ? toPieces(product, qty, unit) : 0
+  const result = selected && !schemeOff ? calculateScheme(pieces, product.slabs) : null
+
+  // The rate the scheme works on top of: WP when Box is selected, otherwise
+  // the product's base rate. This keeps the displayed Net Rate consistent with
+  // the price the line will actually bill at.
+  const rateBasis = boxSelected ? product.wholesale : product.base
   const currentNet =
-    result?.slab && product.base
-      ? netRate(product.base, result.slab.buy, result.slab.free)
+    result?.slab && rateBasis != null && rateBasis !== ''
+      ? netRate(rateBasis, result.slab.buy, result.slab.free)
       : null
 
   return (
@@ -272,12 +288,27 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, 
 
         {hasScheme ? (
           <>
-            <EditableTag
-              label="BR"
-              value={override?.base != null ? override.base : product.base}
-              overridden={override?.base != null}
-              onChange={(v) => onOverride(product.id, { base: v })}
-            />
+            {boxSelected ? (
+              // BOX on a scheme product: the line bills at the master
+              // Wholesale Price, so show that as the rate basis rather than
+              // the editable base rate. The NR tag below is computed from this
+              // same WP, and the scheme's free quantity is calculated on the
+              // converted pieces — so what the card shows and what the order
+              // bills now agree.
+              <span className="inline-flex items-baseline gap-0.5 text-[10px] leading-none font-semibold px-1.5 py-1 rounded-md border bg-brand-50 border-brand-200 text-brand-700">
+                <span className="opacity-70">BOX · WP</span>
+                {product.wholesale != null && product.wholesale !== ''
+                  ? <span>₹{product.wholesale}</span>
+                  : <span className="text-amber-600">—</span>}
+              </span>
+            ) : (
+              <EditableTag
+                label="BR"
+                value={override?.base != null ? override.base : product.base}
+                overridden={override?.base != null}
+                onChange={(v) => onOverride(product.id, { base: v })}
+              />
+            )}
             {schemeOff ? (
               // Scheme OFF: the Net Rate no longer applies (there are no free
               // units to average in), so show the product's Wholesale Price
