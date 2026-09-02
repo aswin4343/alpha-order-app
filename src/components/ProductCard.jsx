@@ -281,9 +281,20 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, 
             {schemeOff ? (
               // Scheme OFF: the Net Rate no longer applies (there are no free
               // units to average in), so show the product's Wholesale Price
-              // from the master file instead. Read-only — it is a master value,
-              // not a per-order override.
-              <Tag label="WP" value={product.wholesale} />
+              // from the master file instead. Read-only — it is a master
+              // value, not a per-order override.
+              //
+              // Rendered with an explicit dash when the master file has no
+              // wholesale value for this product, rather than using <Tag>
+              // (which hides itself when empty). Silently showing nothing made
+              // it look like the feature was broken when the real cause was a
+              // blank Wholesale column in the master file.
+              <span className="inline-flex items-baseline gap-0.5 text-[10px] leading-none font-semibold px-1.5 py-1 rounded-md border bg-slate-50 border-slate-200 text-slate-600">
+                <span className="opacity-70">WP</span>
+                {product.wholesale != null && product.wholesale !== ''
+                  ? <span>₹{product.wholesale}</span>
+                  : <span className="text-amber-600">—</span>}
+              </span>
             ) : (
               <EditableTag
                 label="NR"
