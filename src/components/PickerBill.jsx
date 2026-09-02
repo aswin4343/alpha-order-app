@@ -117,6 +117,16 @@ const PAGE_H_MM = ORIENTATION === 'landscape' ? 148 : 210
 // left and right of the sheet.
 const PAD_MM = 2
 
+// When true, the print CSS asks the printer for a specific media size.
+// Kept FALSE by default: requesting a size the printer does not have loaded
+// or configured makes it accept the job and then wait for that media — the
+// dialog closes and nothing ever prints. Full Bill declares no @page size at
+// all and prints reliably on the same hardware, so the slip now does the
+// same and simply uses whatever paper is loaded. The page box below is still
+// sized in mm, so the layout itself is unchanged; only the media REQUEST is
+// dropped. Set to true only if the printer is confirmed to have A5 media.
+const DECLARE_PAGE_SIZE = false
+
 // Hard cap on rows per printed page. Pagination is done on the DATA (chunk the
 // product array), never by measuring rendered heights and never by letting CSS
 // decide where to break. The previous measurement-based approach is what made
@@ -261,7 +271,7 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
     <div className="bg-white">
       <style>{`
         @media print {
-          @page { size: A5 ${ORIENTATION}; margin: 0; }
+          @page { ${DECLARE_PAGE_SIZE ? `size: A5 ${ORIENTATION};` : ''} margin: 0; }
           html, body { margin: 0 !important; padding: 0 !important; }
           .no-print-inline { display: none !important; }
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
