@@ -767,7 +767,16 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
             })
           }
         } catch (nErr) {
-          console.error('addon notification failed (order saved fine)', nErr)
+          // Deliberately non-fatal — the order saved fine and must not be
+          // rolled back over a notification. Logged loudly because a silent
+          // failure here previously hid a real bug: the `notif_type` column
+          // was missing from the announcements table, so every add-on alert
+          // was rejected by the database and vanished without a trace.
+          console.error(
+            'Add-on notification to billing FAILED (the order itself saved fine). ' +
+            'If this mentions notif_type or audience, run sql/57_announcement_notif_type.sql.',
+            nErr
+          )
         }
       } catch (e) {
         console.error('cloud order save failed', e)

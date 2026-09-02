@@ -25,15 +25,30 @@ export default function AnnouncementPopup() {
 
   useEffect(() => {
     let cancelled = false
-    loadMyAnnouncements()
-      .then((list) => {
-        if (cancelled) return
-        // Newest unread first; loadMyAnnouncements already sorts by date.
-        const unread = (list || []).find((a) => !a.readAt)
-        if (unread) setItem(unread)
-      })
-      .catch(() => {})
-    return () => { cancelled = true }
+    // Checks on mount, then every 30s, and whenever the tab regains focus.
+    // Mount-only was not enough: a billing user sitting on an already-open
+    // dashboard would never see an add-on alert until they happened to
+    // reload. Polling mirrors how OrderChangeNotifier already works for reps.
+    const check = () => {
+      loadMyAnnouncements()
+        .then((list) => {
+          if (cancelled) return
+          const unread = (list || []).find((a) => !a.readAt)
+          // Only raise a popup when one isn't already showing, so an alert
+          // arriving mid-read can't replace what the user is looking at.
+          if (unread) setItem((cur) => cur || unread)
+        })
+        .catch(() => {})
+    }
+    check()
+    const id = setInterval(check, 30000)
+    const onFocus = () => check()
+    window.addEventListener('focus', onFocus)
+    return () => {
+      cancelled = true
+      clearInterval(id)
+      window.removeEventListener('focus', onFocus)
+    }
   }, [])
 
   if (!item) return null
