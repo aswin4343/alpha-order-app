@@ -433,6 +433,10 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
               : defaultPriceTypeFor(p, defaultPriceType)),
             finalSellingPrice:
               priceOverrides[id]?.finalRate != null ? priceOverrides[id].finalRate :
+              // Scheme OFF on a scheme product: the Net Rate no longer applies,
+              // so the line bills at the master Wholesale Price — matching
+              // exactly what the product card displays in that state.
+              (priceOverrides[id]?.schemeEnabled === false && p.wholesale != null) ? p.wholesale :
               priceOverrides[id]?.net != null ? priceOverrides[id].net :
               priceOverrides[id]?.base != null ? priceOverrides[id].base :
               priceOverrides[id]?.wholesale != null ? priceOverrides[id].wholesale :

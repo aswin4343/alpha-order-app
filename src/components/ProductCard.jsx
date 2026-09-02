@@ -278,13 +278,21 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, 
               overridden={override?.base != null}
               onChange={(v) => onOverride(product.id, { base: v })}
             />
-            <EditableTag
-              label="NR"
-              value={override?.net != null ? override.net : currentNet}
-              overridden={override?.net != null}
-              accent
-              onChange={(v) => onOverride(product.id, { net: v })}
-            />
+            {schemeOff ? (
+              // Scheme OFF: the Net Rate no longer applies (there are no free
+              // units to average in), so show the product's Wholesale Price
+              // from the master file instead. Read-only — it is a master value,
+              // not a per-order override.
+              <Tag label="WP" value={product.wholesale} />
+            ) : (
+              <EditableTag
+                label="NR"
+                value={override?.net != null ? override.net : currentNet}
+                overridden={override?.net != null}
+                accent
+                onChange={(v) => onOverride(product.id, { net: v })}
+              />
+            )}
           </>
         ) : (
           <PriceSelector product={product} override={override} onOverride={onOverride} lastPrice={lastPrice} defaultPriceType={defaultPriceType} />

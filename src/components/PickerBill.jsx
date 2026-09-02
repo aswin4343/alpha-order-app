@@ -1,4 +1,4 @@
-import { useState, useRef, useLayoutEffect } from 'react'
+import { useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ALPHA_LOGO, ZEDGO_LOGO } from '../assets/logos.js'
 
@@ -112,11 +112,19 @@ const ORIENTATION = 'portrait'
 
 const PAGE_W_MM = ORIENTATION === 'landscape' ? 210 : 148
 const PAGE_H_MM = ORIENTATION === 'landscape' ? 148 : 210
-const PAD_MM = 4
-const CONTENT_W_MM = PAGE_W_MM - PAD_MM * 2
-const CONTENT_H_MM = PAGE_H_MM - PAD_MM * 2
-const SAFETY_MM = 3                            // buffer for print-vs-screen rendering differences
-const PX_PER_MM = 96 / 25.4                    // CSS reference ratio, constant regardless of monitor DPI
+// Minimal printer-safe inset. @page margin is 0, so this small padding is the
+// ONLY horizontal inset — this is what removes the wasted white bands down the
+// left and right of the sheet.
+const PAD_MM = 2
+
+// Hard cap on rows per printed page. Pagination is done on the DATA (chunk the
+// product array), never by measuring rendered heights and never by letting CSS
+// decide where to break. The previous measurement-based approach is what made
+// products vanish: it could assign more rows to a page than physically fitted,
+// and the page box had a fixed height with overflow:hidden, so the surplus rows
+// were silently clipped and never printed (SL 14-19 disappeared exactly this
+// way). Chunking the array guarantees every row is rendered exactly once.
+const ROWS_PER_PAGE = 10
 
 export default function PickerBill({ shopName, route, salesRepName, orderDate, orderTime, orderRef, items }) {
   const prettyDate = (() => {
@@ -138,11 +146,11 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
   const SlipHeader = () => (
     <>
       <div className="text-center mb-2">
-        <span className="inline-block px-4 py-1 rounded-full bg-slate-900 text-white text-xs font-black tracking-widest">
+        <span className="inline-block px-4 py-1 rounded-full bg-slate-900 text-white text-sm font-black tracking-widest">
           WAREHOUSE SLIP
         </span>
       </div>
-      <div className="flex justify-between items-start gap-4 text-[11px] mb-2">
+      <div className="flex justify-between items-start gap-4 text-[13px] mb-2">
         <div className="min-w-0">
           <div><span className="font-semibold text-slate-500">SHOP / BUYER :</span> <span className="font-bold text-slate-800">{shopName}{route ? `, ${route}` : ''}</span></div>
           <div><span className="font-semibold text-slate-500">SALES REPRESENTATIVE :</span> <span className="font-bold text-slate-800">{salesRepName || '—'}</span></div>
@@ -203,7 +211,7 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
   )
 
   const ProductTable = ({ rows, startIndex }) => (
-    <table className="w-full text-[11px] border-collapse table-fixed">
+    <table className="w-full text-[13px] border-collapse table-fixed">
       <SlipColgroup />
       <thead><HeadRow /></thead>
       <tbody>
@@ -212,67 +220,15 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
     </table>
   )
 
-  // --- Measurement pass: real rendered heights at the true print width -----
-  const measureHeaderRef = useRef(null)
-  const measureTheadRef = useRef(null)
-  const measureSummaryRef = useRef(null)
-  const measureRowRefs = useRef([])
-  const [pages, setPages] = useState(null)
-
-  useLayoutEffect(() => {
-    const mm = (el) => (el ? el.getBoundingClientRect().height / PX_PER_MM : 0)
-    const headerMM = mm(measureHeaderRef.current)
-    const theadMM = mm(measureTheadRef.current)
-    const summaryMM = mm(measureSummaryRef.current)
-    const rowHeightsMM = all.map((_, i) => mm(measureRowRefs.current[i]))
-
-    const availFirst = CONTENT_H_MM - headerMM - theadMM - summaryMM - SAFETY_MM
-    const availRest = CONTENT_H_MM - theadMM - summaryMM - SAFETY_MM
-
-    const result = []
-    let idx = 0
-    let slCounter = 0
-    while (idx < all.length) {
-      const isFirstPage = result.length === 0
-      const budget = isFirstPage ? availFirst : availRest
-      const rowsForPage = []
-      let used = 0
-      while (idx < all.length) {
-        const h = rowHeightsMM[idx] || 0
-        if (used + h > budget && rowsForPage.length > 0) break
-        rowsForPage.push(all[idx])
-        used += h
-        idx++
-      }
-      // Never stall: a single row taller than the budget gets its own page
-      // rather than looping forever.
-      if (rowsForPage.length === 0) { rowsForPage.push(all[idx]); idx++ }
-      result.push({ isFirstPage, rows: rowsForPage, startIndex: slCounter })
-      slCounter += rowsForPage.length
-    }
-    if (result.length === 0) result.push({ isFirstPage: true, rows: [], startIndex: 0 })
-    setPages(result)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [
-    all.map((i) => `${i.name}|${i.qty}|${i.free_qty}|${i.mrp}|${i.unit}`).join(';'),
-    orderRef, shopName, route, salesRepName, prettyDate, orderTime
-  ])
-
-  const MeasurementPass = () => (
-    <div aria-hidden="true" style={{ position: 'absolute', top: 0, left: '-9999px', width: `${CONTENT_W_MM}mm` }}>
-      <div ref={measureHeaderRef}><SlipHeader /></div>
-      <table className="w-full text-[11px] border-collapse table-fixed">
-        <SlipColgroup />
-        <thead ref={measureTheadRef}><HeadRow /></thead>
-        <tbody>
-          {all.map((it, i) => (
-            <ProductRow key={i} it={it} sl={i + 1} innerRef={(el) => { measureRowRefs.current[i] = el }} />
-          ))}
-        </tbody>
-      </table>
-      <div ref={measureSummaryRef} className="mt-1 text-[10px] text-center">{summaryLine}</div>
-    </div>
-  )
+  // Chunk the product array into fixed pages of ROWS_PER_PAGE. Pure data
+  // operation, computed during render — no effects, no measuring, no state.
+  // Page count is exactly Math.ceil(total / ROWS_PER_PAGE).
+  const pages = []
+  for (let i = 0; i < all.length; i += ROWS_PER_PAGE) {
+    pages.push({ rows: all.slice(i, i + ROWS_PER_PAGE), startIndex: i, isFirstPage: i === 0 })
+  }
+  // A slip with no products still shows one page (header + empty table).
+  if (pages.length === 0) pages.push({ rows: [], startIndex: 0, isFirstPage: true })
 
   const renderPage = (p, i, isLastPage) => (
     <div
@@ -280,18 +236,24 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
       className="print-page"
       style={{
         width: `${PAGE_W_MM}mm`,
-        height: `${PAGE_H_MM}mm`,
+        // Deliberately NO fixed height and NO overflow:hidden. A fixed page
+        // height forces the box to fill the sheet even when it holds only a
+        // few rows, which is how stray blank sheets were being produced, and
+        // overflow:hidden is what silently clipped surplus rows. Height is now
+        // driven by content; the explicit page break below is what separates
+        // one printed sheet from the next.
         padding: `${PAD_MM}mm`,
         boxSizing: 'border-box',
         breakAfter: isLastPage ? 'auto' : 'page',
         pageBreakAfter: isLastPage ? 'auto' : 'always',
-        background: '#fff',
-        overflow: 'hidden'
+        breakInside: 'avoid',
+        pageBreakInside: 'avoid',
+        background: '#fff'
       }}
     >
       {p.isFirstPage && <SlipHeader />}
       <ProductTable rows={p.rows} startIndex={p.startIndex} />
-      {isLastPage && <div className="mt-1 text-[10px] text-slate-500 text-center">{summaryLine}</div>}
+      {isLastPage && <div className="mt-1 text-[11px] text-slate-500 text-center">{summaryLine}</div>}
     </div>
   )
 
@@ -299,56 +261,42 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
     <div className="bg-white">
       <style>{`
         @media print {
-          /* Canonical named size + orientation keyword — Chrome maps this
-             reliably and makes the print dialog default to the right
-             orientation. Both this and the page box below come from the
-             single ORIENTATION constant, so they can never disagree. */
           @page { size: A5 ${ORIENTATION}; margin: 0; }
+          html, body { margin: 0 !important; padding: 0 !important; }
           .no-print-inline { display: none !important; }
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
 
           /* The on-screen copy must be removed from the print FLOW, not just
              hidden. index.css uses visibility:hidden, which still reserves
-             full layout space — that reserved space was pushing the printed
-             slip down the page and leaving a large empty band above it. */
+             full layout space and pushes the printed slip down the page. */
           .wh-screen-copy { display: none !important; }
 
-          /* Deliberately NOT overriding position here. index.css pins
-             .picker-bill-print with position:absolute; top:0; left:0, which
-             lifts it out of the flow of the hidden (but still space-taking)
-             app UI and anchors it to the page's top-left corner. A previous
-             version forced position:static, which cancelled that pin and let
-             the slip fall back into the flow behind all that hidden content —
-             the cause of the empty band above and below. Width is pinned to
-             the real page width so the box is never measured against body. */
+          /* Not overriding position here: index.css pins .picker-bill-print
+             with position:absolute; top:0; left:0, which lifts it clear of the
+             hidden (but still space-taking) app UI and anchors it to the top
+             left of the sheet. Width is pinned to the real page width so the
+             box is never measured against the body. */
           .wh-slip-root { width: ${PAGE_W_MM}mm !important; max-width: ${PAGE_W_MM}mm !important; overflow: visible !important; }
-          .print-page { width: ${PAGE_W_MM}mm !important; height: ${PAGE_H_MM}mm !important; box-shadow: none !important; border-radius: 0 !important; }
+          .print-page { width: ${PAGE_W_MM}mm !important; box-shadow: none !important; border-radius: 0 !important; }
           .print-page tr { break-inside: avoid !important; page-break-inside: avoid !important; }
-          /* Product names must stay on ONE line in the real print output too,
-             not only in the on-screen preview — enforced explicitly here so
-             no inherited or competing rule can reintroduce wrapping. */
+          /* Product names stay on ONE line in the real print output too. */
           .print-page .wh-name, .print-page .wh-name * { white-space: nowrap !important; }
         }
       `}</style>
 
-      <MeasurementPass />
-
-      {/* On-screen preview — same structure and same renderPage() as the
-          printed copy, so what you see is what prints. No rescue class here,
-          so the global print rule hides this copy during printing and only
-          the portaled copy below is printed (no ghost double-render). */}
-      {pages && (
-        <div className="wh-screen-copy flex flex-col items-center gap-4 py-4 overflow-x-auto">
-          {pages.map((p, i) => (
-            <div key={i} className="shadow-2xl rounded-lg overflow-hidden bg-white shrink-0" style={{ width: `${PAGE_W_MM}mm` }}>
-              {renderPage(p, i, i === pages.length - 1)}
-            </div>
-          ))}
-        </div>
-      )}
+      {/* On-screen preview — same renderPage() as the printed copy, so what
+          you see is what prints. No rescue class here, so the global print
+          rule hides this copy and only the portaled copy below is printed. */}
+      <div className="wh-screen-copy flex flex-col items-center gap-4 py-4 overflow-x-auto">
+        {pages.map((p, i) => (
+          <div key={i} className="shadow-2xl rounded-lg overflow-hidden bg-white shrink-0">
+            {renderPage(p, i, i === pages.length - 1)}
+          </div>
+        ))}
+      </div>
 
       {/* Print-only copy, portaled out of the fixed-position modal. */}
-      {pages && createPortal(
+      {createPortal(
         <div className="picker-bill-print wh-slip-root bg-white">
           {pages.map((p, i) => renderPage(p, i, i === pages.length - 1))}
         </div>,
