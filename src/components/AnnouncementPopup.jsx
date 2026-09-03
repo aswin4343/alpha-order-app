@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import { loadMyAnnouncements, markAnnouncementRead } from '../utils/cloudSync.js'
+import { loadMyAnnouncements, markAnnouncementRead, currentUserId } from '../utils/cloudSync.js'
+import { supabase } from '../utils/supabase.js'
 
 /**
  * Shows an unread announcement as a popup when the user enters the app.
@@ -25,10 +26,6 @@ export default function AnnouncementPopup() {
 
   useEffect(() => {
     let cancelled = false
-    // Checks on mount, then every 30s, and whenever the tab regains focus.
-    // Mount-only was not enough: a billing user sitting on an already-open
-    // dashboard would never see an add-on alert until they happened to
-    // reload. Polling mirrors how OrderChangeNotifier already works for reps.
     const check = () => {
       loadMyAnnouncements()
         .then((list) => {
@@ -36,11 +33,37 @@ export default function AnnouncementPopup() {
           const unread = (list || []).find((a) => !a.readAt)
           // Only raise a popup when one isn't already showing, so an alert
           // arriving mid-read can't replace what the user is looking at.
+          // Read state lives in announcement_recipients, so an acknowledged
+          // item is never re-shown — that is what dedupes across refreshes,
+          // reconnects and multiple tabs.
           if (unread) setItem((cur) => cur || unread)
         })
         .catch(() => {})
     }
     check()
+
+    // REALTIME: a row is inserted into announcement_recipients for each
+    // targeted user the moment a Sales Rep's add-on is recorded, so listening
+    // for inserts on THIS user's rows makes the popup appear immediately —
+    // no refresh, no waiting for the next poll. Filtered server-side by
+    // rep_id so a user is never woken by someone else's notification.
+    let channel = null
+    currentUserId()
+      .then((uid) => {
+        if (!uid || cancelled) return
+        channel = supabase
+          .channel(`announcement_recipients:${uid}`)
+          .on(
+            'postgres_changes',
+            { event: 'INSERT', schema: 'public', table: 'announcement_recipients', filter: `rep_id=eq.${uid}` },
+            () => check()
+          )
+          .subscribe()
+      })
+      .catch(() => {})
+
+    // Poll + focus check remain as a safety net only: realtime can drop out
+    // on flaky mobile networks, and this guarantees the alert still surfaces.
     const id = setInterval(check, 30000)
     const onFocus = () => check()
     window.addEventListener('focus', onFocus)
@@ -48,6 +71,7 @@ export default function AnnouncementPopup() {
       cancelled = true
       clearInterval(id)
       window.removeEventListener('focus', onFocus)
+      if (channel) supabase.removeChannel(channel)
     }
   }, [])
 

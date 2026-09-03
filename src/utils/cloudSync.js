@@ -1064,7 +1064,7 @@ export async function renameSalesperson(id, newName) {
 // ---------------------------------------------------------------------------
 
 /** Admin: send an announcement to all reps or a selected list. */
-export async function sendAnnouncement({ title, body, highPriority, audience, repIds, expiresInDays, notifType, includeBilling }) {
+export async function sendAnnouncement({ title, body, highPriority, audience, repIds, expiresInDays, notifType, includeBilling, refOrderId }) {
   const uid = await currentUserId()
   // Optional auto-expiry: expires_at = now + N days. Omitted → never expires
   // (preserves the original behaviour for manual announcements).
@@ -1081,7 +1081,11 @@ export async function sendAnnouncement({ title, body, highPriority, audience, re
       audience,
       created_by: uid,
       expires_at: expiresAt,
-      notif_type: notifType || null
+      notif_type: notifType || null,
+      // Optional link to the exact order this announcement is about, so an
+      // add-on popup's "View Bill" opens that specific bill instead of
+      // guessing from the shop name.
+      ref_order_id: refOrderId || null
     })
     .select('id')
     .single()
@@ -1142,7 +1146,7 @@ export async function loadMyAnnouncements() {
   const uid = await currentUserId()
   const { data, error } = await supabase
     .from('announcement_recipients')
-    .select('id, read_at, announcements(id, title, body, high_priority, created_at, expires_at, notif_type)')
+    .select('id, read_at, announcements(id, title, body, high_priority, created_at, expires_at, notif_type, ref_order_id)')
     .eq('rep_id', uid)
     .order('read_at', { ascending: true, nullsFirst: true })
   if (error) throw error
@@ -1159,6 +1163,7 @@ export async function loadMyAnnouncements() {
       body: r.announcements.body,
       highPriority: r.announcements.high_priority,
       notifType: r.announcements.notif_type || null,
+      refOrderId: r.announcements.ref_order_id || null,
       createdAt: r.announcements.created_at
     }))
     .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))
@@ -3522,7 +3527,7 @@ export async function dismissPendingStockOut(itemId, repName) {
  * Non-fatal by design — the caller must not fail an order save just because
  * the notification could not be sent.
  */
-export async function notifyBillingOfAddon({ shopName, route, productNames }) {
+export async function notifyBillingOfAddon({ shopName, route, addonLines, repName, orderId }) {
   const { data: billing, error: bErr } = await supabase
     .from('profiles')
     .select('id')
@@ -3531,13 +3536,21 @@ export async function notifyBillingOfAddon({ shopName, route, productNames }) {
   const targets = (billing || []).map((b) => b.id)
   if (!targets.length) return null
 
-  const names = (productNames || []).filter(Boolean)
+  const lines = (addonLines || []).filter((l) => l && l.name)
+  const productBlock = lines.length
+    ? lines.map((l) => `• ${l.name} — Qty ${l.qty ?? '—'} ${l.unit || ''}`.trim()).join('\n')
+    : '—'
+
+  // Structured so the popup can present labelled fields (Sales Rep, Customer,
+  // Product, Quantity) rather than one run-on sentence.
   const body = [
-    'A product has been added to an existing order.',
+    'A new product has been added to this customer\'s bill by the Sales Representative.',
     '',
-    `Shop / Buyer: ${shopName || '—'}${route ? `, ${route}` : ''}`,
-    names.length ? `Added: ${names.join(', ')}` : ''
-  ].filter(Boolean).join('\n')
+    `Sales Representative: ${repName || '—'}`,
+    `Customer: ${shopName || '—'}${route ? `, ${route}` : ''}`,
+    'Product:',
+    productBlock
+  ].join('\n')
 
   return sendAnnouncement({
     title: 'New Product Added',
@@ -3546,6 +3559,9 @@ export async function notifyBillingOfAddon({ shopName, route, productNames }) {
     audience: 'billing',
     repIds: targets,
     expiresInDays: 3,
-    notifType: 'addon'
+    notifType: 'addon',
+    // Lets the popup's "View Bill" action open this exact order rather than
+    // inferring it from the shop name.
+    refOrderId: orderId || null
   })
 }

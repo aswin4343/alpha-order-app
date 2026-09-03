@@ -737,7 +737,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
       // lost, and tell the rep to retry.
       try {
         const uid = (await currentUserId()) || user.id
-        await saveCloudOrder({
+        const savedOrderId = await saveCloudOrder({
           customer,
           brand: settings.brand,
           userId: uid,
@@ -761,12 +761,20 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
         // missed. Deliberately fire-and-forget and wrapped separately — a
         // failed notification must never fail an order that saved fine.
         try {
-          const addonNames = items.filter((i) => i.isAddon).map((i) => i.name)
-          if (addonNames.length) {
+          // Pass the added lines WITH their quantities, the rep's name and the
+          // exact order id, so the popup can show full detail and its
+          // "View Bill" action can open precisely this bill rather than
+          // guessing from the shop name.
+          const addonLines = items
+            .filter((i) => i.isAddon)
+            .map((i) => ({ name: i.name, qty: i.qty, unit: i.unit || 'Piece' }))
+          if (addonLines.length) {
             await notifyBillingOfAddon({
               shopName: customer?.name,
               route: routeOverride,
-              productNames: addonNames
+              addonLines,
+              repName: profile?.full_name || settings.salesperson || '—',
+              orderId: savedOrderId
             })
           }
         } catch (nErr) {
