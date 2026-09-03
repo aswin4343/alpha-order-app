@@ -1119,7 +1119,44 @@ export async function sendAnnouncement({ title, body, highPriority, audience, re
     )
     ins = await supabase.from('announcements').insert(baseRow).select('id').single()
   }
-  if (ins.error) throw ins.error
+  // 'billing' is a newer audience value (migration 57 widens the CHECK
+  // constraint to allow it). If that migration hasn't been applied the insert
+  // is rejected outright and no notification is created at all. Retry with
+  // 'selected', which every version of this table accepts — the actual
+  // targeting is done by the explicit recipient rows below, not by this
+  // column, so the notification still reaches exactly the right people.
+  if (ins.error && /audience|check constraint|violates/i.test(String(ins.error.message || ''))) {
+    console.warn(
+      "announcements rejected audience='billing' — run sql/57_announcement_notif_type.sql. " +
+      "Falling back to 'selected'; recipients are unaffected."
+    )
+    ins = await supabase
+      .from('announcements')
+      .insert({ ...baseRow, audience: 'selected', ...optionalRow })
+      .select('id')
+      .single()
+    if (ins.error && /notif_type|ref_order_id/i.test(String(ins.error.message || ''))) {
+      ins = await supabase
+        .from('announcements')
+        .insert({ ...baseRow, audience: 'selected' })
+        .select('id')
+        .single()
+    }
+  }
+
+  if (ins.error) {
+    // Surface the most common real cause explicitly. Row-level security on a
+    // blocked INSERT does not always raise an obvious error, and announcements
+    // have historically only ever been written by admins — a sales rep
+    // creating an add-on alert is a newer path that needs its own policy.
+    console.error(
+      'Creating the announcement FAILED. If this is a permissions/RLS error, ' +
+      'run sql/61_announcement_insert_permission.sql — sales reps and billing ' +
+      'users need INSERT rights on announcements and announcement_recipients.',
+      ins.error
+    )
+    throw ins.error
+  }
   const ann = ins.data
 
   // Determine recipient list.
