@@ -77,9 +77,14 @@ export default function AnnouncementPopup() {
 
   if (!item) return null
 
-  // Addon alerts get "View Bill"; product/price updates get "View Changes".
-  const isAddon = item.notifType === 'addon'
-  const primaryLabel = isAddon ? 'View Bill' : 'View Changes'
+  // Action label follows the notification type: add-ons open the bill,
+  // removals open the affected order, product/price updates show the changes.
+  // Falls back to "View Changes" when notif_type is unavailable (migration 57
+  // not yet applied), so the popup still works rather than breaking.
+  const primaryLabel =
+    item.notifType === 'addon' ? 'View Bill'
+      : item.notifType === 'removal' ? 'View Order'
+        : 'View Changes'
 
   const acknowledge = async () => {
     setBusy(true)

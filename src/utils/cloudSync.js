@@ -1072,24 +1072,39 @@ export async function sendAnnouncement({ title, body, highPriority, audience, re
     expiresInDays != null
       ? new Date(Date.now() + expiresInDays * 24 * 60 * 60 * 1000).toISOString()
       : null
-  const { data: ann, error } = await supabase
+  // Core columns that have always existed on this table.
+  const baseRow = {
+    title,
+    body: body || '',
+    high_priority: !!highPriority,
+    audience,
+    created_by: uid,
+    expires_at: expiresAt
+  }
+  // Optional columns added by later migrations: notif_type (57) decides which
+  // action a popup shows, ref_order_id (60) links it to a specific order.
+  const optionalRow = { notif_type: notifType || null, ref_order_id: refOrderId || null }
+
+  let ins = await supabase
     .from('announcements')
-    .insert({
-      title,
-      body: body || '',
-      high_priority: !!highPriority,
-      audience,
-      created_by: uid,
-      expires_at: expiresAt,
-      notif_type: notifType || null,
-      // Optional link to the exact order this announcement is about, so an
-      // add-on popup's "View Bill" opens that specific bill instead of
-      // guessing from the shop name.
-      ref_order_id: refOrderId || null
-    })
+    .insert({ ...baseRow, ...optionalRow })
     .select('id')
     .single()
-  if (error) throw error
+
+  // If those migrations haven't been applied, Postgres rejects the whole
+  // insert for an unknown column and NO notification is created at all — the
+  // popup then never appears and the failure is invisible. Retry with just the
+  // core columns so the notification still reaches the user; it simply falls
+  // back to the generic popup action until the migrations are run.
+  if (ins.error && /notif_type|ref_order_id/i.test(String(ins.error.message || ''))) {
+    console.warn(
+      'announcements is missing notif_type/ref_order_id — run sql/57_announcement_notif_type.sql ' +
+      'and sql/60_addon_realtime_popup.sql. Sending without them for now.'
+    )
+    ins = await supabase.from('announcements').insert(baseRow).select('id').single()
+  }
+  if (ins.error) throw ins.error
+  const ann = ins.data
 
   // Determine recipient list.
   let targets = repIds
@@ -1144,11 +1159,29 @@ export async function listSentAnnouncements() {
 /** Rep: fetch my announcements (newest first) with my read status. */
 export async function loadMyAnnouncements() {
   const uid = await currentUserId()
-  const { data, error } = await supabase
-    .from('announcement_recipients')
-    .select('id, read_at, announcements(id, title, body, high_priority, created_at, expires_at, notif_type, ref_order_id)')
-    .eq('rep_id', uid)
-    .order('read_at', { ascending: true, nullsFirst: true })
+  const FULL = 'id, read_at, announcements(id, title, body, high_priority, created_at, expires_at, notif_type, ref_order_id)'
+  const BASE = 'id, read_at, announcements(id, title, body, high_priority, created_at, expires_at)'
+
+  const run = (cols) =>
+    supabase
+      .from('announcement_recipients')
+      .select(cols)
+      .eq('rep_id', uid)
+      .order('read_at', { ascending: true, nullsFirst: true })
+
+  let res = await run(FULL)
+  // Selecting a column that doesn't exist fails the WHOLE query, so if
+  // migrations 57/60 haven't been applied the popup receives nothing at all
+  // and silently never appears. Fall back to the core columns so
+  // notifications still display; they just show the generic action.
+  if (res.error && /notif_type|ref_order_id/i.test(String(res.error.message || ''))) {
+    console.warn(
+      'announcements is missing notif_type/ref_order_id — run sql/57_announcement_notif_type.sql ' +
+      'and sql/60_addon_realtime_popup.sql. Loading without them for now.'
+    )
+    res = await run(BASE)
+  }
+  const { data, error } = res
   if (error) throw error
   const now = Date.now()
   const list = (data || [])
@@ -2279,6 +2312,29 @@ export async function removeItem(item, reason, audit) {
       newQty: 0,
       reason: reason || '—'
     })
+  }
+
+  // Tell the rep who owns this order, immediately. Fired here — from the
+  // confirmed removal — so the alert always carries the actual product and the
+  // actual reason, rather than being inferred from a later status change.
+  // Each removal sends its own alert, so removing several products from one
+  // order produces one alert per product and none overwrite each other.
+  // Non-fatal: the removal is already committed and must not be undone by a
+  // notification problem.
+  try {
+    await notifyRepOfRemoval({
+      orderId: item.order_id,
+      productName: item.product_name,
+      reason,
+      removedBy: audit?.editedBy || null
+    })
+  } catch (nErr) {
+    console.error(
+      'Removal notification to the sales rep FAILED (the removal itself saved fine). ' +
+      'If this mentions notif_type or ref_order_id, run sql/57_announcement_notif_type.sql ' +
+      'and sql/60_addon_realtime_popup.sql.',
+      nErr
+    )
   }
 }
 
@@ -3563,5 +3619,51 @@ export async function notifyBillingOfAddon({ shopName, route, addonLines, repNam
     // Lets the popup's "View Bill" action open this exact order rather than
     // inferring it from the shop name.
     refOrderId: orderId || null
+  })
+}
+
+/**
+ * Billing removed a product from an order -> tell THAT order's sales rep.
+ *
+ * Fired from the confirmed removal action itself (not from any status or
+ * scheduling change), so the alert always carries the real product and the
+ * real reason Billing entered. Targeted at the single rep who owns the order,
+ * so no other rep is disturbed.
+ *
+ * Reuses the announcement infrastructure: recipients, read/unread state, the
+ * bell list and the realtime channel all already exist, so the rep gets a live
+ * popup, keeps the item in their notification list afterwards, and an
+ * acknowledged alert is never shown twice. Deliberately returns null rather
+ * than throwing on missing data — a notification must never fail a removal
+ * that Billing already committed.
+ */
+export async function notifyRepOfRemoval({ orderId, productName, reason, removedBy }) {
+  if (!orderId) return null
+  const { data: order, error } = await supabase
+    .from('orders')
+    .select('id, shop_name, route, sales_rep_id')
+    .eq('id', orderId)
+    .single()
+  if (error || !order || !order.sales_rep_id) return null
+
+  const body = [
+    `${productName || 'A product'} was removed from Order #${orderRefFrom(order.id)}.`,
+    '',
+    `Product: ${productName || '—'}`,
+    `Reason: ${reason || '—'}`,
+    `Customer: ${order.shop_name || '—'}${order.route ? `, ${order.route}` : ''}`,
+    `Order: #${orderRefFrom(order.id)}`,
+    removedBy ? `Removed by: ${removedBy}` : ''
+  ].filter(Boolean).join('\n')
+
+  return sendAnnouncement({
+    title: 'Product Removed from Order',
+    body,
+    highPriority: true,
+    audience: 'billing',       // targeted list below; not a broadcast
+    repIds: [order.sales_rep_id],
+    expiresInDays: 7,
+    notifType: 'removal',
+    refOrderId: order.id
   })
 }
