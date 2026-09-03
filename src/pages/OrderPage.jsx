@@ -362,8 +362,11 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
       setCustomer((c) => (c ? { ...c, route: routeOverride } : c))
       setToast(`Default route updated to ${routeOverride}`)
     } catch (e) {
+      // Show the real reason rather than a generic retry message — the two
+      // realistic causes (missing updated_at column, or an RLS policy blocking
+      // the update) each name the migration that fixes them.
       console.error('make default route failed', e)
-      setToast('Could not update default route. Try again.')
+      setToast(e?.message || 'Could not update default route. Try again.')
     } finally {
       setMakingDefault(false)
       setShowMakeDefaultConfirm(false)

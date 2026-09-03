@@ -3014,23 +3014,45 @@ export async function loadBillingItemsByOrder(orderIds) {
  */
 export async function updateCustomerDefaultRoute(customerCloudId, newRoute) {
   if (!customerCloudId) throw new Error('No customer record to update.')
-  // updated_at is stamped explicitly as well as by the DB trigger, so this row
-  // wins the sync's tie-break even if migration 58's trigger hasn't been
-  // applied yet. Without a recency signal, a duplicate row for the same shop
-  // could override this value on the next refresh.
-  const { data, error } = await supabase
+
+  // updated_at is stamped explicitly as well as by migration 58's trigger, so
+  // this row wins the sync's tie-break against any stale duplicate for the
+  // same shop. If migration 58 hasn't been applied yet the column won't exist
+  // and the write is rejected, so fall back to updating the route alone —
+  // the route change is what matters and must not be blocked by a missing
+  // ordering column.
+  let res = await supabase
     .from('customers')
     .update({ route: newRoute, updated_at: new Date().toISOString() })
     .eq('id', customerCloudId)
     .select('id')
-  if (error) throw error
-  // Never report success on a no-op: RLS or a bad id can make an UPDATE
-  // affect zero rows without raising an error, which would show the rep a
-  // success toast for a change that never persisted.
-  if (!data || data.length === 0) {
-    throw new Error('Default route was not saved — the customer record could not be updated.')
+
+  if (res.error && String(res.error.message || '').toLowerCase().includes('updated_at')) {
+    console.warn(
+      'customers.updated_at is missing — run sql/58_customer_updated_at.sql. ' +
+      'Saving the route without it; duplicate rows for this shop may still ' +
+      'override it on refresh until that migration is applied.'
+    )
+    res = await supabase
+      .from('customers')
+      .update({ route: newRoute })
+      .eq('id', customerCloudId)
+      .select('id')
   }
-  return data[0].id
+
+  if (res.error) throw res.error
+
+  // Never report success on a no-op. An UPDATE blocked by row-level security
+  // affects zero rows WITHOUT raising an error, which previously let the app
+  // show a success toast for a change that never persisted — the original
+  // "route reverts after refresh" symptom.
+  if (!res.data || res.data.length === 0) {
+    throw new Error(
+      'Default route was not saved: the update affected no rows. This is ' +
+      'usually a permissions (RLS) issue — run sql/59_customer_route_permission.sql.'
+    )
+  }
+  return res.data[0].id
 }
 
 // ===========================================================================
