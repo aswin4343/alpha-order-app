@@ -3662,14 +3662,39 @@ export async function dismissPendingStockOut(itemId, repName) {
  * Non-fatal by design — the caller must not fail an order save just because
  * the notification could not be sent.
  */
+/**
+ * User ids for a role, resolvable from ANY signed-in session.
+ *
+ * `profiles` normally restricts each user to their own row, so a sales rep
+ * selecting billing users directly gets an empty list — and a notification
+ * with no recipients is silently dropped. The security-definer RPC from
+ * migration 62 returns just the ids regardless of the caller's role. Falls
+ * back to a direct select so this still works if that migration has not been
+ * applied and the table happens to be readable.
+ */
+async function userIdsForRole(role) {
+  const rpc = await supabase.rpc('user_ids_for_role', { p_role: role })
+  if (!rpc.error && Array.isArray(rpc.data)) {
+    const ids = rpc.data.map((r) => (typeof r === 'string' ? r : r?.id ?? r?.user_ids_for_role)).filter(Boolean)
+    if (ids.length) return ids
+  }
+  const { data } = await supabase.from('profiles').select('id').eq('role', role)
+  return (data || []).map((r) => r.id)
+}
+
 export async function notifyBillingOfAddon({ shopName, route, addonLines, repName, orderId }) {
-  const { data: billing, error: bErr } = await supabase
-    .from('profiles')
-    .select('id')
-    .eq('role', 'billing_team')
-  if (bErr) throw bErr
-  const targets = (billing || []).map((b) => b.id)
-  if (!targets.length) return null
+  const targets = await userIdsForRole('billing_team')
+  if (!targets.length) {
+    // Reaching here means the recipient lookup found nobody. Almost always
+    // row-level security on `profiles` blocking a rep from seeing billing
+    // users — which silently produced no notification at all.
+    console.error(
+      'Add-on notification skipped: no billing_team recipients could be resolved. ' +
+      'Run sql/62_role_lookup_function.sql so recipients can be looked up from a ' +
+      'sales rep session.'
+    )
+    return null
+  }
 
   const lines = (addonLines || []).filter((l) => l && l.name)
   const productBlock = lines.length
@@ -3730,7 +3755,16 @@ export async function notifyRepOfRemoval({ orderId, productName, reason, removed
     .select('id, shop_name, route, sales_rep_id')
     .eq('id', orderId)
     .single()
-  if (error || !order || !order.sales_rep_id) return null
+  if (error || !order || !order.sales_rep_id) {
+    // Same silent-drop trap as the add-on lookup: if billing cannot read this
+    // order row (or it carries no rep id) there is nobody to notify, and
+    // returning quietly would hide that completely.
+    console.error(
+      'Removal notification skipped: could not resolve the order or its sales rep.',
+      { orderId, error }
+    )
+    return null
+  }
 
   const body = [
     `${productName || 'A product'} was removed from Order #${shortOrderRef(order.id)}.`,
