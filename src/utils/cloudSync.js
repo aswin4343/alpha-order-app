@@ -244,7 +244,23 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     throw buildErr
   }
 
-  const { error: itemsErr } = await supabase.from('order_items').insert(rows)
+  let { error: itemsErr } = await supabase.from('order_items').insert(rows)
+
+  // approval_status (migration 55) and the entered_qty/entered_unit audit
+  // columns come from later migrations. If any of them is missing, Postgres
+  // rejects the whole insert and the order saves with ZERO items — it would
+  // then reach Billing empty, add-ons included. Strip the optional columns and
+  // retry so the order is never lost over a column that only affects
+  // reporting.
+  if (itemsErr && /approval_status|entered_qty|entered_unit/i.test(String(itemsErr.message || ''))) {
+    console.warn(
+      'order_items is missing approval_status/entered_qty/entered_unit — run ' +
+      'sql/55_price_approval.sql (and 42_product_packaging.sql). ' +
+      'Saving order items without those columns for now.'
+    )
+    const slimRows = rows.map(({ approval_status, entered_qty, entered_unit, ...keep }) => keep)
+    ;({ error: itemsErr } = await supabase.from('order_items').insert(slimRows))
+  }
   if (itemsErr) {
     // The order row committed but its items did NOT. Previously this only
     // logged and returned order.id, so the rep saw success while Billing later
@@ -2143,13 +2159,39 @@ export async function verifyOrder(orderIdOrIds, notes) {
 
 /** Load order items with the Phase 2 edit fields for the billing detail view.
  *  Accepts a single order id OR an array of ids (a shop-day group). */
+// Billing's item columns. The OPTIONAL set was added by later migrations
+// (53 = reschedule traceability, 55 = price approval). Selecting a column that
+// does not exist fails the WHOLE query, which would leave Billing showing no
+// items at all — including add-ons — so the loader falls back to the core set
+// when those migrations have not been applied yet.
+const BILLING_ITEM_COLS_CORE =
+  'id, order_id, product_name, qty, unit, is_addon, available, original_qty, change_type, change_reason, original_product_name, removed, normal_price, is_special_price, scheme_enabled, unit_price, mrp, gst_percent, hsn, free_qty, price_type'
+const BILLING_ITEM_COLS_FULL =
+  BILLING_ITEM_COLS_CORE +
+  ', rescheduled_from_item_id, rescheduled_from_date, approval_status, approved_by, approved_at, approval_reason'
+
 export async function loadBillingOrderItemsFull(orderIdOrIds) {
   const ids = Array.isArray(orderIdOrIds) ? orderIdOrIds : [orderIdOrIds]
-  const { data, error } = await supabase
-    .from('order_items')
-    .select('id, order_id, product_name, qty, unit, is_addon, available, original_qty, change_type, change_reason, original_product_name, removed, normal_price, is_special_price, scheme_enabled, unit_price, mrp, gst_percent, hsn, free_qty, price_type, rescheduled_from_item_id, rescheduled_from_date, approval_status, approved_by, approved_at, approval_reason')
-    .in('order_id', ids)
-    .order('removed', { ascending: true })
+  const run = (cols) =>
+    supabase
+      .from('order_items')
+      .select(cols)
+      .in('order_id', ids)
+      .order('removed', { ascending: true })
+
+  let res = await run(BILLING_ITEM_COLS_FULL)
+  // A missing column fails the entire query, which previously left Billing
+  // with an empty item list — add-ons included — and no visible error.
+  // Fall back to the columns that have always existed.
+  if (res.error && /rescheduled_from|approval_/i.test(String(res.error.message || ''))) {
+    console.warn(
+      'order_items is missing reschedule/approval columns — run ' +
+      'sql/53_pending_orders_traceability.sql and sql/55_price_approval.sql. ' +
+      'Loading billing items without them for now.'
+    )
+    res = await run(BILLING_ITEM_COLS_CORE)
+  }
+  const { data, error } = res
   if (error) throw error
   const items = data || []
 
@@ -3637,6 +3679,13 @@ export async function notifyBillingOfAddon({ shopName, route, addonLines, repNam
  * than throwing on missing data — a notification must never fail a removal
  * that Billing already committed.
  */
+// Short order reference, matching the format shown on printed slips.
+// Defined locally rather than imported from a component, to keep this data
+// module free of UI dependencies (and avoid a circular import).
+function shortOrderRef(orderId) {
+  return orderId ? String(orderId).slice(0, 8).toUpperCase() : '—'
+}
+
 export async function notifyRepOfRemoval({ orderId, productName, reason, removedBy }) {
   if (!orderId) return null
   const { data: order, error } = await supabase
@@ -3647,12 +3696,12 @@ export async function notifyRepOfRemoval({ orderId, productName, reason, removed
   if (error || !order || !order.sales_rep_id) return null
 
   const body = [
-    `${productName || 'A product'} was removed from Order #${orderRefFrom(order.id)}.`,
+    `${productName || 'A product'} was removed from Order #${shortOrderRef(order.id)}.`,
     '',
     `Product: ${productName || '—'}`,
     `Reason: ${reason || '—'}`,
     `Customer: ${order.shop_name || '—'}${order.route ? `, ${order.route}` : ''}`,
-    `Order: #${orderRefFrom(order.id)}`,
+    `Order: #${shortOrderRef(order.id)}`,
     removedBy ? `Removed by: ${removedBy}` : ''
   ].filter(Boolean).join('\n')
 
