@@ -90,11 +90,26 @@ async function syncCustomersFromCloud(localCustomers) {
     const nameKey = (name) => (name || '').trim().toUpperCase()
     const byName = new Map((localCustomers || []).map((c) => [nameKey(c.name), c]))
 
+    // Collapse duplicate cloud rows for the same shop BEFORE merging.
+    // The customers table can hold several rows for one shop_name, and this
+    // sync treats shop_name as the identity key — so without this step every
+    // duplicate got applied in turn and the LAST one silently won. Since rows
+    // arrive ordered by updated_at DESC, keeping the FIRST occurrence of each
+    // name means the most recently changed row is the authoritative one. This
+    // is what stopped a stale duplicate from resurrecting a customer's old
+    // default route after every refresh.
+    const cloudByName = new Map()
+    for (const cc of cloud) {
+      const k = nameKey(cc.shop_name)
+      if (!cloudByName.has(k)) cloudByName.set(k, cc)
+    }
+    const cloudUnique = Array.from(cloudByName.values())
+
     const additions = []
     let changed = false
     const updated = (localCustomers || []).map((c) => c) // shallow copy to mutate in place below
 
-    cloud.forEach((cc) => {
+    cloudUnique.forEach((cc) => {
       const k = nameKey(cc.shop_name)
       const existingLocal = byName.get(k)
       const cloudRoute = cc.route || ''

@@ -1399,7 +1399,13 @@ export async function fetchAllCloudCustomers() {
   while (true) {
     const { data, error } = await supabase
       .from('customers')
-      .select('id, shop_name, route, category, ledger_category, created_at')
+      .select('id, shop_name, route, category, ledger_category, created_at, updated_at')
+      // Most recently CHANGED row first. This matters when a shop has
+      // duplicate rows: the sync treats shop_name as the identity key, so the
+      // row that was edited most recently must be the one that wins. Ordering
+      // by created_at alone let an older duplicate override a freshly saved
+      // default route. nullsFirst:false keeps rows without updated_at last.
+      .order('updated_at', { ascending: false, nullsFirst: false })
       .order('created_at', { ascending: false })
       .range(from, from + pageSize - 1)
     if (error) throw error
@@ -3007,12 +3013,24 @@ export async function loadBillingItemsByOrder(orderIds) {
  * default here can never retroactively alter what an old order shows.
  */
 export async function updateCustomerDefaultRoute(customerCloudId, newRoute) {
-  if (!customerCloudId) return
-  const { error } = await supabase
+  if (!customerCloudId) throw new Error('No customer record to update.')
+  // updated_at is stamped explicitly as well as by the DB trigger, so this row
+  // wins the sync's tie-break even if migration 58's trigger hasn't been
+  // applied yet. Without a recency signal, a duplicate row for the same shop
+  // could override this value on the next refresh.
+  const { data, error } = await supabase
     .from('customers')
-    .update({ route: newRoute })
+    .update({ route: newRoute, updated_at: new Date().toISOString() })
     .eq('id', customerCloudId)
+    .select('id')
   if (error) throw error
+  // Never report success on a no-op: RLS or a bad id can make an UPDATE
+  // affect zero rows without raising an error, which would show the rep a
+  // success toast for a change that never persisted.
+  if (!data || data.length === 0) {
+    throw new Error('Default route was not saved — the customer record could not be updated.')
+  }
+  return data[0].id
 }
 
 // ===========================================================================
