@@ -93,6 +93,8 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
   const totalValue = items.reduce((s, i) => s + (i.finalSellingPrice || 0) * i.qty, 0)
 
   const [copyFailed, setCopyFailed] = useState(false)
+  // Visible diagnostic for the Billing-alert step (build v77).
+  const [notifyNote, setNotifyNote] = useState('')
 
   const onSubmit = async () => {
     if (items.length === 0) return
@@ -118,19 +120,26 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
       // created. Fire-and-forget: the add-on is already saved and must never
       // be rolled back over a notification.
       try {
-        await notifyBillingOfAddon({
+        const ann = await notifyBillingOfAddon({
           shopName: order.shop_name,
           route: order.route,
           addonLines: items.map((i) => ({ name: i.name, qty: i.qty, unit: i.unit || 'Piece' })),
           repName: profile?.full_name || '—',
           orderId: savedOrderId
         })
+        // notifyBillingOfAddon returns null when it gives up early (e.g. no
+        // billing recipients could be resolved). That used to be invisible —
+        // console-only — which is why this failure went unexplained for so
+        // long. Surface it on screen instead so it can be diagnosed from the
+        // phone without opening developer tools.
+        if (!ann) {
+          setNotifyNote('Add-on saved, but the Billing alert was not created (no recipients resolved).')
+        } else {
+          setNotifyNote('')
+        }
       } catch (nErr) {
-        console.error(
-          'Add-on notification to billing FAILED (the add-on itself saved fine). ' +
-          'If this is a permissions error, run sql/61_announcement_insert_permission.sql.',
-          nErr
-        )
+        console.error('Add-on notification to billing FAILED (the add-on itself saved fine).', nErr)
+        setNotifyNote(`Add-on saved, but the Billing alert failed: ${nErr?.message || nErr}`)
       }
       // "Send Add-On" both saves AND copies — a WhatsApp-ready message
       // listing ONLY the add-on items just sent, headed "ADD-ON", never the
@@ -245,6 +254,12 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
               <span className="font-bold text-brand-700">{rupee(totalValue)}</span>
             </div>
             {saveError && <p className="text-xs text-red-600 mb-2">{saveError}</p>}
+            {/* Billing-alert diagnostic. The add-on itself is already saved by
+                this point; this only reports whether the notification to
+                Billing was created, so a silent failure is visible on the
+                device instead of console-only. */}
+            {notifyNote && <p className="text-xs text-amber-700 mb-2">{notifyNote}</p>}
+            <p className="text-[10px] text-slate-400 mb-1">build v77</p>
             <button
               onClick={onSubmit}
               disabled={saving}
