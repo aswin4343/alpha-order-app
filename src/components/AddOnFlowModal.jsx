@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
-import { saveCloudOrder, currentUserId } from '../utils/cloudSync.js'
+import { saveCloudOrder, currentUserId, notifyBillingOfAddon } from '../utils/cloudSync.js'
 import { buildAddOnMessage } from '../utils/whatsapp.js'
 import { useSearch } from '../hooks/useSearch.js'
 import { useDebounce } from '../hooks/useDebounce.js'
@@ -101,7 +101,7 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
     try {
       const uid = (await currentUserId()) || userId
       const addOnDate = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
-      await saveCloudOrder({
+      const savedOrderId = await saveCloudOrder({
         customer: { name: order.shop_name, route: order.route },
         brand: settings?.brand,
         userId: uid,
@@ -110,6 +110,28 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
         orderDate: addOnDate,
         route: order.route
       })
+
+      // Tell Billing immediately that a product was added to an existing
+      // order. This is THE add-on path — it calls saveCloudOrder directly, so
+      // it never passed through the notification hook that lives in
+      // OrderPage's dispatch flow, which is why no add-on alert was ever
+      // created. Fire-and-forget: the add-on is already saved and must never
+      // be rolled back over a notification.
+      try {
+        await notifyBillingOfAddon({
+          shopName: order.shop_name,
+          route: order.route,
+          addonLines: items.map((i) => ({ name: i.name, qty: i.qty, unit: i.unit || 'Piece' })),
+          repName: profile?.full_name || '—',
+          orderId: savedOrderId
+        })
+      } catch (nErr) {
+        console.error(
+          'Add-on notification to billing FAILED (the add-on itself saved fine). ' +
+          'If this is a permissions error, run sql/61_announcement_insert_permission.sql.',
+          nErr
+        )
+      }
       // "Send Add-On" both saves AND copies — a WhatsApp-ready message
       // listing ONLY the add-on items just sent, headed "ADD-ON", never the
       // original order's products.
