@@ -195,27 +195,35 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
   )
 
   const HeadRow = () => (
-    <tr className="bg-slate-900 text-white">
-      <th className="border border-slate-700 px-1 py-1 text-center">SL</th>
-      <th className="border border-slate-700 px-2 py-1 text-left">PRODUCT NAME</th>
-      <th className="border border-slate-700 px-1 py-1 text-right">MRP</th>
-      <th className="border border-slate-700 px-1 py-1 text-center">UNIT</th>
-      <th className="border border-slate-700 px-1 py-1 text-center">QTY</th>
-      <th className="border border-slate-700 px-1 py-1 text-center">F QTY</th>
-      <th className="border border-slate-700 px-1 py-1 text-center bg-slate-800">TOTAL QTY</th>
-      <th className="border border-slate-700 px-1 py-1 text-center">CHECK</th>
+    // Ink-saving design: no dark fill anywhere — white background, black
+    // bold text, thin borders only. A large filled header/cell burns
+    // noticeably more printer ink across every single page of every slip,
+    // which matters at this print volume; borders alone are enough to
+    // separate the header row visually.
+    <tr className="font-bold text-slate-900">
+      <th className="border border-slate-800 px-1 py-1 text-center">SL</th>
+      <th className="border border-slate-800 px-2 py-1 text-left">PRODUCT NAME</th>
+      <th className="border border-slate-800 px-1 py-1 text-right">MRP</th>
+      <th className="border border-slate-800 px-1 py-1 text-center">UNIT</th>
+      <th className="border border-slate-800 px-1 py-1 text-center">QTY</th>
+      <th className="border border-slate-800 px-1 py-1 text-center">F QTY</th>
+      <th className="border border-slate-800 px-1 py-1 text-center">TOTAL QTY</th>
+      <th className="border border-slate-800 px-1 py-1 text-center">CHECK</th>
     </tr>
   )
 
   const ProductRow = ({ it, sl, innerRef }) => (
-    <tr ref={innerRef} className={sl % 2 ? 'bg-white' : 'bg-slate-50'}>
+    // Row striping removed for the same reason — alternating a light grey
+    // fill across every other row of every page adds up in ink over a full
+    // print run. Borders alone still keep rows readable.
+    <tr ref={innerRef}>
       <td className="border border-slate-300 px-1 py-1.5 text-center text-slate-600">{sl}</td>
       <td className="wh-name border border-slate-300 px-1 py-1.5 whitespace-nowrap"><CopyableProductName name={it.name} /></td>
       <td className="border border-slate-300 px-1 py-1.5 text-right text-slate-700">{it.mrp != null ? `₹${it.mrp}` : '—'}</td>
       <td className="border border-slate-300 px-1 py-1.5 text-center text-slate-700">{it.unit || '-'}</td>
       <td className="border border-slate-300 px-1 py-1.5 text-center font-bold text-slate-900">{Number(it.qty) || 0}</td>
-      <td className="border border-slate-300 px-1 py-1.5 text-center font-bold text-emerald-700">{Number(it.free_qty) || 0}</td>
-      <td className="border-2 border-slate-800 px-1 py-1.5 text-center font-black text-slate-900 bg-slate-100">{(Number(it.qty) || 0) + (Number(it.free_qty) || 0)}</td>
+      <td className="border border-slate-300 px-1 py-1.5 text-center font-bold text-slate-900">{Number(it.free_qty) || 0}</td>
+      <td className="border-2 border-slate-800 px-1 py-1.5 text-center font-black text-slate-900">{(Number(it.qty) || 0) + (Number(it.free_qty) || 0)}</td>
       <td className="border border-slate-300 px-1 py-1.5 text-center"><span className="inline-block h-4 w-4 border-2 border-slate-800 rounded-sm" /></td>
     </tr>
   )

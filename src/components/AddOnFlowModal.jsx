@@ -191,6 +191,14 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
             {items.length} product{items.length === 1 ? '' : 's'} added to {order.shop_name}'s order
             {copyFailed ? '.' : ' — message copied, ready to paste.'} The original order was not changed.
           </p>
+          {/* Billing-alert diagnostic — this is the screen actually shown
+              after Send Add-On, so this is where the note needs to live to
+              ever be seen. It was previously placed in the form view, which
+              this success screen replaces entirely, so it never had a chance
+              to display. */}
+          {notifyNote && (
+            <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg p-2 mb-3 text-left">{notifyNote}</p>
+          )}
           {copyFailed && (
             <button onClick={retryCopy} className="w-full rounded-xl border border-slate-200 py-3 font-semibold text-slate-600 mb-2">
               Copy Add-On Message
@@ -199,6 +207,7 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
           <button onClick={onClose} className="w-full rounded-xl bg-brand-600 text-white py-3 font-bold active:bg-brand-700">
             Done
           </button>
+          <p className="text-[10px] text-slate-300 mt-3">build v79</p>
         </div>
       </div>
     )
@@ -211,6 +220,9 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
           <div className="min-w-0">
             <h2 className="font-bold text-slate-800">Add-On</h2>
             <p className="text-xs text-slate-400 truncate">{order.shop_name} — original order stays as-is</p>
+            {/* Deploy check: if this doesn't say v78, the device is running an
+                older cached build and none of the fixes below it are live yet. */}
+            <p className="text-[10px] text-emerald-600 font-semibold mt-0.5">build v79</p>
           </div>
           <button onClick={onClose} className="p-2 text-slate-400" aria-label="Close">
             <CloseIcon className="h-5 w-5" />
@@ -259,7 +271,6 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
                 Billing was created, so a silent failure is visible on the
                 device instead of console-only. */}
             {notifyNote && <p className="text-xs text-amber-700 mb-2">{notifyNote}</p>}
-            <p className="text-[10px] text-slate-400 mb-1">build v77</p>
             <button
               onClick={onSubmit}
               disabled={saving}
