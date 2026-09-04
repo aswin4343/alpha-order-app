@@ -442,7 +442,19 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
               // customer's default price type, are untouched. Switching back to
               // Piece simply stops matching here and the normal chain below
               // resumes.
-              (enteredUnit === 'Box' && p.wholesale != null) ? p.wholesale :
+              // BOX unit selected: bills at the master Wholesale Price by
+              // default, or a rep-entered custom price (boxRate) if one was
+              // set via the pencil icon on the BOX·WP tag. boxRate is its own
+              // dedicated override — deliberately NOT the same finalRate
+              // override PriceSelector uses for Piece pricing — so a custom
+              // Box price can never leak into Piece pricing after a unit
+              // switch; it's only read here, only while Box is selected.
+              // Scoped to THIS line via its own enteredUnit — other products
+              // in the same order, and the customer's default price type,
+              // are untouched. Switching back to Piece simply stops matching
+              // here and the normal chain below resumes.
+              (enteredUnit === 'Box' && (priceOverrides[id]?.boxRate != null || p.wholesale != null))
+                ? (priceOverrides[id]?.boxRate != null ? priceOverrides[id].boxRate : p.wholesale) :
               // Scheme OFF on a scheme product: the Net Rate no longer applies,
               // so the line bills at the master Wholesale Price — matching
               // exactly what the product card displays in that state.

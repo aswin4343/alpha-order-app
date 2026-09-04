@@ -84,6 +84,62 @@ function EditableTag({ label, value, overridden, onChange, accent }) {
 }
 
 /**
+ * Editable BOX·WP tag — same click-to-edit / pencil-icon interaction as
+ * EditableTag, but deliberately does NOT hide when there's no price to show.
+ * A product with no master wholesale value still needs to be orderable when
+ * BOX is selected, so this shows "—" and stays clickable rather than
+ * disappearing, matching the read-only fallback already used elsewhere for
+ * a missing wholesale value.
+ */
+function EditableBoxTag({ value, overridden, onChange }) {
+  const [editing, setEditing] = useState(false)
+  const [draft, setDraft] = useState('')
+
+  const start = () => {
+    setDraft(value != null ? String(value) : '')
+    setEditing(true)
+  }
+  const commit = () => {
+    const n = parseFloat(String(draft).replace(/[^0-9.]/g, ''))
+    if (!isNaN(n) && n > 0) onChange(n)
+    setEditing(false)
+  }
+
+  if (editing) {
+    return (
+      <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md border bg-white border-brand-300">
+        <span className="opacity-70">BOX · WP</span>
+        <input
+          autoFocus
+          type="number"
+          inputMode="decimal"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onBlur={commit}
+          onKeyDown={(e) => e.key === 'Enter' && commit()}
+          className="w-12 text-[11px] outline-none border-b border-brand-300"
+        />
+      </span>
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={start}
+      title="Tap to set a custom price for this box order"
+      className={`inline-flex items-baseline gap-0.5 text-[10px] leading-none font-semibold px-1.5 py-1 rounded-md border ${
+        overridden ? 'bg-amber-50 border-amber-300 text-amber-800' : 'bg-brand-50 border-brand-200 text-brand-700'
+      }`}
+    >
+      <span className="opacity-70">BOX · WP</span>
+      {value != null ? <span>₹{value}{overridden && <span className="ml-0.5">•</span>}</span> : <span className="text-amber-600">—</span>}
+      <span className="ml-0.5 opacity-60">✏️</span>
+    </button>
+  )
+}
+
+/**
  * Click-to-select selling price: MRP / Retail / Wholesale, one always active
  * (Wholesale by default — per spec section 1). Tapping a pill selects that
  * price type as the Final Selling Rate for this order line; tapping the
@@ -241,7 +297,7 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, 
   // The rate the scheme works on top of: WP when Box is selected, otherwise
   // the product's base rate. This keeps the displayed Net Rate consistent with
   // the price the line will actually bill at.
-  const rateBasis = boxSelected ? product.wholesale : product.base
+  const rateBasis = boxSelected ? (override?.boxRate != null ? override.boxRate : product.wholesale) : product.base
   const currentNet =
     result?.slab && rateBasis != null && rateBasis !== ''
       ? netRate(rateBasis, result.slab.buy, result.slab.free)
@@ -291,16 +347,24 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, 
             {boxSelected ? (
               // BOX on a scheme product: the line bills at the master
               // Wholesale Price, so show that as the rate basis rather than
-              // the editable base rate. The NR tag below is computed from this
-              // same WP, and the scheme's free quantity is calculated on the
-              // converted pieces — so what the card shows and what the order
-              // bills now agree.
-              <span className="inline-flex items-baseline gap-0.5 text-[10px] leading-none font-semibold px-1.5 py-1 rounded-md border bg-brand-50 border-brand-200 text-brand-700">
-                <span className="opacity-70">BOX · WP</span>
-                {product.wholesale != null && product.wholesale !== ''
-                  ? <span>₹{product.wholesale}</span>
-                  : <span className="text-amber-600">—</span>}
-              </span>
+              // the editable base rate. Now editable (pencil icon) — a
+              // custom value writes to its OWN dedicated override (boxRate),
+              // deliberately kept separate from the Piece-based finalRate
+              // override the normal price selector uses. If it reused
+              // finalRate, a custom Box price would leak into Piece pricing
+              // the moment the rep switched the unit back, since nothing
+              // clears that override on a unit change — boxRate is only ever
+              // consulted while Box is selected, so switching back to Piece
+              // cleanly reverts to normal pricing with no cross-contamination.
+              // The NR tag below still reflects this same WP (custom or
+              // master) as its rate basis, and the scheme's free quantity is
+              // still calculated on the converted pieces — so what the card
+              // shows and what the order bills keep agreeing.
+              <EditableBoxTag
+                value={override?.boxRate != null ? override.boxRate : product.wholesale}
+                overridden={override?.boxRate != null}
+                onChange={(v) => onOverride(product.id, { boxRate: v })}
+              />
             ) : (
               <EditableTag
                 label="BR"
@@ -338,15 +402,19 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, 
           </>
         ) : unit === 'Box' ? (
           // BOX selected: this line bills at the master Wholesale Price
-          // regardless of customer category, so the normal price selector is
-          // replaced by a read-only WP tag. Choosing Piece again brings the
-          // selector — and the customer's normal pricing — straight back.
-          <span className="inline-flex items-baseline gap-0.5 text-[10px] leading-none font-semibold px-1.5 py-1 rounded-md border bg-brand-50 border-brand-200 text-brand-700">
-            <span className="opacity-70">BOX · WP</span>
-            {product.wholesale != null && product.wholesale !== ''
-              ? <span>₹{product.wholesale}</span>
-              : <span className="text-amber-600">—</span>}
-          </span>
+          // regardless of customer category. Now editable (pencil icon) —
+          // writes to its own dedicated boxRate override, kept separate from
+          // the Piece-based finalRate override (see the scheme-branch
+          // comment above for why: reusing finalRate would leak a custom
+          // Box price into Piece pricing after switching units back).
+          // Choosing Piece again brings the selector — and the customer's
+          // normal pricing — straight back; boxRate is simply not consulted
+          // once unit != Box.
+          <EditableBoxTag
+            value={override?.boxRate != null ? override.boxRate : product.wholesale}
+            overridden={override?.boxRate != null}
+            onChange={(v) => onOverride(product.id, { boxRate: v })}
+          />
         ) : (
           <PriceSelector product={product} override={override} onOverride={onOverride} lastPrice={lastPrice} defaultPriceType={defaultPriceType} />
         )}

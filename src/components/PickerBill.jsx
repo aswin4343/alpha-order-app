@@ -104,28 +104,40 @@ function CopyableProductName({ name }) {
 // ---------------------------------------------------------------------------
 // ORIENTATION — the single switch that drives everything below (the @page
 // rule, the page box dimensions, and therefore how many rows fit per page).
-// Flip this one value to swap the whole slip between orientations; nothing
-// else needs editing.
-//   'portrait'  -> A5 portrait,  148mm wide x 210mm tall
-//   'landscape' -> A5 landscape, 210mm wide x 148mm tall
-const ORIENTATION = 'portrait'
+//   'portrait'  -> 148mm wide x 210mm tall
+//   'landscape' -> 210mm wide x 148.5mm tall  <- the actual physical paper:
+//                   a pre-cut A4 half-sheet, landscape orientation. This is
+//                   the correct value — a previous change had it set to
+//                   'portrait', which is what produced the narrow, tall
+//                   layout with a huge blank area underneath in the last
+//                   test (148mm of width is not enough room for 8 columns,
+//                   which pushed the rendered content taller than 210mm and
+//                   triggered the browser's OWN overflow pagination — an
+//                   extra sheet on top of, not instead of, the row chunking
+//                   below, which is why 7 products still produced 2 sheets).
+const ORIENTATION = 'landscape'
 
 const PAGE_W_MM = ORIENTATION === 'landscape' ? 210 : 148
-const PAGE_H_MM = ORIENTATION === 'landscape' ? 148 : 210
+const PAGE_H_MM = ORIENTATION === 'landscape' ? 148.5 : 210
 // Minimal printer-safe inset. @page margin is 0, so this small padding is the
 // ONLY horizontal inset — this is what removes the wasted white bands down the
 // left and right of the sheet.
 const PAD_MM = 2
 
-// When true, the print CSS asks the printer for a specific media size.
-// Kept FALSE by default: requesting a size the printer does not have loaded
-// or configured makes it accept the job and then wait for that media — the
-// dialog closes and nothing ever prints. Full Bill declares no @page size at
-// all and prints reliably on the same hardware, so the slip now does the
-// same and simply uses whatever paper is loaded. The page box below is still
-// sized in mm, so the layout itself is unchanged; only the media REQUEST is
-// dropped. Set to true only if the printer is confirmed to have A5 media.
-const DECLARE_PAGE_SIZE = false
+// When true, the print CSS explicitly declares the physical page size as raw
+// dimensions (e.g. "210mm 148.5mm") rather than a NAMED size like "A5". This
+// is deliberately a different mechanism from what was tried before: an
+// earlier version requested a named size ("A5 landscape"), and on at least
+// one device the printer failed to respond at all — the working theory was
+// that requesting a specific named media the printer didn't have configured
+// made it wait indefinitely rather than print. Raw custom dimensions ask the
+// driver to fit the content to whatever paper is actually loaded instead of
+// requiring a specific named tray/media, so it does not carry the same
+// failure mode. Kept as a named constant (not hardcoded inline) so it can be
+// flipped back to false in one place if a specific printer still rejects it
+// — that would be a real printer/driver-level limitation no CSS can
+// guarantee around, not something this code can fully control.
+const DECLARE_PAGE_SIZE = true
 
 // Hard cap on rows per printed page. Pagination is done on the DATA (chunk the
 // product array), never by measuring rendered heights and never by letting CSS
@@ -155,10 +167,12 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
   // Page-1 header: title + order info only. No company letterhead.
   const SlipHeader = () => (
     <>
-      <div className="text-center mb-2">
-        <span className="inline-block px-4 py-1 rounded-full bg-slate-900 text-white text-sm font-black tracking-widest">
-          WAREHOUSE SLIP
-        </span>
+      {/* Ink-saving: plain bold black text on white, no filled shape at
+          all — a dark pill/banner behind the title was flagged explicitly
+          as unacceptable ink usage. Kept compact (mb-1, not mb-2) so it
+          costs minimal vertical space, leaving more room for product rows. */}
+      <div className="text-center mb-1">
+        <span className="font-black text-slate-900 text-base tracking-widest">WAREHOUSE SLIP</span>
       </div>
       <div className="flex justify-between items-start gap-4 text-[13px] mb-2">
         <div className="min-w-0">
@@ -279,7 +293,7 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
     <div className="bg-white">
       <style>{`
         @media print {
-          @page { ${DECLARE_PAGE_SIZE ? `size: A5 ${ORIENTATION};` : ''} margin: 0; }
+          @page { ${DECLARE_PAGE_SIZE ? `size: ${PAGE_W_MM}mm ${PAGE_H_MM}mm;` : ''} margin: 0; }
           html, body { margin: 0 !important; padding: 0 !important; }
           .no-print-inline { display: none !important; }
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
