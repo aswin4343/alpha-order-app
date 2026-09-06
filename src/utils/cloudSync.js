@@ -2024,28 +2024,37 @@ export async function loadBillingReps() {
  * on each group is sorted oldest→newest so `orders[0]` is unambiguously the
  * ORIGINAL and any entries after it are ADD-ONS, in the order they occurred.
  */
-export async function loadBillingOrders(repId, deliveryType, status = 'pending', dateStr = null, expressRoute = null) {
-  // NOTE: we intentionally do NOT filter by billing_status here anymore —
-  // each group needs to see every order's status to classify correctly (a
-  // group can have its original Verified while its add-on is Pending, or the
+/**
+ * Shared fetch + group + classify step used by BOTH loadBillingOrders (the
+ * list) and loadBillingCounts (the badge numbers). Extracted because these
+ * two used to reimplement this same grouping/classification independently —
+ * loadBillingCounts's own doc comment claimed it "mirrors loadBillingOrders
+ * exactly", but its actual code was a hand-copied, out-of-date version that
+ * only ever understood 'pending', never 'verified'. That drift is exactly
+ * why the Verified tab kept showing Pending's numbers. Routing both
+ * functions through this ONE implementation makes that class of bug
+ * structurally impossible going forward — there is now only one place that
+ * defines what a group's original/add-on classification means, and both the
+ * list and the counts read from it.
+ *
+ * Returns the classified groups WITHOUT any status/tab filtering applied —
+ * callers each apply their own status logic on top of the identical data.
+ */
+async function _fetchClassifiedOrderGroups(repId, deliveryType, dateStr, expressRoute) {
+  // NOTE: we intentionally do NOT filter by billing_status here — each group
+  // needs to see every order's status to classify correctly (a group can
+  // have its original Verified while its add-on is Pending, or the
   // reverse). Filtering happens after grouping, based on the tab selected.
   const data = await fetchAllPaged(
     'orders',
     'id, shop_name, route, total_quantity, total_value, created_at, order_date, sales_rep_id, billing_status, billing_verified_at, is_new_customer, intro_phone, intro_gstn, intro_credit_days, intro_email, brand',
     (q) => {
       q = q.eq('sales_rep_id', repId).eq('hidden', false).order('created_at', { ascending: true }) // oldest first
-      // PENDING orders must never disappear just because a day passed without
-      // being verified — order_date represents WHEN an order is due, and an
-      // exact-date match here meant that once "today" moved on, any order
-      // FINAL: reverted back to a plain exact-date match for every date,
-      // including Today. Two earlier attempts at this tried to fold overdue
-      // orders INTO this count (first for every date, then only for Today),
-      // but the actual requirement was different: Today needs to stay an
-      // accurate, clean reflection of orders actually placed today — an
-      // inflated cumulative number was itself the problem, not the fix.
-      // Overdue pending orders are no longer silently lost, though — see
-      // loadOverduePendingCounts below, which surfaces them as an explicit,
-      // separate indicator instead of hiding inside this total.
+      // Plain exact-date match — see the extended history of this exact line
+      // in loadOverduePendingCounts below for why this was tried both looser
+      // and tighter before landing here: an inflated "on or before" count
+      // was itself a bug, not a fix. Overdue pending orders are surfaced
+      // separately (loadOverduePendingCounts) rather than folded into this.
       if (dateStr) q = q.eq('order_date', dateStr)
       return q
     }
@@ -2087,18 +2096,34 @@ export async function loadBillingOrders(repId, deliveryType, status = 'pending',
     }
   }
 
-  // Derive each group's classification for filtering:
-  //   original      = orders[0]
-  //   addons        = orders[1..]  (each independently pending/verified)
-  //   hasAddon      = orderCount > 1
-  //   addonPending  = any add-on still billing_status='pending'
+  // Derive each group's classification — the SINGLE definition every caller
+  // now shares:
+  //   original          = orders[0]
+  //   addons            = orders[1..]  (each independently pending/verified)
+  //   hasAddon          = orderCount > 1
+  //   addonPending      = any add-on still billing_status='pending'
+  //   addonAllVerified  = every add-on is billing_status='verified'
+  //   addonVerifiedAt   = latest add-on verification timestamp, if any
+  //                       (needed so the Verified tab's "today only by
+  //                       default" rule can apply to add-on-based counts
+  //                       exactly as consistently as it applies to originals)
   for (const g of order) {
     g.original = g.orders[0]
     g.addons = g.orders.slice(1)
     g.hasAddon = g.orderCount > 1
     g.addonPending = g.addons.some((a) => a.billing_status === 'pending')
     g.addonAllVerified = g.hasAddon && g.addons.every((a) => a.billing_status === 'verified')
+    g.addonVerifiedAt = g.addons.reduce((latest, a) => {
+      if (a.billing_status !== 'verified' || !a.billing_verified_at) return latest
+      return (!latest || new Date(a.billing_verified_at) > new Date(latest)) ? a.billing_verified_at : latest
+    }, null)
   }
+
+  return order
+}
+
+export async function loadBillingOrders(repId, deliveryType, status = 'pending', dateStr = null, expressRoute = null) {
+  const order = await _fetchClassifiedOrderGroups(repId, deliveryType, dateStr, expressRoute)
 
   // Apply the requested status/tab filter AFTER classification.
   let filtered = order
@@ -2126,57 +2151,58 @@ export async function loadBillingOrders(repId, deliveryType, status = 'pending',
 
 /**
  * Count-only summary for the four Billing filter badges (All / Express /
- * Standard / Add-ons), for a rep + date. Mirrors loadBillingOrders' grouping
- * and classification exactly, so badge counts always match what the tabs
- * actually show — computed from ONE shared fetch to avoid drift between the
- * counts and the lists.
+ * Standard / Add-ons), for a rep + date + STATUS.
+ *
+ * ROOT CAUSE FIX: this function previously had NO status parameter at all —
+ * its internal logic was hand-copied from an older version of
+ * loadBillingOrders and only ever checked billing_status === 'pending',
+ * regardless of which tab (Pending or Verified) the UI was actually
+ * showing. That is exactly why the Verified tab displayed the same numbers
+ * as Pending: the two were never actually being asked to compute different
+ * things. It's fixed at the root by removing the duplicated classification
+ * entirely — this now calls the SAME _fetchClassifiedOrderGroups helper
+ * loadBillingOrders uses, so the two can never independently drift again,
+ * and applies a `status` argument to decide which classification each count
+ * reflects.
  */
-export async function loadBillingCounts(repId, dateStr = null) {
-  const data = await fetchAllPaged(
-    'orders',
-    'id, shop_name, route, order_date, created_at, billing_status',
-    (q) => {
-      q = q.eq('sales_rep_id', repId).eq('hidden', false)
-      // Reverted to a plain exact-date match, same reasoning as
-      // loadBillingOrders above — this badge needs to stay an accurate count
-      // of the selected day specifically. Overdue orders are surfaced
-      // separately now (loadOverduePendingCounts), not folded in here.
-      if (dateStr) q = q.eq('order_date', dateStr)
-      return q
-    }
-  )
-  const rows = (data || []).sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+export async function loadBillingCounts(repId, dateStr = null, status = 'pending') {
+  const order = await _fetchClassifiedOrderGroups(repId, null, dateStr, null)
 
-  const groups = new Map()
-  for (const o of rows) {
-    const day = o.order_date || (o.created_at || '').slice(0, 10)
-    const key = `${(o.shop_name || '').toUpperCase()}__${day}`
-    let g = groups.get(key)
-    if (!g) { g = { orders: [o], route: o.route }; groups.set(key, g) }
-    else g.orders.push(o)
-  }
+  // Verified's "today only by default" rule, exactly mirroring
+  // loadBillingOrders' own 'verified' branch — kept identical on purpose so
+  // the count badge and the list it describes can never disagree about
+  // which verified orders are actually being shown.
+  const startToday = new Date(); startToday.setHours(0, 0, 0, 0)
+  const countsAsVerifiedToday = (verifiedAt) =>
+    !!verifiedAt && (dateStr ? true : new Date(verifiedAt) >= startToday)
 
   let all = 0, express = 0, standard = 0, addons = 0
-  for (const g of groups.values()) {
-    const original = g.orders[0]
-    const rest = g.orders.slice(1)
+
+  for (const g of order) {
     const isExpress = (g.route || '').toUpperCase().startsWith('EXP')
     const isStandard = (g.route || '').toUpperCase().startsWith('STD')
-    const originalPending = original.billing_status === 'pending'
-    const addonPending = rest.some((a) => a.billing_status === 'pending')
 
-    // "All" = distinct verification WORK ITEMS still pending: the original
-    // (if pending) counts once, and — if it has a pending add-on — that adds
-    // ONE more (not one per add-on order row), matching "do not simply add
-    // all counts together" / "avoid double counting" from the spec.
-    if (originalPending) all++
-    if (addonPending) all++
+    const originalMatches = status === 'verified'
+      ? g.original.billing_status === 'verified' && countsAsVerifiedToday(g.original.billing_verified_at)
+      : g.original.billing_status === 'pending'
 
-    if (originalPending) {
+    const addonMatches = status === 'verified'
+      ? g.hasAddon && g.addonAllVerified && countsAsVerifiedToday(g.addonVerifiedAt)
+      : g.addonPending
+
+    // "All" = distinct verification WORK ITEMS in the selected status: the
+    // original (if it matches) counts once, and — if its add-on situation
+    // also matches — that adds ONE more (not one per add-on order row),
+    // matching "do not simply add all counts together" / "avoid double
+    // counting" from the original spec. Same convention for both statuses.
+    if (originalMatches) all++
+    if (addonMatches) all++
+
+    if (originalMatches) {
       if (isExpress) express++
       if (isStandard) standard++
     }
-    if (addonPending) addons++
+    if (addonMatches) addons++
   }
 
   return { all, express, standard, addons }

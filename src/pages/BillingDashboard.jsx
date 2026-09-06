@@ -259,7 +259,7 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
           dateStr || null,
           type === 'EXP' && expressRoute ? expressRoute : null
         ),
-        loadBillingCounts(rep.id, dateStr || null)
+        loadBillingCounts(rep.id, dateStr || null, status)
       ])
       setOrders(list)
       setCounts(badgeCounts)
