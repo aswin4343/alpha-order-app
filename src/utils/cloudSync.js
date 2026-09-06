@@ -2037,28 +2037,16 @@ export async function loadBillingOrders(repId, deliveryType, status = 'pending',
       // PENDING orders must never disappear just because a day passed without
       // being verified — order_date represents WHEN an order is due, and an
       // exact-date match here meant that once "today" moved on, any order
-      // still pending from yesterday (or earlier) vanished from the default
-      // view entirely, with no error and no indication anything was missed.
-      // Billing staff would only ever see it again by manually navigating
-      // back to that exact past date, which nobody has a reason to do unless
-      // they already suspect something is wrong.
-      //
-      // FIX, REFINED: the first version of this fix used "on or before" for
-      // EVERY selected date, which solved the disappearing-orders problem but
-      // broke something else — explicitly picking an earlier date to review
-      // that ONE day's pending orders started showing a cumulative pile
-      // instead, since every date became "everything up to here". The date
-      // picker needs to stay a precise day-browser. So the relaxed "on or
-      // before" behaviour now applies ONLY when the selected date is TODAY
-      // (the default view, where surfacing overdue work matters) — an
-      // explicit pick of a different date goes back to an exact match,
-      // showing just that day, exactly as it did before either fix. Verified
-      // and Deleted are genuinely historical views (what did I finish on this
-      // exact day) and always use an exact match regardless.
-      if (dateStr) {
-        if (status === 'pending' && dateStr === todayIST()) q = q.lte('order_date', dateStr)
-        else q = q.eq('order_date', dateStr)
-      }
+      // FINAL: reverted back to a plain exact-date match for every date,
+      // including Today. Two earlier attempts at this tried to fold overdue
+      // orders INTO this count (first for every date, then only for Today),
+      // but the actual requirement was different: Today needs to stay an
+      // accurate, clean reflection of orders actually placed today — an
+      // inflated cumulative number was itself the problem, not the fix.
+      // Overdue pending orders are no longer silently lost, though — see
+      // loadOverduePendingCounts below, which surfaces them as an explicit,
+      // separate indicator instead of hiding inside this total.
+      if (dateStr) q = q.eq('order_date', dateStr)
       return q
     }
   )
@@ -2149,12 +2137,11 @@ export async function loadBillingCounts(repId, dateStr = null) {
     'id, shop_name, route, order_date, created_at, billing_status',
     (q) => {
       q = q.eq('sales_rep_id', repId).eq('hidden', false)
-      // Same fix as loadBillingOrders, refined the same way: "on or before"
-      // only applies when dateStr is TODAY (the default badge view, where
-      // surfacing overdue work matters). An explicit pick of a different date
-      // goes back to an exact match, so the badge stays accurate to whatever
-      // specific day is actually selected instead of always growing.
-      if (dateStr) q = dateStr === todayIST() ? q.lte('order_date', dateStr) : q.eq('order_date', dateStr)
+      // Reverted to a plain exact-date match, same reasoning as
+      // loadBillingOrders above — this badge needs to stay an accurate count
+      // of the selected day specifically. Overdue orders are surfaced
+      // separately now (loadOverduePendingCounts), not folded in here.
+      if (dateStr) q = q.eq('order_date', dateStr)
       return q
     }
   )
@@ -3827,4 +3814,33 @@ export async function notifyRepOfRemoval({ orderId, productName, reason, removed
     notifType: 'removal',
     refOrderId: order.id
   })
+}
+
+/**
+ * Overdue pending orders, per sales rep — orders with order_date strictly
+ * BEFORE today that are still billing_status='pending'. This is what makes
+ * backlog visible without inflating the daily "Today" count: the two counts
+ * are now genuinely separate numbers with separate meanings, rather than one
+ * trying to serve both purposes at once.
+ *
+ * Kept intentionally simple (a count per rep, not a full order list) — the
+ * existing date picker already lets billing open any specific past date and
+ * see that day's exact orders once they know to look; this just tells them
+ * WHEN they need to.
+ */
+export async function loadOverduePendingCounts() {
+  const today = todayIST()
+  const { data, error } = await supabase
+    .from('orders')
+    .select('sales_rep_id')
+    .eq('hidden', false)
+    .eq('billing_status', 'pending')
+    .lt('order_date', today)
+  if (error) { console.error('load overdue pending counts failed', error); return {} }
+  const counts = {}
+  for (const row of data || []) {
+    if (!row.sales_rep_id) continue
+    counts[row.sales_rep_id] = (counts[row.sales_rep_id] || 0) + 1
+  }
+  return counts
 }
