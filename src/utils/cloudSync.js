@@ -3,6 +3,12 @@ import { schemeText } from './productDiff.js'
 import { calculateScheme } from './schemes.js'
 import { PRICE_APPROVAL_ENABLED } from './featureFlags.js'
 
+// Matches BillingDashboard.jsx's own definition — used below to distinguish
+// "viewing the default Today tab" from "explicitly browsing a specific past
+// date via the date picker". Kept as a plain local calculation rather than
+// imported, since it has no other dependency.
+const todayIST = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+
 /**
  * Always fetch the CURRENT authenticated user id straight from Supabase at the
  * moment of saving. Never rely on a possibly-stale id held in React state —
@@ -2035,16 +2041,22 @@ export async function loadBillingOrders(repId, deliveryType, status = 'pending',
       // view entirely, with no error and no indication anything was missed.
       // Billing staff would only ever see it again by manually navigating
       // back to that exact past date, which nobody has a reason to do unless
-      // they already suspect something is wrong. For the Pending tab, this
-      // uses "on or before the selected date" instead of an exact match, so
-      // overdue work surfaces automatically. Future-dated orders (e.g. a
-      // rescheduled stock-out for next week) are UNAFFECTED — lte still
-      // correctly excludes anything dated after the selected day, preserving
-      // that the Pending view can't show work that isn't due yet. Verified
+      // they already suspect something is wrong.
+      //
+      // FIX, REFINED: the first version of this fix used "on or before" for
+      // EVERY selected date, which solved the disappearing-orders problem but
+      // broke something else — explicitly picking an earlier date to review
+      // that ONE day's pending orders started showing a cumulative pile
+      // instead, since every date became "everything up to here". The date
+      // picker needs to stay a precise day-browser. So the relaxed "on or
+      // before" behaviour now applies ONLY when the selected date is TODAY
+      // (the default view, where surfacing overdue work matters) — an
+      // explicit pick of a different date goes back to an exact match,
+      // showing just that day, exactly as it did before either fix. Verified
       // and Deleted are genuinely historical views (what did I finish on this
-      // exact day), so they keep the original exact-date behaviour.
+      // exact day) and always use an exact match regardless.
       if (dateStr) {
-        if (status === 'pending') q = q.lte('order_date', dateStr)
+        if (status === 'pending' && dateStr === todayIST()) q = q.lte('order_date', dateStr)
         else q = q.eq('order_date', dateStr)
       }
       return q
@@ -2137,13 +2149,12 @@ export async function loadBillingCounts(repId, dateStr = null) {
     'id, shop_name, route, order_date, created_at, billing_status',
     (q) => {
       q = q.eq('sales_rep_id', repId).eq('hidden', false)
-      // Same fix as loadBillingOrders: this function exists specifically to
-      // count PENDING work, so an exact-date match let the badge silently
-      // undercount (or show zero) whenever an order from a previous day was
-      // still unverified — exactly the "orders never reached billing"
-      // symptom. "On or before" instead of "on" surfaces overdue orders in
-      // the count without pulling in anything not yet due.
-      if (dateStr) q = q.lte('order_date', dateStr)
+      // Same fix as loadBillingOrders, refined the same way: "on or before"
+      // only applies when dateStr is TODAY (the default badge view, where
+      // surfacing overdue work matters). An explicit pick of a different date
+      // goes back to an exact match, so the badge stays accurate to whatever
+      // specific day is actually selected instead of always growing.
+      if (dateStr) q = dateStr === todayIST() ? q.lte('order_date', dateStr) : q.eq('order_date', dateStr)
       return q
     }
   )
