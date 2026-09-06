@@ -768,6 +768,23 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
             : null
         })
 
+        // A previously invisible failure mode: saveCloudOrder's duplicate
+        // guard returns this sentinel (not a thrown error) when today's
+        // order for this shop exactly matches one already placed — e.g. a
+        // genuine repeat order, or a resend because the rep didn't see
+        // confirmation the first time. Nothing checked for this before, so
+        // execution fell through to the normal success path: WhatsApp still
+        // sent, session still cleared, but NOTHING was ever saved — Billing
+        // never received it, and the rep had no way to know. Stop here, the
+        // same way a genuine save failure already stops below, so the rep
+        // is told rather than misled.
+        if (savedOrderId === 'DUPLICATE') {
+          setToast('⚠ Not sent — an identical order for this shop was already placed today. Change the quantity or contact billing if this repeat order is intentional.')
+          setTimeout(() => setToast(''), 6000)
+          setSending(false)
+          return
+        }
+
         // Add-on alert: if this dispatch contained products added to an order
         // the rep had already placed, tell billing immediately so it isn't
         // missed. Deliberately fire-and-forget and wrapped separately — a

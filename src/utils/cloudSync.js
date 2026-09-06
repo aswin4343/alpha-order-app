@@ -122,7 +122,13 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     const isDup = (todays || []).some((o) => fingerprint(o.order_items) === mine)
     if (isDup) {
       console.log('Duplicate order detected — skipping save.')
-      return null
+      // A distinguishable sentinel, not a bare null. The caller was
+      // previously unable to tell "duplicate, intentionally skipped" apart
+      // from any other falsy result, and treated it as regular success —
+      // the WhatsApp message still went out and the session still cleared,
+      // while nothing was ever saved. This is what makes it possible for
+      // OrderPage to actually detect the skip and tell the rep.
+      return 'DUPLICATE'
     }
   } catch (e) {
     // If the check fails, fall through and save normally (never block a sale).
@@ -2022,7 +2028,25 @@ export async function loadBillingOrders(repId, deliveryType, status = 'pending',
     'id, shop_name, route, total_quantity, total_value, created_at, order_date, sales_rep_id, billing_status, billing_verified_at, is_new_customer, intro_phone, intro_gstn, intro_credit_days, intro_email, brand',
     (q) => {
       q = q.eq('sales_rep_id', repId).eq('hidden', false).order('created_at', { ascending: true }) // oldest first
-      if (dateStr) q = q.eq('order_date', dateStr)
+      // PENDING orders must never disappear just because a day passed without
+      // being verified — order_date represents WHEN an order is due, and an
+      // exact-date match here meant that once "today" moved on, any order
+      // still pending from yesterday (or earlier) vanished from the default
+      // view entirely, with no error and no indication anything was missed.
+      // Billing staff would only ever see it again by manually navigating
+      // back to that exact past date, which nobody has a reason to do unless
+      // they already suspect something is wrong. For the Pending tab, this
+      // uses "on or before the selected date" instead of an exact match, so
+      // overdue work surfaces automatically. Future-dated orders (e.g. a
+      // rescheduled stock-out for next week) are UNAFFECTED — lte still
+      // correctly excludes anything dated after the selected day, preserving
+      // that the Pending view can't show work that isn't due yet. Verified
+      // and Deleted are genuinely historical views (what did I finish on this
+      // exact day), so they keep the original exact-date behaviour.
+      if (dateStr) {
+        if (status === 'pending') q = q.lte('order_date', dateStr)
+        else q = q.eq('order_date', dateStr)
+      }
       return q
     }
   )
@@ -2113,7 +2137,13 @@ export async function loadBillingCounts(repId, dateStr = null) {
     'id, shop_name, route, order_date, created_at, billing_status',
     (q) => {
       q = q.eq('sales_rep_id', repId).eq('hidden', false)
-      if (dateStr) q = q.eq('order_date', dateStr)
+      // Same fix as loadBillingOrders: this function exists specifically to
+      // count PENDING work, so an exact-date match let the badge silently
+      // undercount (or show zero) whenever an order from a previous day was
+      // still unverified — exactly the "orders never reached billing"
+      // symptom. "On or before" instead of "on" surfaces overdue orders in
+      // the count without pulling in anything not yet due.
+      if (dateStr) q = q.lte('order_date', dateStr)
       return q
     }
   )
