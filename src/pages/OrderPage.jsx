@@ -779,6 +779,28 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
         // same way a genuine save failure already stops below, so the rep
         // is told rather than misled.
         if (savedOrderId === 'DUPLICATE') {
+          // Send Order and Copy share this same function, so both were being
+          // blocked identically — correct for Send (it would create a real
+          // duplicate database row), but wrong for Copy: copying text to the
+          // clipboard never touches the database at all. If the order truly
+          // already exists (which is exactly what this branch means), the
+          // rep asking to copy isn't asking to save it again — they're
+          // asking for the text of the order that's already there. `text`
+          // was already composed above, independent of whether the save
+          // succeeds, so it can still be delivered here without saving
+          // anything or touching the session — the cart stays exactly as it
+          // was, same as the existing duplicate-block behaviour for Send.
+          if (viaCopy) {
+            try {
+              await navigator.clipboard.writeText(text)
+              setToast('Order already sent — message copied again.')
+            } catch {
+              setToast('Order already sent, but copying failed — try again.')
+            }
+            setTimeout(() => setToast(''), 4000)
+            setSending(false)
+            return
+          }
           setToast('⚠ Not sent — an identical order for this shop was already placed today. Change the quantity or contact billing if this repeat order is intentional.')
           setTimeout(() => setToast(''), 6000)
           setSending(false)
