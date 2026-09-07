@@ -19,6 +19,7 @@ import PickerBill, { orderRefFrom } from '../components/PickerBill.jsx'
 import FullBill from '../components/FullBill.jsx'
 import AuditReport from '../components/AuditReport.jsx'
 import PartialVerificationReport from '../components/PartialVerificationReport.jsx'
+import LoadingSheetModal from '../components/LoadingSheetModal.jsx'
 import { PRICE_APPROVAL_ENABLED } from '../utils/featureFlags.js'
 
 /**
@@ -131,6 +132,7 @@ export default function BillingDashboard() {
   const [showDeleted, setShowDeleted] = useState(false)
   const [showAudit, setShowAudit] = useState(false)
   const [showPartialVerif, setShowPartialVerif] = useState(false)
+  const [showLoadingSheet, setShowLoadingSheet] = useState(false)
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
@@ -149,6 +151,9 @@ export default function BillingDashboard() {
           </button>
           <button onClick={() => setShowDeleted(true)} className="text-sm font-semibold text-slate-500 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 hidden sm:block">
             Deleted Bills
+          </button>
+          <button onClick={() => setShowLoadingSheet(true)} className="text-sm font-semibold text-slate-500 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 hidden sm:block">
+            Loading Sheet
           </button>
           <button onClick={loadReps} className="text-sm font-semibold text-brand-700 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50">Refresh</button>
           <button onClick={signOut} className="text-sm font-semibold text-red-600 px-2">Sign Out</button>
@@ -224,6 +229,7 @@ export default function BillingDashboard() {
       {showDeleted && <DeletedBillsModal onClose={() => setShowDeleted(false)} />}
       {showAudit && <AuditReport onClose={() => setShowAudit(false)} />}
       {showPartialVerif && <PartialVerificationReport onClose={() => setShowPartialVerif(false)} />}
+      {showLoadingSheet && <LoadingSheetModal onClose={() => setShowLoadingSheet(false)} />}
     </div>
   )
 }
@@ -357,7 +363,7 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
   )
 }
 
-function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, embedded, onlyAddonItems, repName }) {
+function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, embedded, onlyAddonItems, repName, readOnly = false }) {
   const { products } = useApp()
   const { profile } = useAuth()
   const [items, setItems] = useState(null)
@@ -576,8 +582,14 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
                   {/* Edit actions (only for pending orders, and — while the
                       price-approval feature is enabled — not for lines
                       held/rejected by that workflow, since those wait on
-                      Admin, not Billing). */}
-                  {!it.removed && order._status !== 'verified' && (!PRICE_APPROVAL_ENABLED || (it.approval_status !== 'pending' && it.approval_status !== 'rejected')) && (
+                      Admin, not Billing). readOnly is the one addition here:
+                      set only by AddonAwareDetailPanel's "ORIGINAL ORDER"
+                      section, so Billing can't modify the original order
+                      while verifying an add-on. Every other caller of this
+                      component (a normal order, and the add-on's own items
+                      section) never passes readOnly, so this condition is
+                      identical to before for them. */}
+                  {!readOnly && !it.removed && order._status !== 'verified' && (!PRICE_APPROVAL_ENABLED || (it.approval_status !== 'pending' && it.approval_status !== 'rejected')) && (
                     <div className="flex gap-2 mt-2.5 ml-6">
                       <button onClick={() => setEditItem(it)}
                         className="text-xs font-semibold text-brand-700 border border-brand-200 rounded-lg px-2.5 py-1 hover:bg-brand-50">Edit Qty</button>
@@ -1072,6 +1084,12 @@ function AddonAwareDetailPanel({ order, onBackToOrders, onVerified, repName }) {
               order={order}
               singleOrderId={original.id}
               repName={repName}
+              // The fix: Billing is verifying an ADD-ON, so the original
+              // order's own items must not be editable from this screen —
+              // Edit Qty / Replace / Remove are hidden by OrderDetailPanel
+              // whenever readOnly is set. Nothing else about how this
+              // section renders changes.
+              readOnly
               onBackToOrders={onBackToOrders}
               onVerified={onVerified}
               embedded

@@ -2657,6 +2657,89 @@ export async function loadPerformanceForDate(userId, dateStr, route = null, rang
 }
 
 /** Distinct active routes across customers (for the per-order route dropdown). */
+/**
+ * Loading Sheet — one row per VERIFIED order, for the Billing Team to
+ * export a list of what's ready for loading.
+ *
+ * GRAND TOTAL — the one non-obvious decision here. orders.total_value is
+ * written exactly once, at order creation (see saveCloudOrder), and is
+ * NEVER recalculated by removeItem / editItemQty / replaceItem — confirmed
+ * by searching every write to that column in this file. So after Billing
+ * removes an item or reduces a quantity during verification,
+ * orders.total_value still holds the ORIGINAL sales-rep amount, not the
+ * final verified one. Using it directly would reproduce exactly the bug
+ * this feature explicitly warns against. The true final total is computed
+ * here instead, by summing qty × unit_price across every item that is NOT
+ * removed — using each item's CURRENT qty, which editItemQty does keep
+ * correctly up to date even though total_value itself is not.
+ *
+ * VERIFICATION STATUS — reuses the same three modification signals already
+ * used by removeItem / editItemQty / replaceItem (removed=true,
+ * change_type='qty' with original_qty different from qty, change_type=
+ * 'replaced'), rather than inventing a second, competing definition of
+ * "was this order modified". An order is PARTIAL VERIFIED if ANY item
+ * shows one of these; otherwise VERIFIED.
+ *
+ * PERMISSIONS — this uses the exact same supabase client and query pattern
+ * as every other Billing function in this file, so it is subject to
+ * whatever row-level security already restricts orders/order_items access
+ * — no separate permission check is introduced or needed here. The one new
+ * gate is on the UI side (this function is only called from a button
+ * rendered inside BillingDashboard.jsx, a page only billing_team can reach).
+ */
+export async function loadLoadingSheetData({ fromDateStr, toDateStr, route, salesRepId }) {
+  let q = supabase
+    .from('orders')
+    .select(`
+      id, shop_name, sales_rep_id, order_date, route,
+      order_items ( qty, unit_price, removed, change_type, original_qty )
+    `)
+    .eq('billing_status', 'verified')
+    .eq('hidden', false)
+    .gte('order_date', fromDateStr)
+    .lte('order_date', toDateStr)
+  if (route) q = q.eq('route', route)
+  if (salesRepId) q = q.eq('sales_rep_id', salesRepId)
+
+  const { data, error } = await q
+  if (error) { console.error('load loading sheet failed', error); return [] }
+
+  const repIds = [...new Set((data || []).map((o) => o.sales_rep_id).filter(Boolean))]
+  let nameById = new Map()
+  if (repIds.length) {
+    const { data: reps } = await supabase.from('profiles').select('id, full_name').in('id', repIds)
+    nameById = new Map((reps || []).map((r) => [r.id, r.full_name]))
+  }
+
+  return (data || []).map((o) => {
+    const items = o.order_items || []
+    let grandTotal = 0
+    let modified = false
+    for (const i of items) {
+      if (i.removed) { modified = true; continue }
+      grandTotal += (Number(i.qty) || 0) * (Number(i.unit_price) || 0)
+      if (i.change_type === 'replaced') modified = true
+      if (i.change_type === 'qty' && i.original_qty != null && Number(i.original_qty) !== Number(i.qty)) modified = true
+    }
+    return {
+      orderId: o.id,
+      shopName: o.shop_name,
+      salesRepName: nameById.get(o.sales_rep_id) || '—',
+      grandTotal: Math.round(grandTotal * 100) / 100,
+      verificationStatus: modified ? 'PARTIAL VERIFIED' : 'VERIFIED'
+    }
+  }).sort((a, b) => a.shopName.localeCompare(b.shopName))
+}
+
+/** Sales rep list for the Loading Sheet filter dropdown — a small, focused
+ * query rather than reusing loadBillingReps, which also computes pending/
+ * verified counts that this filter dropdown doesn't need. */
+export async function listSalesRepsForFilter() {
+  const { data, error } = await supabase.from('profiles').select('id, full_name').eq('role', 'salesperson').order('full_name')
+  if (error) { console.error(error); return [] }
+  return data || []
+}
+
 export async function listAllRoutes() {
   const { data, error } = await supabase
     .from('customers')
@@ -3562,6 +3645,20 @@ export async function rescheduleStockOutItem({ item, targetDate, repId, repName,
       orderDate: targetDate,
       route: parentOrder.route || ''
     })
+    // ROOT CAUSE of "rescheduled item vanishes from Pending but never
+    // reaches Billing": saveCloudOrder's duplicate guard (added later than
+    // this function) returns the string 'DUPLICATE' instead of a real order
+    // id when the rescheduled order exactly matches one already placed that
+    // day for this shop — no exception is thrown. This call was never
+    // updated to check for that, so it went on to stamp
+    // rescheduled_order_id: 'DUPLICATE' (a fake id, not a real order) on the
+    // original item below, reported success, and the item disappeared from
+    // Pending Orders — while no order was ever actually created. Caught
+    // explicitly here now: release the claim (so the item is reschedulable
+    // again) and fail loudly instead of silently.
+    if (newOrderId === 'DUPLICATE') {
+      throw new Error('An identical order for this shop already exists on that date. Pick a different date, or check with billing if this repeat is intentional.')
+    }
   } catch (e) {
     // Release the claim so the item is reschedulable again after a failure.
     await supabase.from('order_items').update({ rescheduled_at: null, rescheduled_by: null }).eq('id', item.id)

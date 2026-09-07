@@ -113,6 +113,21 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
         route: order.route
       })
 
+      // Same previously invisible failure mode fixed in OrderPage's own
+      // dispatch flow, but never applied here: saveCloudOrder's duplicate
+      // guard returns the string 'DUPLICATE' (not an exception) when this
+      // add-on exactly matches an order already placed today for this shop.
+      // Nothing checked for this before, so execution fell straight through
+      // to the notification, clipboard-copy, and "Add-On Sent ✅" success
+      // screen below — a real order was never saved, but the rep saw
+      // exactly what success looks like. Stop here instead, the same way a
+      // thrown save error already stops in the catch block below.
+      if (savedOrderId === 'DUPLICATE') {
+        setSaveError('Not sent — an identical order for this shop was already placed today. Change the quantity or contact billing if this repeat is intentional.')
+        setSaving(false)
+        return
+      }
+
       // Tell Billing immediately that a product was added to an existing
       // order. This is THE add-on path — it calls saveCloudOrder directly, so
       // it never passed through the notification hook that lives in

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { loadOrdersList, deleteOwnOrder } from '../utils/cloudSync.js'
-import { CloseIcon } from './Icons.jsx'
+import { CloseIcon, ThumbsUpIcon, ClockIcon } from './Icons.jsx'
 import OrderSummaryModal from './OrderSummaryModal.jsx'
 import AddOnFlowModal from './AddOnFlowModal.jsx'
 
@@ -106,6 +106,23 @@ export default function OrdersListModal({ userId, start, end, route, periodLabel
                       )}
                     </span>
                     <span className="text-sm font-bold text-brand-700 shrink-0">{rupee(o.total_value)}</span>
+                    {/* Verification status — reuses the existing
+                        billing_status field this card already carries (used
+                        a few lines above for canDelete), so this is purely a
+                        new visual reading of data already present, not a
+                        new status source. billing_status only ever has two
+                        stored values in this app ('pending' / 'verified');
+                        "partial verified" is a separately-derived label
+                        about what changed inside an already-verified order,
+                        not a third value of this field, so the two-icon
+                        mapping below is a complete, correct reflection of
+                        it — nothing about the partial-verification logic
+                        itself is touched or reinterpreted here. */}
+                    {o.billing_status === 'verified' ? (
+                      <ThumbsUpIcon className="h-4 w-4 text-green-600 shrink-0" role="img" aria-label="Verified" title="Verified" />
+                    ) : (
+                      <ClockIcon className="h-4 w-4 text-amber-500 shrink-0" role="img" aria-label="Verification Pending" title="Verification Pending" />
+                    )}
                   </div>
                   <p className="text-[11px] text-slate-400 mt-0.5">
                     {o.total_products} products · {o.total_quantity} qty · {fmtDate(o.created_at)}, {fmtTime(o.created_at)}

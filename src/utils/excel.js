@@ -280,3 +280,46 @@ export async function exportShortageSalesLossExcel(rows, summary, fileName) {
 
   XLSX.writeFile(wb, fileName)
 }
+
+/**
+ * Excel export for the Billing Team's Loading Sheet. Same reasoning as
+ * exportShortageSalesLossExcel above for using a dedicated function rather
+ * than the shared exportMultiSheet: this needs numeric currency cells,
+ * frozen header, and auto-filter, which that simpler shared helper
+ * (correctly) doesn't do for its other, plainer callers.
+ *
+ * rows: [{ shopName, salesRepName, grandTotal, verificationStatus }]
+ * SL is generated here, sequential from 1, fresh for every export — never
+ * stored, so there's nothing to keep in sync across exports.
+ */
+export async function exportLoadingSheetExcel(rows, fileName) {
+  const XLSX = await getXLSX()
+  const wb = XLSX.utils.book_new()
+
+  const header = ['SL', 'Shop Name', 'Sales Rep', 'Grand Total', 'Verification Status']
+  const aoa = [header]
+  rows.forEach((r, i) => {
+    aoa.push([i + 1, r.shopName, r.salesRepName, r.grandTotal, r.verificationStatus])
+  })
+
+  const ws = XLSX.utils.aoa_to_sheet(aoa)
+
+  // Grand Total (column D) as a real number, not text — usable for SUM.
+  for (let r = 2; r <= aoa.length; r++) {
+    const cell = ws[`D${r}`]
+    if (cell) { cell.t = 'n'; cell.z = '₹#,##,##0' }
+  }
+
+  ws['!cols'] = [
+    { wch: 6 },  // SL
+    { wch: 28 }, // Shop Name
+    { wch: 18 }, // Sales Rep
+    { wch: 14 }, // Grand Total
+    { wch: 18 }  // Verification Status
+  ]
+  ws['!freeze'] = { xSplit: 0, ySplit: 1 }
+  ws['!autofilter'] = { ref: `A1:E${aoa.length}` }
+  XLSX.utils.book_append_sheet(wb, ws, 'Loading Sheet')
+
+  XLSX.writeFile(wb, fileName)
+}
