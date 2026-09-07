@@ -2691,10 +2691,14 @@ export async function loadLoadingSheetData({ fromDateStr, toDateStr, route, sale
   let q = supabase
     .from('orders')
     .select(`
-      id, shop_name, sales_rep_id, order_date, route,
+      id, shop_name, sales_rep_id, order_date, route, billing_status,
       order_items ( qty, unit_price, removed, change_type, original_qty )
     `)
-    .eq('billing_status', 'verified')
+    // UPDATE 1: previously filtered to billing_status='verified' here, which
+    // is why NOT VERIFIED orders never appeared at all — they were excluded
+    // before the status logic below even ran. Now every order in the
+    // date/route/rep filter range comes through, and billing_status decides
+    // the three-way outcome per row instead of gating the query itself.
     .eq('hidden', false)
     .gte('order_date', fromDateStr)
     .lte('order_date', toDateStr)
@@ -2726,7 +2730,16 @@ export async function loadLoadingSheetData({ fromDateStr, toDateStr, route, sale
       shopName: o.shop_name,
       salesRepName: nameById.get(o.sales_rep_id) || '—',
       grandTotal: Math.round(grandTotal * 100) / 100,
-      verificationStatus: modified ? 'PARTIAL VERIFIED' : 'VERIFIED'
+      // UPDATE 1: three-way status. billing_status !== 'verified' means
+      // Billing hasn't finalized the order yet — NOT VERIFIED, regardless of
+      // whether any item happens to have been edited mid-review (that's a
+      // separate, in-progress state, not a completed partial verification).
+      // Only once billing_status is 'verified' does the existing modified
+      // flag (unchanged from before this update) decide VERIFIED vs PARTIAL
+      // VERIFIED — reusing the same three item-level signals
+      // (removed/qty-changed/replaced) already used by removeItem /
+      // editItemQty / replaceItem, not a new or competing definition.
+      verificationStatus: o.billing_status !== 'verified' ? 'NOT VERIFIED' : (modified ? 'PARTIAL VERIFIED' : 'VERIFIED')
     }
   }).sort((a, b) => a.shopName.localeCompare(b.shopName))
 }
