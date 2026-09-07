@@ -409,10 +409,15 @@ export async function loadCustomerLastPrices(shopName, route) {
 // ===========================================================================
 
 function visitKey(row) {
-  // Convert to the IST calendar date, not the raw UTC date — an order placed
-  // at 12:30 AM IST is UTC-previous-day, and naively slicing the ISO string
-  // would silently group it under the wrong day.
-  const day = istDateStr(row.created_at)
+  // order_date, when present, is now the canonical "which day does this row
+  // belong to" — matching the field loadPerformanceForDate's orders query
+  // filters by. Without this, an order fetched because its order_date is
+  // today, but whose created_at falls on a different day (a rescheduled
+  // item, an add-on dated separately, a manually backdated order), would be
+  // grouped under the WRONG calendar day here — inconsistent with the query
+  // that fetched it in the first place. visits rows have no order_date at
+  // all, so they fall back to the original created_at-derived day, unchanged.
+  const day = row.order_date || istDateStr(row.created_at)
   const who = row.customer_id || `${(row.shop_name || '').trim().toUpperCase()}::${(row.route || '').trim().toUpperCase()}`
   return `${who}::${day}`
 }
@@ -2024,37 +2029,28 @@ export async function loadBillingReps() {
  * on each group is sorted oldest→newest so `orders[0]` is unambiguously the
  * ORIGINAL and any entries after it are ADD-ONS, in the order they occurred.
  */
-/**
- * Shared fetch + group + classify step used by BOTH loadBillingOrders (the
- * list) and loadBillingCounts (the badge numbers). Extracted because these
- * two used to reimplement this same grouping/classification independently —
- * loadBillingCounts's own doc comment claimed it "mirrors loadBillingOrders
- * exactly", but its actual code was a hand-copied, out-of-date version that
- * only ever understood 'pending', never 'verified'. That drift is exactly
- * why the Verified tab kept showing Pending's numbers. Routing both
- * functions through this ONE implementation makes that class of bug
- * structurally impossible going forward — there is now only one place that
- * defines what a group's original/add-on classification means, and both the
- * list and the counts read from it.
- *
- * Returns the classified groups WITHOUT any status/tab filtering applied —
- * callers each apply their own status logic on top of the identical data.
- */
-async function _fetchClassifiedOrderGroups(repId, deliveryType, dateStr, expressRoute) {
-  // NOTE: we intentionally do NOT filter by billing_status here — each group
-  // needs to see every order's status to classify correctly (a group can
-  // have its original Verified while its add-on is Pending, or the
+export async function loadBillingOrders(repId, deliveryType, status = 'pending', dateStr = null, expressRoute = null) {
+  // NOTE: we intentionally do NOT filter by billing_status here anymore —
+  // each group needs to see every order's status to classify correctly (a
+  // group can have its original Verified while its add-on is Pending, or the
   // reverse). Filtering happens after grouping, based on the tab selected.
   const data = await fetchAllPaged(
     'orders',
     'id, shop_name, route, total_quantity, total_value, created_at, order_date, sales_rep_id, billing_status, billing_verified_at, is_new_customer, intro_phone, intro_gstn, intro_credit_days, intro_email, brand',
     (q) => {
       q = q.eq('sales_rep_id', repId).eq('hidden', false).order('created_at', { ascending: true }) // oldest first
-      // Plain exact-date match — see the extended history of this exact line
-      // in loadOverduePendingCounts below for why this was tried both looser
-      // and tighter before landing here: an inflated "on or before" count
-      // was itself a bug, not a fix. Overdue pending orders are surfaced
-      // separately (loadOverduePendingCounts) rather than folded into this.
+      // PENDING orders must never disappear just because a day passed without
+      // being verified — order_date represents WHEN an order is due, and an
+      // exact-date match here meant that once "today" moved on, any order
+      // FINAL: reverted back to a plain exact-date match for every date,
+      // including Today. Two earlier attempts at this tried to fold overdue
+      // orders INTO this count (first for every date, then only for Today),
+      // but the actual requirement was different: Today needs to stay an
+      // accurate, clean reflection of orders actually placed today — an
+      // inflated cumulative number was itself the problem, not the fix.
+      // Overdue pending orders are no longer silently lost, though — see
+      // loadOverduePendingCounts below, which surfaces them as an explicit,
+      // separate indicator instead of hiding inside this total.
       if (dateStr) q = q.eq('order_date', dateStr)
       return q
     }
@@ -2096,34 +2092,18 @@ async function _fetchClassifiedOrderGroups(repId, deliveryType, dateStr, express
     }
   }
 
-  // Derive each group's classification — the SINGLE definition every caller
-  // now shares:
-  //   original          = orders[0]
-  //   addons            = orders[1..]  (each independently pending/verified)
-  //   hasAddon          = orderCount > 1
-  //   addonPending      = any add-on still billing_status='pending'
-  //   addonAllVerified  = every add-on is billing_status='verified'
-  //   addonVerifiedAt   = latest add-on verification timestamp, if any
-  //                       (needed so the Verified tab's "today only by
-  //                       default" rule can apply to add-on-based counts
-  //                       exactly as consistently as it applies to originals)
+  // Derive each group's classification for filtering:
+  //   original      = orders[0]
+  //   addons        = orders[1..]  (each independently pending/verified)
+  //   hasAddon      = orderCount > 1
+  //   addonPending  = any add-on still billing_status='pending'
   for (const g of order) {
     g.original = g.orders[0]
     g.addons = g.orders.slice(1)
     g.hasAddon = g.orderCount > 1
     g.addonPending = g.addons.some((a) => a.billing_status === 'pending')
     g.addonAllVerified = g.hasAddon && g.addons.every((a) => a.billing_status === 'verified')
-    g.addonVerifiedAt = g.addons.reduce((latest, a) => {
-      if (a.billing_status !== 'verified' || !a.billing_verified_at) return latest
-      return (!latest || new Date(a.billing_verified_at) > new Date(latest)) ? a.billing_verified_at : latest
-    }, null)
   }
-
-  return order
-}
-
-export async function loadBillingOrders(repId, deliveryType, status = 'pending', dateStr = null, expressRoute = null) {
-  const order = await _fetchClassifiedOrderGroups(repId, deliveryType, dateStr, expressRoute)
 
   // Apply the requested status/tab filter AFTER classification.
   let filtered = order
@@ -2151,50 +2131,61 @@ export async function loadBillingOrders(repId, deliveryType, status = 'pending',
 
 /**
  * Count-only summary for the four Billing filter badges (All / Express /
- * Standard / Add-ons), for a rep + date + STATUS.
- *
- * ROOT CAUSE FIX: this function previously had NO status parameter at all —
- * its internal logic was hand-copied from an older version of
- * loadBillingOrders and only ever checked billing_status === 'pending',
- * regardless of which tab (Pending or Verified) the UI was actually
- * showing. That is exactly why the Verified tab displayed the same numbers
- * as Pending: the two were never actually being asked to compute different
- * things. It's fixed at the root by removing the duplicated classification
- * entirely — this now calls the SAME _fetchClassifiedOrderGroups helper
- * loadBillingOrders uses, so the two can never independently drift again,
- * and applies a `status` argument to decide which classification each count
- * reflects.
+ * Standard / Add-ons), for a rep + date. Mirrors loadBillingOrders' grouping
+ * and classification exactly, so badge counts always match what the tabs
+ * actually show — computed from ONE shared fetch to avoid drift between the
+ * counts and the lists.
  */
 export async function loadBillingCounts(repId, dateStr = null, status = 'pending') {
-  const order = await _fetchClassifiedOrderGroups(repId, null, dateStr, null)
+  const data = await fetchAllPaged(
+    'orders',
+    'id, shop_name, route, order_date, created_at, billing_status',
+    (q) => {
+      q = q.eq('sales_rep_id', repId).eq('hidden', false)
+      // Reverted to a plain exact-date match, same reasoning as
+      // loadBillingOrders above — this badge needs to stay an accurate count
+      // of the selected day specifically. Overdue orders are surfaced
+      // separately now (loadOverduePendingCounts), not folded in here.
+      if (dateStr) q = q.eq('order_date', dateStr)
+      return q
+    }
+  )
+  const rows = (data || []).sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
 
-  // Verified's "today only by default" rule, exactly mirroring
-  // loadBillingOrders' own 'verified' branch — kept identical on purpose so
-  // the count badge and the list it describes can never disagree about
-  // which verified orders are actually being shown.
-  const startToday = new Date(); startToday.setHours(0, 0, 0, 0)
-  const countsAsVerifiedToday = (verifiedAt) =>
-    !!verifiedAt && (dateStr ? true : new Date(verifiedAt) >= startToday)
+  const groups = new Map()
+  for (const o of rows) {
+    const day = o.order_date || (o.created_at || '').slice(0, 10)
+    const key = `${(o.shop_name || '').toUpperCase()}__${day}`
+    let g = groups.get(key)
+    if (!g) { g = { orders: [o], route: o.route }; groups.set(key, g) }
+    else g.orders.push(o)
+  }
+
+  // ROOT CAUSE of "Verified tab shows the same numbers as Pending": this
+  // function used to be hardcoded to count billing_status==='pending' only,
+  // with no branch for 'verified' at all and no status parameter to even
+  // know which tab was being viewed. Whichever tab was selected, the SAME
+  // pending-only counts came back. `status` now drives which side of
+  // billing_status each bucket checks — 'pending' counts what's still
+  // outstanding, 'verified' counts what's actually been completed — so the
+  // two tabs can never show identical numbers again.
+  const matchesStatus = (o) => o.billing_status === status
 
   let all = 0, express = 0, standard = 0, addons = 0
-
-  for (const g of order) {
+  for (const g of groups.values()) {
+    const original = g.orders[0]
+    const rest = g.orders.slice(1)
     const isExpress = (g.route || '').toUpperCase().startsWith('EXP')
     const isStandard = (g.route || '').toUpperCase().startsWith('STD')
-
-    const originalMatches = status === 'verified'
-      ? g.original.billing_status === 'verified' && countsAsVerifiedToday(g.original.billing_verified_at)
-      : g.original.billing_status === 'pending'
-
-    const addonMatches = status === 'verified'
-      ? g.hasAddon && g.addonAllVerified && countsAsVerifiedToday(g.addonVerifiedAt)
-      : g.addonPending
+    const originalMatches = matchesStatus(original)
+    const addonMatches = rest.some(matchesStatus)
 
     // "All" = distinct verification WORK ITEMS in the selected status: the
-    // original (if it matches) counts once, and — if its add-on situation
+    // original (if it matches) counts once, and — if it has an add-on that
     // also matches — that adds ONE more (not one per add-on order row),
     // matching "do not simply add all counts together" / "avoid double
-    // counting" from the original spec. Same convention for both statuses.
+    // counting" from the spec. An order counts toward exactly one status at
+    // a time, since billing_status can only ever be one value.
     if (originalMatches) all++
     if (addonMatches) all++
 
@@ -2581,16 +2572,39 @@ export async function loadPerformanceForDate(userId, dateStr, route = null, rang
   const start = rangeOverride ? rangeOverride.start : new Date(`${dateStr}T00:00:00`)
   const end = rangeOverride ? rangeOverride.end : new Date(`${dateStr}T23:59:59.999`)
 
-  // Base queries (date-scoped). When a route is supplied, we additionally
-  // constrain by the per-order / per-visit route column. When it is null the
-  // queries are IDENTICAL to the original date-only behaviour.
+  // ROOT CAUSE of "Orders Taken = 30" vs "Billing Pending = 24": this query
+  // used to filter by created_at (the timestamp an order was physically
+  // submitted), while Billing's queries filter by order_date (a separate,
+  // rep-editable field representing which day an order is FOR/DUE — the
+  // field the Order Date picker sets, the field the Add-On flow's own date
+  // picker sets, and the field the Reschedule feature INTENTIONALLY moves to
+  // a different day). Whenever those two dates diverge for an order — a
+  // manually backdated/forward-dated order, an add-on dated differently from
+  // when it was actually sent, or a rescheduled item — that order got counted
+  // by this screen on the day it was SUBMITTED, while Billing counted it on
+  // the day it's DUE. Nothing was lost; the two screens were answering two
+  // different questions about the same order without anyone realising it.
+  // Using order_date here instead makes both screens measure "orders FOR
+  // this day" the same way, so they are now structurally guaranteed to
+  // agree — not just usually agree except when a date differs.
+  //
+  // order_date is stored as a plain YYYY-MM-DD string (see saveCloudOrder),
+  // so single-day lookups are a direct equality check; range lookups
+  // (This Week / This Month) compare against the same string format, which
+  // sorts correctly since the format is already zero-padded and
+  // most-significant-first.
+  const singleDay = !rangeOverride
+  const rangeStartStr = rangeOverride ? rangeOverride.start.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }) : null
+  const rangeEndStr = rangeOverride ? rangeOverride.end.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }) : null
+
   let ordersQ = supabase
     .from('orders')
-    .select('id, total_quantity, total_value, shop_name, customer_id, created_at, route')
+    .select('id, total_quantity, total_value, shop_name, customer_id, created_at, order_date, route')
     .eq('sales_rep_id', userId)
     .eq('hidden', false)
-    .gte('created_at', start.toISOString())
-    .lte('created_at', end.toISOString())
+  ordersQ = singleDay
+    ? ordersQ.eq('order_date', dateStr)
+    : ordersQ.gte('order_date', rangeStartStr).lte('order_date', rangeEndStr)
 
   let visitsQ = supabase
     .from('visits')
@@ -3595,36 +3609,119 @@ export async function rescheduleStockOutItem({ item, targetDate, repId, repName,
  * sales rep, order ref) per spec. Filtered by billing_verified_at, matching
  * how the rest of Billing's date-based views work.
  */
-export async function loadPartialVerifications(fromISO, toISO) {
+/**
+ * Product Shortage Sales Loss Report — ONE ROW PER SHORTAGE PRODUCT LINE
+ * (not per order). Replaces the old order-level Partial Verification Report,
+ * whose only caller was PartialVerificationReport.jsx — confirmed before
+ * rewriting this function, so nothing else depends on its previous shape.
+ *
+ * DATA MODEL — two structurally different ways a shortage is recorded, both
+ * traced from the existing billing verification code (removeItem /
+ * editItemQty in this same file), not invented:
+ *
+ *   1. FULL REMOVAL — removeItem() sets removed=true, change_type='removed',
+ *      change_reason from a fixed dropdown (Stock Out / Damaged Stock /
+ *      Others). qty is left as the original ordered quantity — the whole
+ *      line was rejected, so the whole qty is the shortage.
+ *
+ *   2. PARTIAL REDUCTION — editItemQty() reduces qty on the SAME row and
+ *      records the original value in original_qty (only the first time it
+ *      changes). removed stays false — the line wasn't rejected, just
+ *      supplied at a lower quantity. Its reason is a free-text field typed
+ *      by the billing team, not a fixed dropdown, so there is no reliable
+ *      "Stock Out" flag to check here the way there is for full removals.
+ *      This is treated as a stock shortage when the typed reason contains
+ *      the word "stock" (case-insensitive) — the only signal the data model
+ *      actually provides. This is a documented judgement call, not a
+ *      guarantee: a billing team member typing an unrelated reason that
+ *      happens to contain "stock", or a genuine stock-shortage reason that
+ *      doesn't mention the word, would be classified against intent. If
+ *      this needs to be more precise, the fix is upstream — giving
+ *      editItemQty's reason field the same fixed dropdown removeItem
+ *      already has — not a smarter guess here.
+ *
+ * DATE: filters by order_date (the day the sales rep placed the order),
+ * NOT billing_verified_at (the old report's filter field) — the new
+ * report's own Date column is explicitly defined as the order date, so the
+ * filter must use the same field or the displayed dates and the selected
+ * filter would silently disagree.
+ *
+ * SCOPE: only requires stockOutLines.length > 0 — NOT verifiedItems.length
+ * > 0 like the old function did. That old condition would have silently
+ * excluded orders that were COMPLETELY stocked out, which the new report is
+ * explicitly required to include.
+ *
+ * AMOUNT: shortageQty × unit_price. unit_price is the sales rep's own
+ * effective selling price captured per line at order time (see saveCloudOrder
+ * — no separate line-total field exists to recompute from), so this is
+ * already "the sales value entered by the sales rep for that line", not a
+ * billing-side or master-price figure.
+ *
+ * DUPLICATE SAFETY: this reads directly from order_items on every call —
+ * there is no separate accumulating log this appends to. Refreshing,
+ * reopening a verified order for re-inspection, or regenerating the report
+ * all re-derive the same rows from the same source rows, keyed by the
+ * order_item's own id. The same underlying database row can never produce
+ * two report lines, and nothing here writes anything — recompute this and
+ * every downstream KPI is trivially freed of drift.
+ */
+export async function loadShortageSalesLossReport(fromDateStr, toDateStr) {
   const { data, error } = await supabase
     .from('orders')
     .select(`
-      id, shop_name, route, sales_rep_id, billing_verified_at, order_date,
-      order_items ( id, product_name, qty, unit, removed, change_reason )
+      id, shop_name, route, sales_rep_id, order_date,
+      order_items ( id, product_name, qty, unit, unit_price, removed, change_type, change_reason, original_qty )
     `)
     .eq('billing_status', 'verified')
-    .gte('billing_verified_at', fromISO)
-    .lte('billing_verified_at', toISO)
-  if (error) { console.error('load partial verifications failed', error); return [] }
+    .gte('order_date', fromDateStr)
+    .lte('order_date', toDateStr)
+  if (error) { console.error('load shortage sales loss report failed', error); return [] }
 
-  const partial = (data || [])
-    .map((o) => {
-      const items = o.order_items || []
-      const stockOut = items.filter((i) => i.removed && i.change_reason === 'Stock Out')
-      const verified = items.filter((i) => !i.removed)
-      return { ...o, stockOutItems: stockOut, verifiedItems: verified }
-    })
-    .filter((o) => o.stockOutItems.length > 0 && o.verifiedItems.length > 0)
-
-  // Attach rep display names in one batch (small, bounded list).
-  const repIds = [...new Set(partial.map((o) => o.sales_rep_id).filter(Boolean))]
+  const repIds = [...new Set((data || []).map((o) => o.sales_rep_id).filter(Boolean))]
+  let nameById = new Map()
   if (repIds.length) {
     const { data: reps } = await supabase.from('profiles').select('id, full_name').in('id', repIds)
-    const nameById = new Map((reps || []).map((r) => [r.id, r.full_name]))
-    partial.forEach((o) => { o.sales_rep_name = nameById.get(o.sales_rep_id) || '—' })
+    nameById = new Map((reps || []).map((r) => [r.id, r.full_name]))
   }
 
-  return partial.sort((a, b) => new Date(b.billing_verified_at) - new Date(a.billing_verified_at))
+  const rows = []
+  for (const o of data || []) {
+    const salesRepName = nameById.get(o.sales_rep_id) || '—'
+    for (const i of o.order_items || []) {
+      let shortageQty = 0
+      if (i.removed && i.change_reason === 'Stock Out') {
+        shortageQty = Number(i.qty) || 0
+      } else if (
+        !i.removed &&
+        i.change_type === 'qty' &&
+        i.original_qty != null &&
+        Number(i.original_qty) > Number(i.qty) &&
+        /stock/i.test(i.change_reason || '')
+      ) {
+        shortageQty = Number(i.original_qty) - Number(i.qty)
+      }
+      if (shortageQty <= 0) continue
+
+      const unitPrice = Number(i.unit_price) || 0
+      rows.push({
+        // order_item's own primary key — the stable identity that makes this
+        // report line naturally duplicate-proof across refreshes/regeneration.
+        key: i.id,
+        orderId: o.id,
+        date: o.order_date,
+        shopName: o.shop_name,
+        route: o.route,
+        salesRepName,
+        itemName: i.product_name,
+        quantity: shortageQty,
+        unitPrice,
+        amount: Math.round(shortageQty * unitPrice * 100) / 100
+      })
+    }
+  }
+
+  // Newest order date first, matching the old report's convention.
+  return rows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
 }
 
 // ===========================================================================

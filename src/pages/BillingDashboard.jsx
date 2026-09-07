@@ -259,7 +259,12 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
           dateStr || null,
           type === 'EXP' && expressRoute ? expressRoute : null
         ),
-        loadBillingCounts(rep.id, dateStr || null, status)
+        // Bug: this call never passed the selected status, so the category
+        // badges (All/Express/Standard/Add-ons) always reflected whatever
+        // loadBillingCounts computed internally — which was hardcoded to
+        // pending. Switching to Verified changed the LIST but not the
+        // BADGES, since the badges never knew a tab switch had happened.
+        loadBillingCounts(rep.id, dateStr || null, status === 'verified' ? 'verified' : 'pending')
       ])
       setOrders(list)
       setCounts(badgeCounts)

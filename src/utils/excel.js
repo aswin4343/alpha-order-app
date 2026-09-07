@@ -1,6 +1,6 @@
 // SheetJS is heavy (~400KB). Load it on demand so the order screen stays light.
 let _xlsx = null
-async function getXLSX() {
+export async function getXLSX() {
   if (!_xlsx) _xlsx = await import('xlsx')
   return _xlsx
 }
@@ -192,5 +192,91 @@ export async function exportMultiSheet(sheets, fileName) {
     const safe = (s.name || 'Sheet').replace(/[\\/?*[\]:]/g, '').slice(0, 31) || 'Sheet'
     XLSX.utils.book_append_sheet(wb, ws, safe)
   })
+  XLSX.writeFile(wb, fileName)
+}
+
+/**
+ * Excel export for the Product Shortage Sales Loss report. A dedicated
+ * function rather than reusing exportMultiSheet above: that function is a
+ * simple json_to_sheet with no styling, used elsewhere for plain data dumps,
+ * and this report has specific requirements (frozen header, auto-filter,
+ * numeric currency cells, a totals row) that would be wrong to bolt onto a
+ * shared helper other callers rely on staying simple. Reuses the same
+ * lazy-loaded xlsx instance via getXLSX rather than importing the library a
+ * second time.
+ *
+ * rows: [{ date, shopName, salesRepName, itemName, quantity, amount }]
+ * summary: { totalItems, totalQty, uniqueProducts, totalLostValue,
+ *            byProduct: [{ product, qty, amount }] } (byProduct pre-sorted
+ *            by amount descending by the caller)
+ */
+export async function exportShortageSalesLossExcel(rows, summary, fileName) {
+  const XLSX = await getXLSX()
+  const wb = XLSX.utils.book_new()
+
+  // --- Sheet 1: Shortage Sales Loss (the primary, line-level data) --------
+  const header = ['DATE', 'SHOP NAME', 'SALES REP', 'ITEM (REMOVED)', 'QUANTITY', 'AMOUNT']
+  const aoa = [header]
+  for (const r of rows) {
+    aoa.push([r.date, r.shopName, r.salesRepName, r.itemName, r.quantity, r.amount])
+  }
+  // Totals row at the bottom, per spec — label spans the first four columns,
+  // QUANTITY and AMOUNT columns carry the actual numeric sums so a formula
+  // dragged from this row (or a simple visual check) matches the KPI above.
+  aoa.push(['TOTAL LOST SALES VALUE', '', '', '', summary.totalQty, summary.totalLostValue])
+
+  const ws1 = XLSX.utils.aoa_to_sheet(aoa)
+
+  // QUANTITY (col E) and AMOUNT (col F) as real numbers, not text, on every
+  // data row plus the totals row — this is what the spec means by "usable
+  // for SUM/filtering", not stored as a string with a ₹ prefix baked in.
+  const lastRow = aoa.length // 1-based, includes header
+  for (let r = 2; r <= lastRow; r++) {
+    const qCell = ws1[`E${r}`]
+    const aCell = ws1[`F${r}`]
+    if (qCell) qCell.t = 'n'
+    if (aCell) { aCell.t = 'n'; aCell.z = '₹#,##,##0' } // Indian grouping-style currency format
+  }
+
+  ws1['!cols'] = [
+    { wch: 12 }, // DATE
+    { wch: 26 }, // SHOP NAME
+    { wch: 16 }, // SALES REP
+    { wch: 32 }, // ITEM (REMOVED)
+    { wch: 10 }, // QUANTITY
+    { wch: 14 } // AMOUNT
+  ]
+  ws1['!freeze'] = { xSplit: 0, ySplit: 1 } // freeze header row
+  ws1['!autofilter'] = { ref: `A1:F${lastRow - 1}` } // filter on data rows only, not the totals row
+  XLSX.utils.book_append_sheet(wb, ws1, 'Shortage Sales Loss')
+
+  // --- Sheet 2: Summary (KPIs + product-wise breakdown) --------------------
+  const summaryAoa = [
+    ['Metric', 'Value'],
+    ['Total Shortage Items', summary.totalItems],
+    ['Total Shortage Quantity', summary.totalQty],
+    ['Unique Products Short', summary.uniqueProducts],
+    ['Total Lost Sales Value', summary.totalLostValue],
+    [],
+    ['Product', 'Total Shortage Quantity', 'Total Lost Sales Value']
+  ]
+  for (const p of summary.byProduct) summaryAoa.push([p.product, p.qty, p.amount])
+
+  const ws2 = XLSX.utils.aoa_to_sheet(summaryAoa)
+  // Numeric formatting for the KPI value cells and every product-row cell.
+  ws2['B2'] = { t: 'n', v: summary.totalItems }
+  ws2['B3'] = { t: 'n', v: summary.totalQty }
+  ws2['B4'] = { t: 'n', v: summary.uniqueProducts }
+  ws2['B5'] = { t: 'n', v: summary.totalLostValue, z: '₹#,##,##0' }
+  const productHeaderRow = 7 // 1-based row of the "Product | Qty | Amount" header
+  for (let r = productHeaderRow + 1; r <= summaryAoa.length; r++) {
+    const qCell = ws2[`B${r}`]
+    const aCell = ws2[`C${r}`]
+    if (qCell) qCell.t = 'n'
+    if (aCell) { aCell.t = 'n'; aCell.z = '₹#,##,##0' }
+  }
+  ws2['!cols'] = [{ wch: 30 }, { wch: 22 }, { wch: 20 }]
+  XLSX.utils.book_append_sheet(wb, ws2, 'Summary')
+
   XLSX.writeFile(wb, fileName)
 }
