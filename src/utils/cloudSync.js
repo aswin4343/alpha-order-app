@@ -3944,47 +3944,42 @@ async function userIdsForRole(role) {
 }
 
 export async function notifyBillingOfAddon({ shopName, route, addonLines, repName, orderId }) {
-  const targets = await userIdsForRole('billing_team')
-  if (!targets.length) {
-    // Reaching here means the recipient lookup found nobody. Almost always
-    // row-level security on `profiles` blocking a rep from seeing billing
-    // users — which silently produced no notification at all.
-    console.error(
-      'Add-on notification skipped: no billing_team recipients could be resolved. ' +
-      'Run sql/62_role_lookup_function.sql so recipients can be looked up from a ' +
-      'sales rep session.'
-    )
+  // Routed through the create_addon_announcement RPC (migration 63) rather
+  // than a direct table insert. That RPC is SECURITY DEFINER and validates,
+  // server-side, that the caller is a sales rep, that orderId genuinely
+  // belongs to them, and that the order actually contains an add-on line —
+  // narrower and more robust than any RLS policy on the announcements table
+  // could enforce, and it doesn't depend on that policy being configured
+  // correctly at all. orderId is required for this path (the RPC's whole
+  // validation model is built around a real, owned order), which is always
+  // the case here since this is only ever called after saveCloudOrder
+  // returns a genuine new order id.
+  if (!orderId) {
+    console.error('notifyBillingOfAddon called without an orderId — cannot validate ownership, notification skipped.')
     return null
   }
 
   const lines = (addonLines || []).filter((l) => l && l.name)
-  const productBlock = lines.length
+  const productSummary = lines.length
     ? lines.map((l) => `• ${l.name} — Qty ${l.qty ?? '—'} ${l.unit || ''}`.trim()).join('\n')
     : '—'
 
-  // Structured so the popup can present labelled fields (Sales Rep, Customer,
-  // Product, Quantity) rather than one run-on sentence.
-  const body = [
-    'A new product has been added to this customer\'s bill by the Sales Representative.',
-    '',
-    `Sales Representative: ${repName || '—'}`,
-    `Customer: ${shopName || '—'}${route ? `, ${route}` : ''}`,
-    'Product:',
-    productBlock
-  ].join('\n')
-
-  return sendAnnouncement({
-    title: 'New Product Added',
-    body,
-    highPriority: true,
-    audience: 'billing',
-    repIds: targets,
-    expiresInDays: 3,
-    notifType: 'addon',
-    // Lets the popup's "View Bill" action open this exact order rather than
-    // inferring it from the shop name.
-    refOrderId: orderId || null
+  const { data, error } = await supabase.rpc('create_addon_announcement', {
+    p_order_id: orderId,
+    p_shop_name: shopName || null,
+    p_route: route || null,
+    p_rep_name: repName || null,
+    p_product_summary: productSummary
   })
+  if (error) {
+    console.error(
+      'Add-on notification RPC failed. If this mentions "function does not exist", ' +
+      'run sql/63_addon_announcement_rpc.sql.',
+      error
+    )
+    throw error
+  }
+  return data // the new announcement's id, or null is never returned on success — a thrown error is how failure surfaces now
 }
 
 /**
