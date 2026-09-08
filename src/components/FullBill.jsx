@@ -33,8 +33,11 @@ function CopyableName({ name }) {
  * Props:
  *   brand, shopName, route, salesRepName, orderDate, orderRef — same as PickerBill
  *   items — [{ name, hsn, mrp, unit, qty, unit_price, gst_percent }]
+ *   onRemove — OPTIONAL callback(line). When provided, an extra screen-only
+ *     "Remove" cell is shown per row (never printed). When omitted, the bill
+ *     renders exactly as before — Warehouse/print contexts pass nothing.
  */
-export default function FullBill({ brand, shopName, route, salesRepName, orderDate, orderRef, items }) {
+export default function FullBill({ brand, shopName, route, salesRepName, orderDate, orderRef, items, onRemove }) {
   const company = companyFor(brand)
   const brandLogo = brandLogoFor(brand)
   const bill = computeBill(items || [])
@@ -111,6 +114,7 @@ export default function FullBill({ brand, shopName, route, salesRepName, orderDa
                 <th className="border border-slate-700 px-1.5 py-1.5 text-right">TAXABLE</th>
                 <th className="border border-slate-700 px-1.5 py-1.5 text-center">GST%</th>
                 <th className="border border-slate-700 px-1.5 py-1.5 text-right">TOTAL</th>
+                {onRemove && <th className="border border-slate-700 px-1.5 py-1.5 text-center no-print-inline">ACTION</th>}
               </tr>
             </thead>
             <tbody>
@@ -129,6 +133,18 @@ export default function FullBill({ brand, shopName, route, salesRepName, orderDa
                   <td className="border border-slate-300 px-1.5 py-1.5 text-right text-slate-700">{rupee(l.taxable)}</td>
                   <td className="border border-slate-300 px-1.5 py-1.5 text-center text-slate-600">{l.gst_percent ?? 0}</td>
                   <td className="border border-slate-300 px-1.5 py-1.5 text-right font-bold text-slate-900">{rupee(l.total)}</td>
+                  {onRemove && (
+                    <td className="border border-slate-300 px-1.5 py-1.5 text-center no-print-inline">
+                      <button
+                        type="button"
+                        onClick={() => onRemove(l)}
+                        disabled={!l._sourceItem}
+                        className="rounded-lg border border-red-200 text-red-600 px-2 py-1 text-[10px] font-bold hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed"
+                      >
+                        Remove
+                      </button>
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>

@@ -51,7 +51,11 @@ function mapBillItems(rawItems, products) {
       qty: i.qty,
       unit_price: i.unit_price,
       gst_percent: i.gst_percent ?? liveProduct?.gst ?? null,
-      free_qty: i.free_qty || 0
+      free_qty: i.free_qty || 0,
+      // Source order-item, carried through so a Full Bill row can trace back to
+      // the real record for the optional Remove action. Additive only — every
+      // existing consumer (PickerBill, print, computeBill) ignores this field.
+      _sourceItem: i
     }
   })
 }
@@ -701,6 +705,17 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
           orderDate={order.created_at}
           orderRef={orderRefFrom(order.id)}
           items={mapBillItems(displayItems, products)}
+          onRemove={order._status === 'verified' ? undefined : (line) => {
+            // Reuse the EXACT existing removal flow — same reason dialog (with
+            // Stock Out), same removeItem(), same audit + rep notification +
+            // reschedule + Partial-Verification signals. Closing the Full Bill
+            // first so the shared ReasonModal is the focused surface; the panel
+            // reload on its onDone refreshes both the list and (on reopen) the
+            // recomputed bill. No-op if the line has no traceable source item.
+            if (!line?._sourceItem) return
+            setShowFullBill(false)
+            setReasonModal({ mode: 'remove', item: line._sourceItem })
+          }}
         />
       )}
 
