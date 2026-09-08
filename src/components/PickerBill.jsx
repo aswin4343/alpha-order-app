@@ -327,21 +327,19 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
              hidden (but still space-taking) app UI and anchors it to the top
              left of the sheet. Width is pinned to the real CONTENT width so the
              box is never measured against the body. */
+          /* Override index.css's .picker-bill-print { width:100% } so the
+             printed container is measured at the ACTUAL page box, not the full
+             body width — the mismatch that made the physical print paginate/seat
+             the rotated content wrongly. The rotation itself lives on the inner
+             .wh-slip-root wrapper (identical to the preview), so nothing here
+             applies a transform to .picker-bill-print any more. */
+          .picker-bill-print { width: ${PRINT_PAGE_W_MM}mm !important; max-width: ${PRINT_PAGE_W_MM}mm !important; overflow: visible !important; }
+          .wh-print-rot-outer { width: ${PRINT_PAGE_W_MM}mm !important; height: ${PRINT_PAGE_H_MM}mm !important; overflow: visible !important; }
           .wh-slip-root { width: ${PAGE_W_MM}mm !important; max-width: ${PAGE_W_MM}mm !important; overflow: visible !important; }
           .print-page { width: ${PAGE_W_MM}mm !important; box-shadow: none !important; border-radius: 0 !important; }
           .print-page tr { break-inside: avoid !important; page-break-inside: avoid !important; }
           /* Product names stay on ONE line in the real print output too. */
           .print-page .wh-name, .print-page .wh-name * { white-space: nowrap !important; }
-          ${ROTATE_90_CW ? `
-          /* Rotate the ENTIRE printed slip 90° clockwise as one unit. The
-             content is unchanged and still ${PAGE_W_MM}mm wide; only the whole
-             page is turned. transform-origin at top-left + a translateX of the
-             post-rotation page width (${PRINT_PAGE_W_MM}mm) seats the rotated
-             block back into the sheet's top-left so nothing is clipped. */
-          .picker-bill-print {
-            transform-origin: top left !important;
-            transform: translateX(${PRINT_PAGE_W_MM}mm) rotate(90deg) !important;
-          }` : ''}
         }
       `}</style>
 
@@ -376,10 +374,35 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
         ))}
       </div>
 
-      {/* Print-only copy, portaled out of the fixed-position modal. */}
+      {/* Print-only copy, portaled out of the fixed-position modal. It now uses
+          the SAME wrapper structure as the on-screen preview above: an outer box
+          sized to the rotated page (PRINT_PAGE_W_MM × PRINT_PAGE_H_MM) with an
+          inner content-width block rotated 90° cw. Previously the transform was
+          applied directly to .picker-bill-print, whose box index.css forces to
+          width:100% at print time — so the browser measured/paginated the
+          untransformed 100%-width box and the physical print came out in the old
+          orientation even though the preview (which already used this wrapper)
+          looked correct. Matching the two structures makes print === preview. */}
       {createPortal(
-        <div className="picker-bill-print wh-slip-root bg-white">
-          {pages.map((p, i) => renderPage(p, i, i === pages.length - 1))}
+        <div className="picker-bill-print bg-white">
+          {ROTATE_90_CW ? (
+            <div className="wh-print-rot-outer" style={{ width: `${PRINT_PAGE_W_MM}mm` }}>
+              <div
+                className="wh-slip-root bg-white"
+                style={{
+                  width: `${PAGE_W_MM}mm`,
+                  transformOrigin: 'top left',
+                  transform: `translateX(${PRINT_PAGE_W_MM}mm) rotate(90deg)`
+                }}
+              >
+                {pages.map((p, i) => renderPage(p, i, i === pages.length - 1))}
+              </div>
+            </div>
+          ) : (
+            <div className="wh-slip-root bg-white" style={{ width: `${PAGE_W_MM}mm` }}>
+              {pages.map((p, i) => renderPage(p, i, i === pages.length - 1))}
+            </div>
+          )}
         </div>,
         document.body
       )}
