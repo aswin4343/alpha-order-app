@@ -1,7 +1,7 @@
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
-import { saveCloudOrder, currentUserId, notifyBillingOfAddon } from '../utils/cloudSync.js'
+import { saveCloudOrder, currentUserId, notifyBillingOfAddon, loadCustomerLastPrices, loadCustomerLedgerCategory } from '../utils/cloudSync.js'
 import { buildAddOnMessage } from '../utils/whatsapp.js'
 import { useSearch } from '../hooks/useSearch.js'
 import { useDebounce } from '../hooks/useDebounce.js'
@@ -34,6 +34,32 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
   const [quantities, setQuantities] = useState({})
   const [units, setUnits] = useState({})
   const [priceOverrides, setPriceOverrides] = useState({})
+
+  // ROOT CAUSE of "Last Price shows RP/WP": ProductCard was never given
+  // lastPrice or defaultPriceType here, so PriceSelector's own fallback
+  // (`defaultPriceType || 'RETAIL'`) silently defaulted every add-on line to
+  // RETAIL pricing — regardless of the customer's actual category or their
+  // real last price — and that value got saved as unit_price. The next time
+  // anyone viewed this customer+product, loadCustomerLastPrices correctly
+  // read back exactly what was stored — it just had never been given the
+  // right price to store in the first place. Loaded the same way OrderPage
+  // loads them for its own selected customer, using this order's own
+  // shop_name/route (the only customer identity AddOnFlowModal has).
+  const [lastPrices, setLastPrices] = useState({})
+  const [defaultPriceType, setDefaultPriceType] = useState('RETAIL')
+
+  useEffect(() => {
+    let cancelled = false
+    loadCustomerLastPrices(order.shop_name, order.route).then((p) => { if (!cancelled) setLastPrices(p) }).catch(() => {})
+    loadCustomerLedgerCategory(order.shop_name, order.route)
+      .then((cat) => {
+        if (cancelled) return
+        setDefaultPriceType((cat || '').toString().trim().toUpperCase() === 'WHOLESALE-CUSTOMER' ? 'WHOLESALE' : 'RETAIL')
+      })
+      .catch(() => {})
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order.shop_name, order.route])
   const [saving, setSaving] = useState(false)
   const [saveError, setSaveError] = useState('')
   const [done, setDone] = useState(false)
@@ -76,17 +102,38 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
         wholesale: priceOverrides[id]?.wholesale != null ? priceOverrides[id].wholesale : p.wholesale,
         base: priceOverrides[id]?.base != null ? priceOverrides[id].base : p.base,
         netOverride: priceOverrides[id]?.net != null ? priceOverrides[id].net : null,
+        // ROOT CAUSE, PART 2 — the more direct half of this bug: PriceSelector's
+        // selectType() (fired when a rep taps RP/WP/Last/Custom) stores the
+        // choice as { priceType, finalRate } — but this chain never checked
+        // finalRate at all, only the separate net/base/wholesale/retail keys
+        // (which are how scheme products' BR/NR tags store an override, a
+        // completely different mechanism). So no matter what a rep explicitly
+        // selected for a normal product — RP, WP, or Last — it was silently
+        // ignored, and finalSellingPrice fell straight through to p.retail.
+        // finalRate is now checked first, exactly like OrderPage.jsx's own
+        // (correct) chain already does for the main order screen.
         finalSellingPrice:
+          priceOverrides[id]?.finalRate != null ? priceOverrides[id].finalRate :
           priceOverrides[id]?.net != null ? priceOverrides[id].net :
           priceOverrides[id]?.base != null ? priceOverrides[id].base :
           priceOverrides[id]?.wholesale != null ? priceOverrides[id].wholesale :
           priceOverrides[id]?.retail != null ? priceOverrides[id].retail :
           (p.retail != null ? p.retail : null),
-        normalPrice: p.retail != null ? p.retail : null,
+        // Category-aware, matching OrderPage.jsx's defaultPriceValueFor
+        // fallback order exactly (wholesale -> retail -> mrp, or the
+        // reverse) — a hardcoded p.retail here would incorrectly flag a
+        // wholesale customer's normal WP-priced add-on line as "Special
+        // Price" in Billing, since finalSellingPrice (WP) would never equal
+        // this value (RP).
+        normalPrice: (() => {
+          const order = defaultPriceType === 'WHOLESALE' ? ['wholesale', 'retail', 'mrp'] : ['retail', 'wholesale', 'mrp']
+          for (const k of order) { if (p[k] != null) return p[k] }
+          return null
+        })(),
         schemeEnabled: priceOverrides[id]?.schemeEnabled !== false
       }
     }).filter(Boolean),
-    [quantities, units, productMap, priceOverrides]
+    [quantities, units, productMap, priceOverrides, defaultPriceType]
   )
 
   const totalQty = items.reduce((s, i) => s + i.qty, 0)
@@ -266,6 +313,8 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
                 onUnit={onUnit}
                 override={priceOverrides[p.id]}
                 onOverride={onOverride}
+                lastPrice={lastPrices[(p.name || '').trim().toUpperCase()]}
+                defaultPriceType={defaultPriceType}
               />
             </div>
           ))}

@@ -4072,3 +4072,44 @@ export async function loadOverduePendingCounts() {
   }
   return counts
 }
+
+/**
+ * Resolves an order id (e.g. from an announcement's ref_order_id) into the
+ * rep + date needed to navigate Billing's UI to it — used by the "View
+ * Bill"/"View Order" click-through from AnnouncementPopup. A small, focused
+ * read; kept here rather than importing supabase directly into
+ * BillingDashboard.jsx, matching how every other DB access in this app
+ * goes through this module.
+ */
+export async function resolveOrderForNavigation(orderId) {
+  const { data, error } = await supabase
+    .from('orders')
+    .select('id, sales_rep_id, order_date')
+    .eq('id', orderId)
+    .single()
+  if (error || !data) return null
+  const { data: rep } = await supabase.from('profiles').select('id, full_name').eq('id', data.sales_rep_id).single()
+  return { orderId, repId: data.sales_rep_id, repName: rep?.full_name || '—', dateStr: data.order_date }
+}
+
+/**
+ * The customer's ledger category, looked up by shop name + route — the same
+ * identity pair loadCustomerLastPrices already uses. Needed so AddOnFlowModal
+ * can compute the same customer-category default price type (WHOLESALE for
+ * ledger WHOLESALE-CUSTOMER, else RETAIL) that OrderPage already computes
+ * from its own loaded `customer` object. AddOnFlowModal only ever receives
+ * an existing order (shop_name/route), not the full customer record, so this
+ * is the minimal lookup needed rather than duplicating customer-loading logic.
+ */
+export async function loadCustomerLedgerCategory(shopName, route) {
+  if (!shopName) return null
+  const { data, error } = await supabase
+    .from('customers')
+    .select('ledger_category')
+    .eq('shop_name', shopName)
+    .eq('route', route || '')
+    .limit(1)
+    .maybeSingle()
+  if (error) { console.error('load customer ledger category failed', error); return null }
+  return data?.ledger_category || null
+}

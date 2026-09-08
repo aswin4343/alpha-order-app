@@ -4,6 +4,7 @@ import { useApp } from '../context/AppContext.jsx'
 import {
   loadBillingReps,
   loadOverduePendingCounts,
+  resolveOrderForNavigation,
   loadBillingOrders,
   loadBillingOrderItemsFull,
   setItemAvailable,
@@ -80,6 +81,30 @@ export default function BillingDashboard() {
   const [openOrder, setOpenOrder] = useState(() => {
     try { return JSON.parse(sessionStorage.getItem('billing_order') || 'null') } catch { return null }
   })
+  // Set when "View Bill"/"View Order" is clicked from a popup notification
+  // (AnnouncementPopup dispatches 'alphaflow:open-order' with the order id
+  // the announcement references). Resolving it here — rather than inside
+  // AnnouncementPopup itself — keeps that component decoupled from
+  // BillingDashboard's own internal state shape; it only ever needs to know
+  // an order id, not how this page organises reps/dates/orders.
+  const [pendingOpen, setPendingOpen] = useState(null) // { repId, repName, dateStr, orderId } | null
+
+  useEffect(() => {
+    const onOpenOrderEvent = async (e) => {
+      const orderId = e?.detail?.orderId
+      if (!orderId) return
+      try {
+        const resolved = await resolveOrderForNavigation(orderId)
+        if (!resolved) { console.error('could not resolve order from notification'); return }
+        setPendingOpen(resolved)
+        setSelectedRep({ id: resolved.repId, name: resolved.repName })
+      } catch (err) {
+        console.error('open-order navigation failed', err)
+      }
+    }
+    window.addEventListener('alphaflow:open-order', onOpenOrderEvent)
+    return () => window.removeEventListener('alphaflow:open-order', onOpenOrderEvent)
+  }, [])
 
   // Save selection whenever it changes.
   useEffect(() => {
@@ -202,6 +227,9 @@ export default function BillingDashboard() {
 
         {selectedRep && (
           <OrdersPanel rep={selectedRep} openOrderId={openOrder?.id}
+            initialDateStr={pendingOpen?.repId === selectedRep?.id ? pendingOpen.dateStr : null}
+            autoOpenOrderId={pendingOpen?.repId === selectedRep?.id ? pendingOpen.orderId : null}
+            onAutoOpenConsumed={() => setPendingOpen(null)}
             onBackToReps={() => { setSelectedRep(null); setOpenOrder(null); loadReps() }}
             onOpenOrder={(o) => setOpenOrder(o)} hideOnMobileWhenDetail={!!openOrder} />
         )}
@@ -234,7 +262,7 @@ export default function BillingDashboard() {
   )
 }
 
-function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobileWhenDetail }) {
+function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobileWhenDetail, initialDateStr, autoOpenOrderId, onAutoOpenConsumed }) {
   const [orders, setOrders] = useState(null)
   const [type, setType] = useState('All')
   const [status, setStatus] = useState('pending') // 'pending' | 'verified'
@@ -244,6 +272,36 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
   // match what reps actually meant by "today".
   const todayIST = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
   const [dateStr, setDateStr] = useState(() => todayIST()) // default today
+
+  // "View Bill"/"View Order" from a popup notification arrives as a prop,
+  // not as this component's own initial state — this component is never
+  // remounted when the selected rep changes (no key on <OrdersPanel>), so a
+  // useState initializer would only ever run once and could never react to
+  // a later navigation request. This effect applies it explicitly whenever
+  // it changes instead.
+  useEffect(() => {
+    if (initialDateStr && initialDateStr !== dateStr) setDateStr(initialDateStr)
+    if (autoOpenOrderId && status !== 'pending') setStatus('pending')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialDateStr, autoOpenOrderId])
+
+  // Once the target date's orders have loaded, find the specific order the
+  // notification referenced and open it automatically. Matches against
+  // orderIds (every underlying order id in a merged shop+day group), not
+  // just the group's own top-level id — an add-on's id is very often NOT
+  // the group's id, since the group's id is whichever order in it was
+  // created first (see loadBillingOrders). onAutoOpenConsumed clears the
+  // pending target in the parent so this can't re-fire on a later reload.
+  useEffect(() => {
+    if (!autoOpenOrderId || !orders) return
+    const match = orders.find((o) => o.orderIds?.includes(autoOpenOrderId) || o.id === autoOpenOrderId)
+    if (match) {
+      onOpenOrder({ ...match, _status: status })
+      onAutoOpenConsumed?.()
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orders, autoOpenOrderId])
+
   const [expressRoute, setExpressRoute] = useState('') // '' = all express
   const [error, setError] = useState(false)
   const [counts, setCounts] = useState(null) // { all, express, standard, addons }

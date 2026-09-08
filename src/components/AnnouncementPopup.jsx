@@ -86,6 +86,29 @@ export default function AnnouncementPopup() {
       : item.notifType === 'removal' ? 'View Order'
         : 'View Changes'
 
+  // Scoped to 'addon' specifically: BillingDashboard is the only page with a
+  // listener for 'alphaflow:open-order' right now. This popup is also
+  // mounted on the rep's own dashboard for 'removal' notifications — without
+  // a matching listener there, dispatching the same event would silently do
+  // nothing, which would be worse than today's behaviour (at least the text
+  // expands). Extending this to 'removal' just needs the same listener
+  // added wherever the rep's own order screen lives.
+  const canOpenOrder = item.refOrderId && item.notifType === 'addon'
+
+  const handlePrimary = () => {
+    if (canOpenOrder) {
+      // Decoupled from BillingDashboard/OrderPage internals on purpose —
+      // this component doesn't know or need to know how either page
+      // organises its own state; it only announces "open this order id"
+      // and whichever page is mounted (billing or rep) can listen and
+      // resolve it however fits its own architecture.
+      window.dispatchEvent(new CustomEvent('alphaflow:open-order', { detail: { orderId: item.refOrderId } }))
+      acknowledge()
+    } else {
+      setExpanded(true)
+    }
+  }
+
   const acknowledge = async () => {
     setBusy(true)
     try {
@@ -117,8 +140,8 @@ export default function AnnouncementPopup() {
 
         <div className="flex gap-2 p-3 border-t border-slate-100">
           <button
-            onClick={() => setExpanded(true)}
-            disabled={expanded}
+            onClick={handlePrimary}
+            disabled={expanded && !canOpenOrder}
             className="flex-1 min-w-0 rounded-xl border border-brand-200 bg-brand-50 text-brand-700 text-sm font-bold py-2.5 disabled:opacity-40"
           >
             {primaryLabel}
