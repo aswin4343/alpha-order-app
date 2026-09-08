@@ -3775,6 +3775,35 @@ export async function rescheduleStockOutItem({ item, targetDate, repId, repName,
  * two report lines, and nothing here writes anything — recompute this and
  * every downstream KPI is trivially freed of drift.
  */
+// ---------------------------------------------------------------------------
+// Shortage detection — the ONE definition of "how much of an order_item was
+// short due to a stock shortage during verification". Extracted verbatim from
+// loadShortageSalesLossReport so the Billing report and the Sales Rep's own
+// shortage summary can never drift apart: both call this exact function.
+//
+//   - a line REMOVED with change_reason exactly 'Stock Out' → its whole qty
+//   - a line whose qty was REDUCED (change_type='qty', original_qty > qty)
+//     and whose free-text change_reason mentions "stock" → the reduced amount
+//   - anything else → 0 (not a shortage)
+//
+// Returns a non-negative Number. Callers treat 0 as "skip this line".
+// ---------------------------------------------------------------------------
+export function shortageQtyForItem(i) {
+  if (i.removed && i.change_reason === 'Stock Out') {
+    return Number(i.qty) || 0
+  }
+  if (
+    !i.removed &&
+    i.change_type === 'qty' &&
+    i.original_qty != null &&
+    Number(i.original_qty) > Number(i.qty) &&
+    /stock/i.test(i.change_reason || '')
+  ) {
+    return Number(i.original_qty) - Number(i.qty)
+  }
+  return 0
+}
+
 export async function loadShortageSalesLossReport(fromDateStr, toDateStr) {
   const { data, error } = await supabase
     .from('orders')
@@ -3798,18 +3827,7 @@ export async function loadShortageSalesLossReport(fromDateStr, toDateStr) {
   for (const o of data || []) {
     const salesRepName = nameById.get(o.sales_rep_id) || '—'
     for (const i of o.order_items || []) {
-      let shortageQty = 0
-      if (i.removed && i.change_reason === 'Stock Out') {
-        shortageQty = Number(i.qty) || 0
-      } else if (
-        !i.removed &&
-        i.change_type === 'qty' &&
-        i.original_qty != null &&
-        Number(i.original_qty) > Number(i.qty) &&
-        /stock/i.test(i.change_reason || '')
-      ) {
-        shortageQty = Number(i.original_qty) - Number(i.qty)
-      }
+      const shortageQty = shortageQtyForItem(i)
       if (shortageQty <= 0) continue
 
       const unitPrice = Number(i.unit_price) || 0
@@ -3832,6 +3850,62 @@ export async function loadShortageSalesLossReport(fromDateStr, toDateStr) {
 
   // Newest order date first, matching the old report's convention.
   return rows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
+}
+
+/**
+ * Sales Rep-specific product shortage summary.
+ *
+ * Same shortage data and same maths as the Billing Team's Product Shortage
+ * Sales Loss Report — identical shortage detection, identical amount =
+ * shortageQty × unit_price, identical "verified, non-hidden orders only"
+ * scope — but restricted to ONE rep's own orders.
+ *
+ * SECURITY: this does NOT trust a client-supplied rep id. It calls the
+ * `rep_shortage_summary` SECURITY DEFINER RPC (migration 65), which derives
+ * the rep from auth.uid() inside the database and has no rep-id parameter to
+ * tamper with. The orders_read RLS policy is intentionally broad ("any
+ * authenticated user may read", see supabase_phase3b.sql) so Billing/QC can
+ * see all orders — which means a plain client-side `.eq('sales_rep_id', …)`
+ * filter would NOT be a real boundary. The RPC is. (`userId` is accepted only
+ * so callers read naturally and to short-circuit before the round trip; it is
+ * never sent as an authority — the server ignores it.)
+ *
+ * Date scoping mirrors loadPerformanceForDate (this screen's own period
+ * logic): a single picked day is an equality check on order_date; This Week /
+ * This Month / a range pass a rangeOverride and become an order_date string
+ * range (en-CA / YYYY-MM-DD). Route is the same optional equality filter used
+ * elsewhere on the dashboard.
+ *
+ * Returns exactly the four metrics the Billing report's summary header shows:
+ *   { totalItems, totalQty, uniqueProducts, totalLostValue }
+ */
+export async function loadMyShortageSummary(userId, { dateStr, route = null, range = null } = {}) {
+  const empty = { totalItems: 0, totalQty: 0, uniqueProducts: 0, totalLostValue: 0 }
+  if (!userId) return empty
+
+  const singleDay = !range
+  const fromStr = range ? range.start.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }) : null
+  const toStr = range ? range.end.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }) : null
+
+  const { data, error } = await supabase.rpc('rep_shortage_summary', {
+    p_single_day: singleDay,
+    p_date: singleDay ? dateStr : null,
+    p_from: singleDay ? null : fromStr,
+    p_to: singleDay ? null : toStr,
+    p_route: route || null
+  })
+  if (error) { console.error('load my shortage summary failed', error); return empty }
+
+  // The RPC returns a single row (or none). Numeric aggregates come back as
+  // strings from postgres numeric columns, so coerce explicitly.
+  const row = Array.isArray(data) ? data[0] : data
+  if (!row) return empty
+  return {
+    totalItems: Number(row.total_items) || 0,
+    totalQty: Number(row.total_qty) || 0,
+    uniqueProducts: Number(row.unique_products) || 0,
+    totalLostValue: Number(row.total_lost_value) || 0
+  }
 }
 
 // ===========================================================================

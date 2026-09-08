@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
 import { useApp } from '../context/AppContext.jsx'
-import { loadMyPerformance, loadPerformanceForDate, currentUserId, resolvePeriodRange } from '../utils/cloudSync.js'
+import { loadMyPerformance, loadPerformanceForDate, currentUserId, resolvePeriodRange, loadMyShortageSummary } from '../utils/cloudSync.js'
 import { BackIcon } from '../components/Icons.jsx'
 import VisitsListModal from '../components/VisitsListModal.jsx'
 import OrdersListModal from '../components/OrdersListModal.jsx'
@@ -41,6 +41,7 @@ export default function PerformancePage({ onBack }) {
   const [dateStr, setDateStr] = useState(() => new Date().toISOString().slice(0, 10))
   const [route, setRoute] = useState('') // '' = All routes (unchanged behaviour)
   const [dayPerf, setDayPerf] = useState(null)
+  const [shortage, setShortage] = useState(null)
   const [totals, setTotals] = useState(null)
   const [error, setError] = useState(false)
 
@@ -83,6 +84,26 @@ export default function PerformancePage({ onBack }) {
         if (active) setDayPerf(p)
       } catch {
         if (active) setError(true)
+      }
+    })()
+    return () => { active = false }
+  }, [uid, dateStr, route, range])
+
+  // Shortage summary — same identity, same period, same route as above, so it
+  // always matches the numbers the rest of this screen is showing. Reuses the
+  // Billing report's exact shortage definition via loadMyShortageSummary, but
+  // scoped server-side to this rep. Loaded independently so a slow/failed
+  // shortage fetch never blocks or breaks the existing performance cards.
+  useEffect(() => {
+    if (!uid) return
+    let active = true
+    setShortage(null)
+    ;(async () => {
+      try {
+        const s = await loadMyShortageSummary(uid, { dateStr, route: route || null, range })
+        if (active) setShortage(s)
+      } catch {
+        if (active) setShortage({ totalItems: 0, totalQty: 0, uniqueProducts: 0, totalLostValue: 0 })
       }
     })()
     return () => { active = false }
@@ -194,6 +215,35 @@ export default function PerformancePage({ onBack }) {
             <p className="text-center text-[11px] text-slate-400">
               Order Value uses the actual selling price recorded on each order. Tap a highlighted card to see the details behind it.
             </p>
+
+            {/* Product Shortage Summary — this rep's own shortages only, for
+                the SAME period + route selected above. Same data & maths as
+                the Billing Team's Product Shortage report; the Billing report
+                itself is untouched. */}
+            <div className="mt-5">
+              <div className="flex items-baseline justify-between mb-2">
+                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">My Product Shortage</p>
+                <p className="text-[11px] text-slate-400">{periodLabel}{route ? ` · ${route}` : ''}</p>
+              </div>
+              {shortage == null ? (
+                <div className="py-6 flex justify-center"><div className="h-6 w-6 rounded-full border-4 border-brand-100 border-t-brand-600 animate-spin" /></div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    <StatCard label="Shortage Items" value={shortage.totalItems} />
+                    <StatCard label="Shortage Qty" value={shortage.totalQty} />
+                    <StatCard label="Unique Products Short" value={shortage.uniqueProducts} />
+                    <div className="rounded-2xl bg-red-50 shadow-card border border-red-200 p-3 text-center">
+                      <p className="text-2xl font-bold text-red-700">₹{Math.round(shortage.totalLostValue || 0).toLocaleString('en-IN')}</p>
+                      <p className="text-[11px] text-red-600 mt-0.5 font-semibold">Lost Sales Value</p>
+                    </div>
+                  </div>
+                  <p className="text-center text-[11px] text-slate-400 mt-2">
+                    Shortages recorded by the Billing Team when a product was out of stock during verification of your orders.
+                  </p>
+                </>
+              )}
+            </div>
           </>
         )}
 
