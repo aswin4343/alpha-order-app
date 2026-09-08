@@ -425,7 +425,7 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
   )
 }
 
-function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, embedded, onlyAddonItems, repName, readOnly = false }) {
+function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, embedded, onlyAddonItems, repName, readOnly = false, statusOverride }) {
   const { products } = useApp()
   const { profile } = useAuth()
   const [items, setItems] = useState(null)
@@ -438,6 +438,17 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
   const [showPickerBill, setShowPickerBill] = useState(false)
   const [showFullBill, setShowFullBill] = useState(false)
   const [showNewCustomer, setShowNewCustomer] = useState(false)
+
+  // Effective verification status for THIS panel. When the panel is scoped to a
+  // single sub-order (an add-on or the original, rendered inside
+  // AddonAwareDetailPanel), `order` is the whole GROUP object, so order._status
+  // is the group's status — NOT this sub-order's. Using it made a Pending
+  // add-on inside a Verified group wrongly show "Verified — sent to Delivery".
+  // statusOverride carries this sub-order's own billing_status so the banner,
+  // the Verify button, and the per-item edit gate all reflect the right unit.
+  // With no override (order opened directly from the list), behaviour is
+  // unchanged: fall back to order._status exactly as before.
+  const effectiveStatus = statusOverride != null ? statusOverride : order._status
 
   // Shared audit context for every billing edit on this order. Threaded into
   // the edit modals so each modification writes a complete, traceable,
@@ -651,7 +662,7 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
                       component (a normal order, and the add-on's own items
                       section) never passes readOnly, so this condition is
                       identical to before for them. */}
-                  {!readOnly && !it.removed && order._status !== 'verified' && (!PRICE_APPROVAL_ENABLED || (it.approval_status !== 'pending' && it.approval_status !== 'rejected')) && (
+                  {!readOnly && !it.removed && effectiveStatus !== 'verified' && (!PRICE_APPROVAL_ENABLED || (it.approval_status !== 'pending' && it.approval_status !== 'rejected')) && (
                     <div className="flex gap-2 mt-2.5 ml-6">
                       <button onClick={() => setEditItem(it)}
                         className="text-xs font-semibold text-brand-700 border border-brand-200 rounded-lg px-2.5 py-1 hover:bg-brand-50">Edit Qty</button>
@@ -667,7 +678,7 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
 
             {/* Verify button — immediately below the last product */}
             <div className="mt-4">
-              {order._status === 'verified' ? (
+              {effectiveStatus === 'verified' ? (
                 <div className="w-full rounded-xl bg-green-50 border border-green-200 text-green-700 py-3 font-bold text-center">
                   ✓ Verified — sent to Delivery
                 </div>
@@ -705,7 +716,7 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
           orderDate={order.created_at}
           orderRef={orderRefFrom(order.id)}
           items={mapBillItems(displayItems, products)}
-          onRemove={order._status === 'verified' ? undefined : (line) => {
+          onRemove={effectiveStatus === 'verified' ? undefined : (line) => {
             // Reuse the EXACT existing removal flow — same reason dialog (with
             // Stock Out), same removeItem(), same audit + rep notification +
             // reschedule + Partial-Verification signals. Closing the Full Bill
@@ -1177,6 +1188,7 @@ function AddonAwareDetailPanel({ order, onBackToOrders, onVerified, repName }) {
                 <OrderDetailPanel
                   order={order}
                   singleOrderId={a.id}
+                  statusOverride={a.billing_status}
                   onlyAddonItems
                   repName={repName}
                   onBackToOrders={onBackToOrders}
@@ -1202,6 +1214,7 @@ function AddonAwareDetailPanel({ order, onBackToOrders, onVerified, repName }) {
             <OrderDetailPanel
               order={order}
               singleOrderId={original.id}
+              statusOverride={original.billing_status}
               repName={repName}
               // The fix: Billing is verifying an ADD-ON, so the original
               // order's own items must not be editable from this screen —
