@@ -2691,7 +2691,7 @@ export async function loadLoadingSheetData({ fromDateStr, toDateStr, route, sale
   let q = supabase
     .from('orders')
     .select(`
-      id, shop_name, sales_rep_id, order_date, route, billing_status,
+      id, shop_name, sales_rep_id, order_date, route, billing_status, customer_id,
       order_items ( qty, unit_price, removed, change_type, original_qty )
     `)
     // UPDATE 1: previously filtered to billing_status='verified' here, which
@@ -2715,7 +2715,19 @@ export async function loadLoadingSheetData({ fromDateStr, toDateStr, route, sale
     nameById = new Map((reps || []).map((r) => [r.id, r.full_name]))
   }
 
-  return (data || []).map((o) => {
+  // ONE SHOP PER DAY. Multiple orders for the same shop on the same date are
+  // merged into a single Loading Sheet row. Grouping keys on the shop's IDENTITY
+  // (customer_id), NOT its display name, so two different shops that happen to
+  // share a name stay separate; older rows missing customer_id fall back to
+  // shop_name::route (the same identity fallback used elsewhere in this file,
+  // see the visits logic). order_date keeps different days apart, so the same
+  // shop still gets one row PER DAY across a multi-day range.
+  //
+  // This is a PRESENTATION-level aggregation only — the underlying orders are
+  // untouched; each order's own grandTotal and modified-status are computed
+  // exactly as before, then combined.
+  const groups = new Map()
+  for (const o of data || []) {
     const items = o.order_items || []
     let grandTotal = 0
     let modified = false
@@ -2725,23 +2737,48 @@ export async function loadLoadingSheetData({ fromDateStr, toDateStr, route, sale
       if (i.change_type === 'replaced') modified = true
       if (i.change_type === 'qty' && i.original_qty != null && Number(i.original_qty) !== Number(i.qty)) modified = true
     }
-    return {
-      orderId: o.id,
-      shopName: o.shop_name,
-      salesRepName: nameById.get(o.sales_rep_id) || '—',
-      grandTotal: Math.round(grandTotal * 100) / 100,
-      // UPDATE 1: three-way status. billing_status !== 'verified' means
-      // Billing hasn't finalized the order yet — NOT VERIFIED, regardless of
-      // whether any item happens to have been edited mid-review (that's a
-      // separate, in-progress state, not a completed partial verification).
-      // Only once billing_status is 'verified' does the existing modified
-      // flag (unchanged from before this update) decide VERIFIED vs PARTIAL
-      // VERIFIED — reusing the same three item-level signals
-      // (removed/qty-changed/replaced) already used by removeItem /
-      // editItemQty / replaceItem, not a new or competing definition.
-      verificationStatus: o.billing_status !== 'verified' ? 'NOT VERIFIED' : (modified ? 'PARTIAL VERIFIED' : 'VERIFIED')
+    // Per-order three-way status — unchanged from the previous logic.
+    const orderStatus = o.billing_status !== 'verified' ? 'NOT VERIFIED' : (modified ? 'PARTIAL VERIFIED' : 'VERIFIED')
+
+    const shopIdentity = o.customer_id
+      || `${(o.shop_name || '').trim().toUpperCase()}::${(o.route || '').trim().toUpperCase()}`
+    const key = `${o.order_date}::${shopIdentity}`
+
+    const g = groups.get(key)
+    if (!g) {
+      groups.set(key, {
+        orderId: o.id,                 // representative id (first order in group)
+        orderIds: [o.id],              // all underlying orders, kept traceable
+        shopName: o.shop_name,
+        salesRepName: nameById.get(o.sales_rep_id) || '—',
+        orderDate: o.order_date,
+        grandTotal,
+        _statuses: [orderStatus]
+      })
+    } else {
+      g.orderIds.push(o.id)
+      g.grandTotal += grandTotal
+      g._statuses.push(orderStatus)
     }
-  }).sort((a, b) => a.shopName.localeCompare(b.shopName))
+  }
+
+  // Shop-level status priority (per requirement, and consistent with the
+  // per-order rule above): PARTIAL VERIFIED if any order is partial; else NOT
+  // VERIFIED if any order is still not verified; else VERIFIED (all verified).
+  const rollUp = (statuses) =>
+    statuses.includes('PARTIAL VERIFIED') ? 'PARTIAL VERIFIED'
+    : statuses.includes('NOT VERIFIED') ? 'NOT VERIFIED'
+    : 'VERIFIED'
+
+  return [...groups.values()].map((g) => ({
+    orderId: g.orderId,
+    orderIds: g.orderIds,
+    shopName: g.shopName,
+    salesRepName: g.salesRepName,
+    orderDate: g.orderDate,
+    grandTotal: Math.round(g.grandTotal * 100) / 100,
+    verificationStatus: rollUp(g._statuses)
+  })).sort((a, b) => a.shopName.localeCompare(b.shopName))
 }
 
 /** Sales rep list for the Loading Sheet filter dropdown — a small, focused
