@@ -64,6 +64,19 @@ export default function FullBill({ brand, shopName, route, salesRepName, orderDa
     <div className="bg-white">
       <style>{`
         @media print {
+          /* PHYSICAL PAGE BOX — the fix for the ~90° print rotation + cropping.
+             The Full Bill previously declared NO @page size, so the browser
+             sent the job at its default (portrait A4). The actual media is a
+             pre-cut A4 half-sheet loaded LANDSCAPE (210mm wide × 148.5mm tall),
+             so a portrait page box came out rotated and clipped left/right.
+             We declare the real landscape half-A4 box here — the same raw
+             custom-dimension approach already proven on the Picker Bill (raw
+             mm, not a named size like "A5", because some drivers stall on a
+             named media they don't have configured). margin:0 matches the
+             global print rule that pins .full-bill-print to the top-left.
+             This affects ONLY the printed page box — the on-screen preview
+             keeps its own Tailwind padding / max-width and is untouched. */
+          @page { size: 210mm 148.5mm; margin: 0; }
           .no-print-inline { display: none !important; }
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           .full-bill-print { padding: 0 !important; box-shadow: none !important; }
