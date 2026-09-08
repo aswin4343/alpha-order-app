@@ -652,17 +652,19 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
                     </button>
                   </div>
 
-                  {/* Edit actions (only for pending orders, and — while the
-                      price-approval feature is enabled — not for lines
-                      held/rejected by that workflow, since those wait on
-                      Admin, not Billing). readOnly is the one addition here:
-                      set only by AddonAwareDetailPanel's "ORIGINAL ORDER"
-                      section, so Billing can't modify the original order
-                      while verifying an add-on. Every other caller of this
-                      component (a normal order, and the add-on's own items
-                      section) never passes readOnly, so this condition is
-                      identical to before for them. */}
-                  {!readOnly && !it.removed && effectiveStatus !== 'verified' && (!PRICE_APPROVAL_ENABLED || (it.approval_status !== 'pending' && it.approval_status !== 'rejected')) && (
+                  {/* Item-level actions are gated ONLY by the item's own
+                      eligibility — pending order, not already removed, and (when
+                      the price-approval feature is on) not held/rejected by
+                      Admin. Availability does NOT depend on how the item entered
+                      the order (original / single add-on / bulk add-on) or which
+                      section it renders in: every eligible order item exposes the
+                      same Edit Qty / Replace / Remove, each targeting that item's
+                      own id via the existing handlers. (Previously an extra
+                      !readOnly term hid actions for the whole ORIGINAL section
+                      during add-on verification; that source-based suppression is
+                      removed so the rule is uniform per the universal
+                      requirement.) */}
+                  {!it.removed && effectiveStatus !== 'verified' && (!PRICE_APPROVAL_ENABLED || (it.approval_status !== 'pending' && it.approval_status !== 'rejected')) && (
                     <div className="flex gap-2 mt-2.5 ml-6">
                       <button onClick={() => setEditItem(it)}
                         className="text-xs font-semibold text-brand-700 border border-brand-200 rounded-lg px-2.5 py-1 hover:bg-brand-50">Edit Qty</button>
@@ -1216,11 +1218,12 @@ function AddonAwareDetailPanel({ order, onBackToOrders, onVerified, repName }) {
               singleOrderId={original.id}
               statusOverride={original.billing_status}
               repName={repName}
-              // The fix: Billing is verifying an ADD-ON, so the original
-              // order's own items must not be editable from this screen —
-              // Edit Qty / Replace / Remove are hidden by OrderDetailPanel
-              // whenever readOnly is set. Nothing else about how this
-              // section renders changes.
+              // NOTE: per the universal item-action rule, item-level actions are
+              // now gated purely by each item's own eligibility, NOT by section.
+              // readOnly no longer suppresses Edit Qty / Replace / Remove; it is
+              // left here as a harmless no-op so this call site is untouched
+              // structurally. Original-order items are now editable during
+              // add-on verification, exactly like add-on items.
               readOnly
               onBackToOrders={onBackToOrders}
               onVerified={onVerified}
