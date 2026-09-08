@@ -1030,10 +1030,22 @@ function AddonAwareDetailPanel({ order, onBackToOrders, onVerified, repName }) {
   const original = order.original
   const addons = order.addons
   const { products } = useApp()
+  const { profile } = useAuth()
   const [showPickerBill, setShowPickerBill] = useState(false)
   const [pickerItems, setPickerItems] = useState(null)
   const [showFullBill, setShowFullBill] = useState(false)
   const [fullBillItems, setFullBillItems] = useState(null)
+  // Remove-from-Full-Bill for the consolidated add-on view. Reuses the SAME
+  // ReasonModal + removeItem() the per-item panels use — no parallel logic.
+  const [reasonModal, setReasonModal] = useState(null) // { mode:'remove', item }
+
+  // Re-fetch the consolidated bill after a removal so the removed line drops
+  // out (mapBillItems filters removed) and totals recompute — same data path
+  // openFullBill already uses.
+  const reloadFullBill = async () => {
+    try { setFullBillItems(await loadBillingOrderItemsFull(order.orderIds || [order.id])) }
+    catch (e) { console.error('full bill reload failed', e) }
+  }
 
   // Consolidated Picker Bill / Full Bill: merges ORIGINAL + every add-on's
   // items into one list, exactly like the main (no-addon) panel already does
@@ -1108,6 +1120,40 @@ function AddonAwareDetailPanel({ order, onBackToOrders, onVerified, repName }) {
           orderDate={order.created_at}
           orderRef={orderRefFrom(order.id)}
           items={fullBillItems == null ? null : mapBillItems(fullBillItems, products)}
+          canRemove={(line) => !!line?._sourceItem?.is_addon}
+          onRemove={(line) => {
+            // Same removal flow as the normal-order Full Bill. Enabled ONLY for
+            // add-on lines: while verifying an add-on, the ORIGINAL order's
+            // items stay read-only from this screen (the existing rule the
+            // embedded original panel enforces via readOnly), so original lines
+            // get no Remove button — the ACTION column still shows for the
+            // add-on rows. Uses the item's own order_id for a correctly
+            // attributed audit record.
+            const src = line?._sourceItem
+            if (!src || !src.is_addon) return
+            setShowFullBill(false)
+            setReasonModal({ mode: 'remove', item: src })
+          }}
+        />
+      )}
+
+      {/* Reason modal (remove) — shared component, shared removeItem(). On done,
+          reload the consolidated bill so the removed line and its value are
+          gone and totals recompute. */}
+      {reasonModal && (
+        <ReasonModal
+          info={reasonModal}
+          onClose={() => setReasonModal(null)}
+          onDone={() => { setReasonModal(null); reloadFullBill() }}
+          audit={{
+            orderId: reasonModal.item.order_id,
+            orderRef: orderRefFrom(reasonModal.item.order_id),
+            shopName: order.shop_name,
+            route: order.route,
+            salesRepName: repName,
+            editedBy: profile?.full_name || 'Billing Team',
+            editedById: profile?.id || null
+          }}
         />
       )}
 

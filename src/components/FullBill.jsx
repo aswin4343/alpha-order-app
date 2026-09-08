@@ -36,9 +36,14 @@ function CopyableName({ name }) {
  *   onRemove — OPTIONAL callback(line). When provided, an extra screen-only
  *     "Remove" cell is shown per row (never printed). When omitted, the bill
  *     renders exactly as before — Warehouse/print contexts pass nothing.
+ *   canRemove — OPTIONAL predicate(line)=>bool deciding which rows get an
+ *     enabled Remove button (default: any row with a traceable source item).
+ *     Lets a caller allow removal for only some rows (e.g. add-on lines) while
+ *     still showing the ACTION column for the whole table.
  */
-export default function FullBill({ brand, shopName, route, salesRepName, orderDate, orderRef, items, onRemove }) {
+export default function FullBill({ brand, shopName, route, salesRepName, orderDate, orderRef, items, onRemove, canRemove }) {
   const company = companyFor(brand)
+  const isRemovable = (l) => (canRemove ? canRemove(l) : !!l._sourceItem)
   const brandLogo = brandLogoFor(brand)
   const bill = computeBill(items || [])
 
@@ -138,7 +143,7 @@ export default function FullBill({ brand, shopName, route, salesRepName, orderDa
                       <button
                         type="button"
                         onClick={() => onRemove(l)}
-                        disabled={!l._sourceItem}
+                        disabled={!isRemovable(l)}
                         className="rounded-lg border border-red-200 text-red-600 px-2 py-1 text-[10px] font-bold hover:bg-red-50 disabled:opacity-40 disabled:cursor-not-allowed"
                       >
                         Remove
