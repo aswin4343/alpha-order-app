@@ -4036,7 +4036,25 @@ export async function loadMyShortageSummary(userId, { dateStr, route = null, ran
     p_to: singleDay ? null : toStr,
     p_route: route || null
   })
-  if (error) { console.error('load my shortage summary failed', error); return empty }
+  if (error) {
+    // The RPC is the primary (server-enforced) path. If it is UNAVAILABLE —
+    // typically because migration 65/66 has not been applied yet — the summary
+    // used to silently return all-zeros, which reads as "no shortages" even
+    // when shortages exist. That is the 0-everywhere symptom. Rather than fail
+    // silently, fall back to a client-side computation that reuses the EXACT
+    // same shortage + resolution logic as the Billing report, scoped to the
+    // caller's OWN session identity (auth.uid via currentUserId — NOT the
+    // passed userId, which a client could tamper with). Because the filter uses
+    // the un-spoofable session uid, a rep can still only ever see their own
+    // figures. When the RPC exists, this branch never runs.
+    console.error('load my shortage summary RPC failed; using client fallback', error)
+    try {
+      return await myShortageSummaryFallback({ singleDay, dateStr, fromStr, toStr, route })
+    } catch (e) {
+      console.error('shortage summary fallback failed', e)
+      return empty
+    }
+  }
 
   // The RPC returns a single row (or none). Numeric aggregates come back as
   // strings from postgres numeric columns, so coerce explicitly.
@@ -4050,8 +4068,67 @@ export async function loadMyShortageSummary(userId, { dateStr, route = null, ran
   }
 }
 
-// ===========================================================================
-// PRICE APPROVAL (Admin) — every special/custom-priced order line
+/**
+ * Client-side computation of the rep's OWN shortage summary — used only as a
+ * fallback when the rep_shortage_summary RPC is unavailable (migration not yet
+ * applied). Mirrors the RPC and the Billing report exactly:
+ *   • scope: the caller's own verified, non-hidden orders in the period/route
+ *   • shortage per line: shortageQtyForItem (the one shared definition)
+ *   • resolution: subtract verified-rescheduled delivered qty (resolvedQtyBy…)
+ *   • the four metrics: items, qty, unique products, lost value (qty×unit_price)
+ *
+ * SECURITY: the rep is taken from the un-spoofable SESSION identity
+ * (currentUserId → auth.uid), never from a caller-supplied id, so a rep can
+ * only ever compute their own figures even though orders RLS is broad.
+ */
+async function myShortageSummaryFallback({ singleDay, dateStr, fromStr, toStr, route }) {
+  const empty = { totalItems: 0, totalQty: 0, uniqueProducts: 0, totalLostValue: 0 }
+  const uid = await currentUserId()
+  if (!uid) return empty
+
+  let q = supabase
+    .from('orders')
+    .select(`
+      id, sales_rep_id, order_date, route, hidden, billing_status,
+      order_items ( id, product_name, qty, unit_price, removed, change_type, change_reason, original_qty )
+    `)
+    .eq('sales_rep_id', uid)          // session uid — not spoofable
+    .eq('billing_status', 'verified')
+    .eq('hidden', false)
+  if (singleDay) q = q.eq('order_date', dateStr)
+  else q = q.gte('order_date', fromStr).lte('order_date', toStr)
+  if (route) q = q.eq('route', route)
+
+  const { data, error } = await q
+  if (error) throw error
+
+  const shortLines = []
+  for (const o of data || []) {
+    for (const i of o.order_items || []) {
+      const sQty = shortageQtyForItem(i)
+      if (sQty > 0) shortLines.push({ i, sQty })
+    }
+  }
+  const resolvedByOriginId = await resolvedQtyByOriginItemId(shortLines.map((s) => s.i.id))
+
+  let totalItems = 0, totalQty = 0, totalLostValue = 0
+  const products = new Set()
+  for (const { i, sQty } of shortLines) {
+    const remaining = Math.max(0, sQty - (resolvedByOriginId.get(i.id) || 0))
+    if (remaining <= 0) continue
+    totalItems += 1
+    totalQty += remaining
+    totalLostValue += Math.round(remaining * (Number(i.unit_price) || 0) * 100) / 100
+    products.add(i.product_name)
+  }
+  return {
+    totalItems,
+    totalQty,
+    uniqueProducts: products.size,
+    totalLostValue: Math.round(totalLostValue * 100) / 100
+  }
+}
+
 // ===========================================================================
 
 /** All order lines awaiting Admin sign-off, newest first, with shop/rep context. */

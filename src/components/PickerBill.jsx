@@ -139,6 +139,25 @@ const PAD_MM = 2
 // guarantee around, not something this code can fully control.
 const DECLARE_PAGE_SIZE = true
 
+// ROTATE THE WHOLE PRINTED PAGE 90° CLOCKWISE.
+// The content itself is rendered EXACTLY as before (still PAGE_W_MM wide, same
+// table/columns/fonts/pagination). We rotate the entire printed container as
+// one unit and swap the @page box to the rotated bounding box so nothing is
+// clipped and no extra sheet is produced.
+//
+// Geometry: the content block is PAGE_W_MM wide × PAGE_H_MM tall (210 × 148.5).
+// Rotating it 90°cw makes its BOUNDING box PAGE_H_MM wide × PAGE_W_MM tall
+// (148.5 × 210) — so the printed @page must use those swapped dimensions.
+// With transform-origin at the top-left, a 90°cw rotation swings the block
+// off to the left/up, so we translate it back by the post-rotation page width
+// (PAGE_H_MM) along X to seat it against the sheet's top-left again.
+const ROTATE_90_CW = true
+
+// Dimensions of the PRINTED PAGE BOX (after any rotation). When rotating, these
+// are the content dimensions swapped; when not, they equal the content box.
+const PRINT_PAGE_W_MM = ROTATE_90_CW ? PAGE_H_MM : PAGE_W_MM
+const PRINT_PAGE_H_MM = ROTATE_90_CW ? PAGE_W_MM : PAGE_H_MM
+
 // Hard cap on rows per printed page. Pagination is done on the DATA (chunk the
 // product array), never by measuring rendered heights and never by letting CSS
 // decide where to break. The previous measurement-based approach is what made
@@ -293,7 +312,7 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
     <div className="bg-white">
       <style>{`
         @media print {
-          @page { ${DECLARE_PAGE_SIZE ? `size: ${PAGE_W_MM}mm ${PAGE_H_MM}mm;` : ''} margin: 0; }
+          @page { ${DECLARE_PAGE_SIZE ? `size: ${PRINT_PAGE_W_MM}mm ${PRINT_PAGE_H_MM}mm;` : ''} margin: 0; }
           html, body { margin: 0 !important; padding: 0 !important; }
           .no-print-inline { display: none !important; }
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
@@ -306,24 +325,54 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
           /* Not overriding position here: index.css pins .picker-bill-print
              with position:absolute; top:0; left:0, which lifts it clear of the
              hidden (but still space-taking) app UI and anchors it to the top
-             left of the sheet. Width is pinned to the real page width so the
+             left of the sheet. Width is pinned to the real CONTENT width so the
              box is never measured against the body. */
           .wh-slip-root { width: ${PAGE_W_MM}mm !important; max-width: ${PAGE_W_MM}mm !important; overflow: visible !important; }
           .print-page { width: ${PAGE_W_MM}mm !important; box-shadow: none !important; border-radius: 0 !important; }
           .print-page tr { break-inside: avoid !important; page-break-inside: avoid !important; }
           /* Product names stay on ONE line in the real print output too. */
           .print-page .wh-name, .print-page .wh-name * { white-space: nowrap !important; }
+          ${ROTATE_90_CW ? `
+          /* Rotate the ENTIRE printed slip 90° clockwise as one unit. The
+             content is unchanged and still ${PAGE_W_MM}mm wide; only the whole
+             page is turned. transform-origin at top-left + a translateX of the
+             post-rotation page width (${PRINT_PAGE_W_MM}mm) seats the rotated
+             block back into the sheet's top-left so nothing is clipped. */
+          .picker-bill-print {
+            transform-origin: top left !important;
+            transform: translateX(${PRINT_PAGE_W_MM}mm) rotate(90deg) !important;
+          }` : ''}
         }
       `}</style>
 
       {/* On-screen preview — same renderPage() as the printed copy, so what
-          you see is what prints. No rescue class here, so the global print
-          rule hides this copy and only the portaled copy below is printed. */}
-      <div className="wh-screen-copy flex flex-col items-center gap-4 py-4 overflow-x-auto">
+          you see is what prints. When ROTATE_90_CW is on, each preview page is
+          wrapped in a box sized to the rotated bounding box and the page block
+          inside it is rotated 90° cw the same way the print output is, so the
+          preview shows the identical sideways result (preview = print). */}
+      <div className="wh-screen-copy flex flex-col items-center gap-4 py-4 overflow-auto">
         {pages.map((p, i) => (
-          <div key={i} className="shadow-2xl rounded-lg overflow-hidden bg-white shrink-0">
-            {renderPage(p, i, i === pages.length - 1)}
-          </div>
+          ROTATE_90_CW ? (
+            <div
+              key={i}
+              className="shadow-2xl rounded-lg overflow-hidden bg-white shrink-0"
+              style={{ width: `${PRINT_PAGE_W_MM}mm`, height: `${PRINT_PAGE_H_MM}mm` }}
+            >
+              <div
+                style={{
+                  width: `${PAGE_W_MM}mm`,
+                  transformOrigin: 'top left',
+                  transform: `translateX(${PRINT_PAGE_W_MM}mm) rotate(90deg)`
+                }}
+              >
+                {renderPage(p, i, i === pages.length - 1)}
+              </div>
+            </div>
+          ) : (
+            <div key={i} className="shadow-2xl rounded-lg overflow-hidden bg-white shrink-0">
+              {renderPage(p, i, i === pages.length - 1)}
+            </div>
+          )
         ))}
       </div>
 
