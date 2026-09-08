@@ -21,7 +21,7 @@ const rupee = (n) => `₹${Number(n || 0).toLocaleString('en-IN')}`
 export default function OrdersListModal({ userId, start, end, route, periodLabel, onClose }) {
   const [orders, setOrders] = useState(null) // null = loading
   const [error, setError] = useState(false)
-  const [openOrderId, setOpenOrderId] = useState(null)
+  const [openOrderIds, setOpenOrderIds] = useState(null) // full group's order ids (original + add-ons)
   const [confirmDelete, setConfirmDelete] = useState(null) // the order pending delete confirmation
   const [deleting, setDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState('')
@@ -97,7 +97,7 @@ export default function OrdersListModal({ userId, start, end, route, periodLabel
                 key={o.id}
                 className="w-full rounded-2xl border border-slate-200 mb-2.5 p-3 flex items-start gap-2"
               >
-                <button onClick={() => setOpenOrderId(o.id)} className="flex-1 min-w-0 text-left">
+                <button onClick={() => setOpenOrderIds(o.orderIds && o.orderIds.length ? o.orderIds : [o.id])} className="flex-1 min-w-0 text-left">
                   <div className="flex items-center justify-between gap-2">
                     <span className="flex items-center gap-1.5 min-w-0">
                       <span className="text-sm font-semibold text-slate-800 truncate">{o.shop_name}</span>
@@ -154,8 +154,8 @@ export default function OrdersListModal({ userId, start, end, route, periodLabel
         </div>
       </div>
 
-      {openOrderId && (
-        <OrderSummaryModal orderId={openOrderId} onClose={() => setOpenOrderId(null)} />
+      {openOrderIds && (
+        <OrderSummaryModal orderId={openOrderIds} onClose={() => setOpenOrderIds(null)} />
       )}
 
       {addOnOrder && (

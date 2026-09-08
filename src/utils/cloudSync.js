@@ -463,14 +463,24 @@ export function consolidateOrdersByVisit(orders) {
     }
   }
   const addonCounts = new Map()
+  // All member order ids per visit group (original + every add-on), in the
+  // order encountered. This is what lets the Order Summary load the COMPLETE
+  // merged order for a customer/day instead of only the latest sub-order —
+  // the group here is the existing source of truth (customer_id + day via
+  // visitKey), so no new relationship is invented.
+  const idsByKey = new Map()
   for (const o of orders || []) {
     const key = visitKey(o)
     addonCounts.set(key, (addonCounts.get(key) || 0) + 1)
+    const arr = idsByKey.get(key) || []
+    if (o.id) arr.push(o.id)
+    idsByKey.set(key, arr)
   }
   return Array.from(groups.entries()).map(([key, latest]) => ({
     ...latest,
     isAddon: (addonCounts.get(key) || 1) > 1,
-    addonCount: (addonCounts.get(key) || 1) - 1
+    addonCount: (addonCounts.get(key) || 1) - 1,
+    orderIds: idsByKey.get(key) || (latest.id ? [latest.id] : [])
   }))
 }
 
@@ -3149,34 +3159,69 @@ export async function loadOrdersList(userId, start, end, route = null) {
 }
 
 /**
- * Full order summary for one order (used by both the Orders Taken drill-down
- * and the New Shops -> Today's Activity -> order click path).
- * Returns product lines with qty/unit; unit_price/scheme are included ONLY
- * when present (new orders going forward) — never fabricated for old orders.
+ * Full order summary. Accepts either a single order id (unchanged behaviour,
+ * used by the New Shops -> Today's Activity path) OR an array of order ids that
+ * belong to the same customer/day visit group (original + its add-ons), in
+ * which case the products of every member order are MERGED into one summary.
+ *
+ * The group is decided upstream by consolidateOrdersByVisit (customer_id + day)
+ * — the existing grouping source of truth — so this never merges unrelated
+ * orders that merely share a shop name, and add-ons are never shown in place of
+ * the original. Each line keeps its own is_addon flag, so the summary UI's
+ * existing ADD-ON label still distinguishes later-added products. Totals are
+ * summed from the member orders' own stored totals (no new pricing math). The
+ * header (date/route/rep) comes from the EARLIEST member — the original order —
+ * and status is the group's overall state (pending if ANY member is still
+ * pending, so a pending add-on never reads as fully verified).
  */
-export async function loadOrderSummary(orderId) {
-  const { data: order, error } = await supabase
+export async function loadOrderSummary(orderIdOrIds) {
+  const ids = Array.isArray(orderIdOrIds) ? [...new Set(orderIdOrIds.filter(Boolean))] : [orderIdOrIds]
+  if (!ids.length) return null
+
+  const { data: orders, error } = await supabase
     .from('orders')
     .select('id, shop_name, route, sales_rep_id, total_products, total_quantity, total_value, order_date, created_at, billing_status')
-    .eq('id', orderId)
-    .maybeSingle()
+    .in('id', ids)
   if (error) throw error
-  if (!order) return null
+  if (!orders || !orders.length) return null
+
+  // Header order = earliest by created_at (the original), so date/route/rep
+  // reflect the original order, not the latest add-on.
+  const sorted = [...orders].sort((a, b) => new Date(a.created_at) - new Date(b.created_at))
+  const head = sorted[0]
 
   const { data: items, error: itemsErr } = await supabase
     .from('order_items')
     .select('id, product_name, qty, unit, is_addon, unit_price, scheme_applied')
-    .eq('order_id', orderId)
+    .in('order_id', ids)
   if (itemsErr) throw itemsErr
 
   // Rep display name (for the summary header).
   let repName = ''
   try {
-    const { data: prof } = await supabase.from('profiles').select('full_name').eq('id', order.sales_rep_id).maybeSingle()
+    const { data: prof } = await supabase.from('profiles').select('full_name').eq('id', head.sales_rep_id).maybeSingle()
     repName = prof?.full_name || ''
   } catch { /* non-critical */ }
 
-  return { ...order, sales_rep_name: repName, items: items || [] }
+  const mergedItems = items || []
+  // Totals summed from each member order's OWN stored totals — reuses the
+  // existing per-order totals, no recomputation and no double counting (each
+  // member order contributes exactly once).
+  const total_products = orders.reduce((s, o) => s + (Number(o.total_products) || 0), 0)
+  const total_quantity = orders.reduce((s, o) => s + (Number(o.total_quantity) || 0), 0)
+  const total_value = orders.reduce((s, o) => s + (Number(o.total_value) || 0), 0)
+  // Group status: verified only if EVERY member is verified; otherwise pending.
+  const billing_status = orders.every((o) => o.billing_status === 'verified') ? 'verified' : 'pending'
+
+  return {
+    ...head,
+    sales_rep_name: repName,
+    items: mergedItems,
+    total_products: total_products || mergedItems.length,
+    total_quantity,
+    total_value,
+    billing_status
+  }
 }
 
 /** New Shops Added list — customers this rep created in the period. No phone
@@ -3860,33 +3905,93 @@ export async function loadShortageSalesLossReport(fromDateStr, toDateStr) {
     nameById = new Map((reps || []).map((r) => [r.id, r.full_name]))
   }
 
-  const rows = []
+  // First pass: gather every original stock-out line and its full shortage qty.
+  const shortLines = []
   for (const o of data || []) {
-    const salesRepName = nameById.get(o.sales_rep_id) || '—'
     for (const i of o.order_items || []) {
       const shortageQty = shortageQtyForItem(i)
-      if (shortageQty <= 0) continue
-
-      const unitPrice = Number(i.unit_price) || 0
-      rows.push({
-        // order_item's own primary key — the stable identity that makes this
-        // report line naturally duplicate-proof across refreshes/regeneration.
-        key: i.id,
-        orderId: o.id,
-        date: o.order_date,
-        shopName: o.shop_name,
-        route: o.route,
-        salesRepName,
-        itemName: i.product_name,
-        quantity: shortageQty,
-        unitPrice,
-        amount: Math.round(shortageQty * unitPrice * 100) / 100
-      })
+      if (shortageQty > 0) shortLines.push({ o, i, shortageQty })
     }
+  }
+
+  // RESOLUTION — subtract quantities already fulfilled through the existing
+  // reschedule workflow. A reschedule creates a NEW order_item that points back
+  // to the original short line via rescheduled_from_item_id (migration 53). That
+  // fulfillment only COUNTS once Billing has verified the new order AND the new
+  // line was actually delivered (not itself short again). So:
+  //   resolvedQty(originalLine) = Σ qty of verified, non-short rescheduled lines
+  //                               whose rescheduled_from_item_id = originalLine.id
+  //   remainingShortage         = max(0, shortageQty − resolvedQty)
+  // A line whose remaining is 0 is fully resolved and drops out of the ACTIVE
+  // report; a partially resolved line stays with the reduced qty/value. Nothing
+  // is deleted — the original short rows and their reschedule links are intact
+  // for history/audit; this only changes what the ACTIVE report DERIVES.
+  const resolvedByOriginId = await resolvedQtyByOriginItemId(shortLines.map((s) => s.i.id))
+
+  const rows = []
+  for (const { o, i, shortageQty } of shortLines) {
+    const resolved = resolvedByOriginId.get(i.id) || 0
+    const remaining = Math.max(0, shortageQty - resolved)
+    if (remaining <= 0) continue   // fully resolved → no longer an active shortage
+
+    const unitPrice = Number(i.unit_price) || 0
+    rows.push({
+      key: i.id,
+      orderId: o.id,
+      date: o.order_date,
+      shopName: o.shop_name,
+      route: o.route,
+      salesRepName: nameById.get(o.sales_rep_id) || '—',
+      itemName: i.product_name,
+      quantity: remaining,
+      unitPrice,
+      amount: Math.round(remaining * unitPrice * 100) / 100
+    })
   }
 
   // Newest order date first, matching the old report's convention.
   return rows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
+}
+
+/**
+ * Given a set of ORIGINAL stock-out order_item ids, return a Map of
+ * originalItemId -> total quantity already fulfilled through the reschedule
+ * workflow (verified + actually delivered rescheduled lines pointing back).
+ *
+ * Reuses the existing reschedule linkage (rescheduled_from_item_id, migration
+ * 53). A rescheduled line counts as fulfillment ONLY when its own order is
+ * billing_status='verified' AND the line itself is not a fresh shortage
+ * (shortageQtyForItem === 0) — i.e. it was genuinely delivered, not short
+ * again. This makes resolution product- AND quantity-level, and multi-hop safe:
+ * a second reschedule that fulfills the remainder simply adds another verified
+ * line pointing back to the same original id.
+ */
+async function resolvedQtyByOriginItemId(originItemIds) {
+  const out = new Map()
+  const ids = [...new Set((originItemIds || []).filter(Boolean))]
+  if (!ids.length) return out
+
+  const { data, error } = await supabase
+    .from('order_items')
+    .select(`
+      rescheduled_from_item_id, qty, removed, change_type, change_reason, original_qty,
+      orders!inner ( billing_status )
+    `)
+    .in('rescheduled_from_item_id', ids)
+  if (error) { console.error('resolved-qty lookup failed', error); return out }
+
+  for (const r of data || []) {
+    const originId = r.rescheduled_from_item_id
+    if (!originId) continue
+    if (r.orders?.billing_status !== 'verified') continue   // pending reschedule ≠ resolved
+    // If the rescheduled line was itself short, only the delivered portion
+    // counts. Delivered = qty actually verified on this new line = its qty
+    // minus any shortage on it.
+    const deliveredHere = (Number(r.qty) || 0) - shortageQtyForItem(r)
+    if (deliveredHere <= 0) continue
+    out.set(originId, (out.get(originId) || 0) + deliveredHere)
+  }
+  return out
 }
 
 /**
