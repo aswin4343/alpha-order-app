@@ -9,6 +9,23 @@ import { PRICE_APPROVAL_ENABLED } from './featureFlags.js'
 // imported, since it has no other dependency.
 const todayIST = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
 
+// Billing Dashboard "Pending" is a working view of RECENT unverified orders, not
+// an archive. Orders whose order_date is older than this window drop OUT of the
+// dashboard's pending list and pending counts — they are NOT deleted, hidden, or
+// changed in any way, and every historical feature (Loading Sheet, Partial
+// Verification, Edit History, Deleted Bills, reports) reads its own separate
+// queries and is completely unaffected. Only loadBillingReps + loadBillingOrders
+// (used solely by the Billing/Admin dashboards) apply this window.
+const PENDING_DASHBOARD_WINDOW_DAYS = 5
+// Inclusive cutoff date (YYYY-MM-DD, IST): the oldest order_date still shown.
+// today − (N−1) days => a 5-day inclusive window (e.g. today Sep 9 -> Sep 5).
+function pendingWindowCutoffDate() {
+  const parts = todayIST().split('-').map(Number)          // [Y, M, D] in IST
+  const d = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]))
+  d.setUTCDate(d.getUTCDate() - (PENDING_DASHBOARD_WINDOW_DAYS - 1))
+  return d.toISOString().slice(0, 10)
+}
+
 /**
  * Always fetch the CURRENT authenticated user id straight from Supabase at the
  * moment of saving. Never rely on a possibly-stale id held in React state —
@@ -2001,10 +2018,15 @@ export async function unassignGroup(group) {
 export async function loadBillingReps() {
   const startToday = new Date()
   startToday.setHours(0, 0, 0, 0)
+  const pendingCutoff = pendingWindowCutoffDate()
 
   const [repsRes, pendingRes, verifiedRes] = await Promise.all([
     supabase.from('profiles').select('id, full_name').eq('role', 'salesperson'),
-    supabase.from('orders').select('sales_rep_id').eq('billing_status', 'pending').eq('hidden', false),
+    // Pending count reflects the dashboard's recent-work window (last N days by
+    // order_date). Older pending orders still exist and are reachable via the
+    // rep's date picker and all historical features — they just don't inflate
+    // this dashboard count. Nothing is deleted or hidden in the DB.
+    supabase.from('orders').select('sales_rep_id').eq('billing_status', 'pending').eq('hidden', false).gte('order_date', pendingCutoff),
     supabase
       .from('orders')
       .select('sales_rep_id')
@@ -2061,7 +2083,16 @@ export async function loadBillingOrders(repId, deliveryType, status = 'pending',
       // Overdue pending orders are no longer silently lost, though — see
       // loadOverduePendingCounts below, which surfaces them as an explicit,
       // separate indicator instead of hiding inside this total.
-      if (dateStr) q = q.eq('order_date', dateStr)
+      if (dateStr) {
+        // An explicit date pick is honored for ANY day — older orders remain
+        // reachable via the date picker, so no historical access is lost.
+        q = q.eq('order_date', dateStr)
+      } else {
+        // Default view (no date chosen): limit to the recent pending window.
+        // Older pending orders are not deleted/hidden in the DB — they're
+        // reachable by picking their date and via all historical features.
+        q = q.gte('order_date', pendingWindowCutoffDate())
+      }
       return q
     }
   )
