@@ -292,20 +292,44 @@ export async function exportShortageSalesLossExcel(rows, summary, fileName) {
  * SL is generated here, sequential from 1, fresh for every export — never
  * stored, so there's nothing to keep in sync across exports.
  */
-export async function exportLoadingSheetExcel(rows, fileName) {
+export async function exportLoadingSheetExcel(rows, fileName, meta = {}) {
   const XLSX = await getXLSX()
   const wb = XLSX.utils.book_new()
 
+  // Four-row heading section requested for the Loading Sheet export. Everything
+  // below is the EXISTING table, unchanged, just shifted down by these 4 rows.
+  const routeLabel = (meta.routeLabel || 'ALL ROUTES')
+  const dateRangeLabel = (meta.dateRangeLabel || '')
+  const HEADING_ROWS = 4
+  const NUM_COLS = 5 // SL, Shop Name, Sales Rep, Grand Total, Verification Status
+
   const header = ['SL', 'Shop Name', 'Sales Rep', 'Grand Total', 'Verification Status']
-  const aoa = [header]
+  const aoa = [
+    ['ALPHA TRADE LINKS'],
+    [routeLabel],
+    ['REPORT NAME: LOADING SHEET'],
+    [dateRangeLabel],
+    header
+  ]
   rows.forEach((r, i) => {
     aoa.push([i + 1, r.shopName, r.salesRepName, r.grandTotal, r.verificationStatus])
   })
 
   const ws = XLSX.utils.aoa_to_sheet(aoa)
 
-  // Grand Total (column D) as a real number, not text — usable for SUM.
-  for (let r = 2; r <= aoa.length; r++) {
+  // Merge each heading line across the full table width so it reads as a title
+  // banner rather than sitting in column A only.
+  ws['!merges'] = [
+    { s: { r: 0, c: 0 }, e: { r: 0, c: NUM_COLS - 1 } },
+    { s: { r: 1, c: 0 }, e: { r: 1, c: NUM_COLS - 1 } },
+    { s: { r: 2, c: 0 }, e: { r: 2, c: NUM_COLS - 1 } },
+    { s: { r: 3, c: 0 }, e: { r: 3, c: NUM_COLS - 1 } }
+  ]
+
+  // The data table's header row is now row 5 (index 4). Grand Total is column D;
+  // first data row is spreadsheet row 6. Number-format from there down.
+  const firstDataRow = HEADING_ROWS + 2 // heading(4) + table header(1) => data starts at row 6
+  for (let r = firstDataRow; r <= aoa.length; r++) {
     const cell = ws[`D${r}`]
     if (cell) { cell.t = 'n'; cell.z = '₹#,##,##0' }
   }
@@ -317,8 +341,11 @@ export async function exportLoadingSheetExcel(rows, fileName) {
     { wch: 14 }, // Grand Total
     { wch: 18 }  // Verification Status
   ]
-  ws['!freeze'] = { xSplit: 0, ySplit: 1 }
-  ws['!autofilter'] = { ref: `A1:E${aoa.length}` }
+  // Freeze through the table header row (now row 5) so the heading + column
+  // titles stay visible while scrolling.
+  ws['!freeze'] = { xSplit: 0, ySplit: HEADING_ROWS + 1 }
+  // Autofilter applies to the data table only (header row 5 downward).
+  ws['!autofilter'] = { ref: `A${HEADING_ROWS + 1}:E${aoa.length}` }
   XLSX.utils.book_append_sheet(wb, ws, 'Loading Sheet')
 
   XLSX.writeFile(wb, fileName)

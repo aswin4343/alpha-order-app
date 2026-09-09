@@ -57,10 +57,20 @@ export default function LoadingSheetModal({ onClose }) {
 
   const downloadExcel = () => {
     const fileName = `Alpha_Flow_Loading_Sheet_${toDateInput(today)}.xlsx`
+    // Human-readable date range for the heading, e.g. "01 Sep 2026 - 09 Sep 2026".
+    const fmtDay = (s) => {
+      const [y, m, d] = s.split('-').map(Number)
+      const mon = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][m - 1]
+      return `${String(d).padStart(2, '0')} ${mon} ${y}`
+    }
+    const dateRangeLabel = fromDate === toDate ? fmtDay(fromDate) : `${fmtDay(fromDate)} - ${fmtDay(toDate)}`
+    // Route label reuses the on-screen selection; blank means "All Routes"
+    // (the same wording the filter dropdown shows for the no-route option).
+    const routeLabel = route ? route : 'ALL ROUTES'
     // Excel download still proceeds on zero results — an empty workbook with
     // correct headers is a legitimate, explainable export, not a misleading
     // one, per the spec's own edge-case guidance.
-    exportLoadingSheetExcel(rows || [], fileName)
+    exportLoadingSheetExcel(rows || [], fileName, { routeLabel, dateRangeLabel })
   }
 
   return (

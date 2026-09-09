@@ -17,6 +17,7 @@ import {
 } from '../utils/cloudSync.js'
 import appIcon from '../assets/app_icon.png'
 import PickerBill, { orderRefFrom } from '../components/PickerBill.jsx'
+import { printWarehouseSlip } from '../directPrint/warehouseSlipPrint.js'
 import FullBill from '../components/FullBill.jsx'
 import AuditReport from '../components/AuditReport.jsx'
 import PartialVerificationReport from '../components/PartialVerificationReport.jsx'
@@ -887,6 +888,16 @@ function Modal({ title, children, onClose }) {
  * dedicated layout, not a screenshot of the app UI (per the requirement).
  */
 function PickerBillModal({ onClose, items, ...billProps }) {
+  const [printMsg, setPrintMsg] = useState('')
+  const handlePrint = async () => {
+    // Optional direct print; falls back to window.print() internally. With no
+    // bridge installed this behaves exactly as before (a plain browser print).
+    setPrintMsg('')
+    const result = await printWarehouseSlip({ orderRef: billProps.orderRef })
+    // Only surface a message for the direct path; browser print shows nothing
+    // new (unchanged experience).
+    if (result.mode === 'direct') setPrintMsg(result.message)
+  }
   return (
     <div className="fixed inset-0 z-50 bg-black/50 overflow-y-auto">
       <div className="min-h-full flex flex-col items-center py-4 px-2">
@@ -894,13 +905,16 @@ function PickerBillModal({ onClose, items, ...billProps }) {
           <button onClick={onClose} className="rounded-xl bg-white px-4 py-2 text-sm font-bold text-slate-700 shadow hover:bg-slate-50">
             ← Close
           </button>
-          <button
-            onClick={() => window.print()}
-            disabled={items == null}
-            className="rounded-xl bg-slate-900 text-white px-5 py-2.5 text-sm font-bold shadow hover:bg-slate-800 disabled:bg-slate-400"
-          >
-            🖨️ Print
-          </button>
+          <div className="flex items-center gap-3">
+            {printMsg && <span className="text-xs font-semibold text-white/90">{printMsg}</span>}
+            <button
+              onClick={handlePrint}
+              disabled={items == null}
+              className="rounded-xl bg-slate-900 text-white px-5 py-2.5 text-sm font-bold shadow hover:bg-slate-800 disabled:bg-slate-400"
+            >
+              🖨️ Print
+            </button>
+          </div>
         </div>
         {items == null ? (
           <div className="bg-white rounded-2xl w-full max-w-2xl py-16 flex justify-center">

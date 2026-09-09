@@ -153,6 +153,18 @@ const DECLARE_PAGE_SIZE = true
 // (PAGE_H_MM) along X to seat it against the sheet's top-left again.
 const ROTATE_90_CW = true
 
+// Which way to turn the whole slip. The physical printer feeds paper the normal
+// (horizontal) way; testing showed the slip must be rotated COUNTER-CLOCKWISE
+// so the printed page lands correctly without turning the paper. If a different
+// printer ever needs the opposite turn, change this one value to 'cw'.
+//   'ccw' -> transform: translateY(PRINT_PAGE_H_MM) rotate(-90deg)
+//   'cw'  -> transform: translateX(PRINT_PAGE_W_MM) rotate(90deg)
+// Both are verified to keep every corner inside the page box (no clipping).
+const ROTATE_DIR = 'ccw'
+const ROT_TRANSFORM = ROTATE_DIR === 'cw'
+  ? `translateX(${PAGE_H_MM}mm) rotate(90deg)`
+  : `translateY(${PAGE_W_MM}mm) rotate(-90deg)`
+
 // Dimensions of the PRINTED PAGE BOX (after any rotation). When rotating, these
 // are the content dimensions swapped; when not, they equal the content box.
 const PRINT_PAGE_W_MM = ROTATE_90_CW ? PAGE_H_MM : PAGE_W_MM
@@ -360,7 +372,7 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
                 style={{
                   width: `${PAGE_W_MM}mm`,
                   transformOrigin: 'top left',
-                  transform: `translateX(${PRINT_PAGE_W_MM}mm) rotate(90deg)`
+                  transform: ROT_TRANSFORM
                 }}
               >
                 {renderPage(p, i, i === pages.length - 1)}
@@ -392,7 +404,7 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
                 style={{
                   width: `${PAGE_W_MM}mm`,
                   transformOrigin: 'top left',
-                  transform: `translateX(${PRINT_PAGE_W_MM}mm) rotate(90deg)`
+                  transform: ROT_TRANSFORM
                 }}
               >
                 {pages.map((p, i) => renderPage(p, i, i === pages.length - 1))}
