@@ -204,22 +204,16 @@ export default function BillingDashboard() {
             <p className="text-center text-sm text-slate-400 py-10 px-4">No pending orders. All caught up ✓</p>
           )}
           {reps && reps.map((r) => {
-            const overdue = overdueCounts[r.id] || 0
             return (
               <button key={r.id} onClick={() => pickRep(r)}
                 className={`text-left px-4 py-3 border-b border-slate-50 flex items-center justify-between hover:bg-slate-50 ${selectedRep?.id === r.id ? 'bg-brand-50/60 border-l-4 border-l-brand-600' : ''}`}>
                 <div className="min-w-0">
                   <p className="font-semibold text-slate-800 truncate">{r.name}</p>
                   <p className="text-[11px] text-slate-400">{r.verifiedToday} verified today</p>
-                  {/* Separate from the "pending" count on the right — that
-                      number is deliberately just today's orders. This shows
-                      backlog from earlier dates specifically, so it's never
-                      silently lost, without inflating the daily figure. Tap
-                      the rep, then use the date picker to open the actual
-                      overdue day(s) and review them. */}
-                  {overdue > 0 && (
-                    <p className="text-[11px] font-semibold text-red-600 mt-0.5">⚠ {overdue} overdue</p>
-                  )}
+                  {/* The "overdue" backlog tag was removed from the dashboard on
+                      request. The counter (loadOverduePendingCounts) and its
+                      state are left intact but unused, so nothing else changes
+                      and it can be re-surfaced later if ever wanted. */}
                 </div>
                 <div className="flex items-center gap-1.5 shrink-0">
                   <span className="text-lg font-bold text-amber-600">{r.pending}</span>
