@@ -137,11 +137,15 @@ export default function FullBill({ brand, shopName, route, salesRepName, orderDa
             </thead>
             <tbody>
               {bill.lines.map((l, idx) => (
-                <tr key={idx} className={idx % 2 ? 'bg-slate-50' : 'bg-white'}>
+                <tr key={idx} className={l._isQt ? 'bg-yellow-200' : (idx % 2 ? 'bg-slate-50' : 'bg-white')}>
                   <td className="border border-slate-300 px-1.5 py-1.5 text-slate-600">{idx + 1}</td>
                   <td className="border border-slate-300 px-1.5 py-1.5 text-slate-500">{l.hsn || '—'}</td>
                   <td className="border border-slate-300 px-1.5 py-1.5 font-medium text-slate-800">
                     <CopyableName name={l.name} />
+                    {l._isQt && (
+                      <span className="ml-1.5 align-middle text-[9px] font-extrabold text-yellow-900 bg-yellow-300 border border-yellow-500 px-1 py-0.5 rounded"
+                        title="QT — this product is billed WITHOUT tax">QT</span>
+                    )}
                   </td>
                   <td className="border border-slate-300 px-1.5 py-1.5 text-right text-slate-600">{l.mrp != null ? rupee(l.mrp) : '—'}</td>
                   <td className="border border-slate-300 px-1.5 py-1.5 text-center text-slate-600">{l.unit || '-'}</td>

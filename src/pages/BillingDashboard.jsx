@@ -41,9 +41,13 @@ function mapBillItems(rawItems, products) {
     // items already flagged from earlier testing bill normally again).
     .filter((i) => !PRICE_APPROVAL_ENABLED || (i.approval_status !== 'pending' && i.approval_status !== 'rejected'))
     .map((i) => {
+    const nameKey = (i.product_name || '').trim().toUpperCase()
     const liveProduct = i.mrp == null
-      ? (products || []).find((p) => (p.name || '').trim().toUpperCase() === (i.product_name || '').trim().toUpperCase())
+      ? (products || []).find((p) => (p.name || '').trim().toUpperCase() === nameKey)
       : null
+    // QT (Without Tax) flag, read from the live catalogue by product name — the
+    // same source the verification list uses, so the Full Bill agrees with it.
+    const qtProduct = (products || []).find((p) => (p.name || '').trim().toUpperCase() === nameKey)
     return {
       name: i.product_name,
       hsn: i.hsn ?? liveProduct?.hsn ?? null,
@@ -56,7 +60,10 @@ function mapBillItems(rawItems, products) {
       // Source order-item, carried through so a Full Bill row can trace back to
       // the real record for the optional Remove action. Additive only — every
       // existing consumer (PickerBill, print, computeBill) ignores this field.
-      _sourceItem: i
+      _sourceItem: i,
+      // QT (Without Tax) marker for the Full Bill highlight. Additive; ignored
+      // by consumers that don't use it.
+      _isQt: !!qtProduct?.is_qt
     }
   })
 }
@@ -1158,17 +1165,16 @@ function AddonAwareDetailPanel({ order, onBackToOrders, onVerified, repName }) {
           orderDate={order.created_at}
           orderRef={orderRefFrom(order.id)}
           items={fullBillItems == null ? null : mapBillItems(fullBillItems, products)}
-          canRemove={(line) => !!line?._sourceItem?.is_addon}
+          canRemove={(line) => !!line?._sourceItem && !line._sourceItem.removed}
           onRemove={(line) => {
-            // Same removal flow as the normal-order Full Bill. Enabled ONLY for
-            // add-on lines: while verifying an add-on, the ORIGINAL order's
-            // items stay read-only from this screen (the existing rule the
-            // embedded original panel enforces via readOnly), so original lines
-            // get no Remove button — the ACTION column still shows for the
-            // add-on rows. Uses the item's own order_id for a correctly
-            // attributed audit record.
+            // Same removal flow as the normal-order Full Bill, now for ANY line
+            // (original OR add-on). Earlier this was restricted to add-on lines
+            // (the old read-only-original rule); per the universal item-action
+            // rule, Billing can remove any eligible item regardless of how it
+            // entered the order. removeItem targets the line's own id/order, so
+            // the audit is attributed to that item's own order_id correctly.
             const src = line?._sourceItem
-            if (!src || !src.is_addon) return
+            if (!src || src.removed) return
             setShowFullBill(false)
             setReasonModal({ mode: 'remove', item: src })
           }}
