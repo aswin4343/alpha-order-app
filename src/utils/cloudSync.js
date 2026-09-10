@@ -363,34 +363,48 @@ export async function loadPreviousOrders(shopName, route) {
  * changes the rep's price selection.
  *
  * Keyed by shop_name + route (the same identity key loadPreviousOrders uses),
- * so it works whether or not the customer has a cloud customer_id yet. Counts
- * ANY past order to this customer (admin choice), excluding hidden/deleted ones.
- * "Most recent" = latest order created_at; when a product appears in multiple
- * orders, the newest order's unit_price wins.
+ * so it works whether or not the customer has a cloud customer_id yet.
+ *
+ * VALIDITY (per the customer-specific Last Price rules): only a SUCCESSFUL sale
+ * sets a last price. That means:
+ *   • the order is VERIFIED by Billing (not pending/draft/unsent, not deleted,
+ *     not hidden) — a price that was only typed into an unsent order must never
+ *     become the last price; and
+ *   • the specific line was actually sold — a REMOVED / stock-out line is
+ *     skipped, since its unit_price was never a real sale.
+ * "Most recent" uses the order's verification time (billing_verified_at) when
+ * present, falling back to created_at, so the newest genuine sale wins. Ordered
+ * newest-first and de-duplicated per product (first/newest price per product
+ * wins). No arbitrary row cap, so a product last sold long ago is still found.
  */
 export async function loadCustomerLastPrices(shopName, route) {
   if (!shopName) return {}
   const { data, error } = await supabase
     .from('orders')
-    .select('created_at, order_items(product_name, unit_price)')
+    .select('created_at, billing_verified_at, order_items(product_name, unit_price, removed)')
     .eq('shop_name', shopName)
     .eq('route', route || '')
     .eq('hidden', false)
+    .eq('billing_status', 'verified')
     .order('created_at', { ascending: false })
-    .limit(50)
   if (error) {
     console.error('load customer last prices failed', error)
     return {}
   }
-  // Orders come newest-first. Walk them in that order and take the FIRST
-  // (i.e. most recent) unit_price we see for each product; later/older orders
-  // don't overwrite it. Skip rows with no usable price.
+  // Sort by the true sale time (verified time preferred), newest first, so the
+  // most recent successful sale of each product wins regardless of insert order.
+  const orders = (data || []).slice().sort((a, b) => {
+    const ta = new Date(a.billing_verified_at || a.created_at).getTime()
+    const tb = new Date(b.billing_verified_at || b.created_at).getTime()
+    return tb - ta
+  })
   const out = {}
-  for (const o of data || []) {
+  for (const o of orders) {
     for (const it of o.order_items || []) {
       const key = (it.product_name || '').trim().toUpperCase()
       if (!key) continue
-      if (out[key] != null) continue // already have a newer price for this product
+      if (out[key] != null) continue      // already have a newer price
+      if (it.removed) continue            // removed/stock-out line was not sold
       if (it.unit_price == null) continue
       out[key] = it.unit_price
     }
@@ -946,6 +960,7 @@ export async function replaceAllCloudProducts(products, fileName) {
     qty_in_box: p.qty_in_box ?? null,
     outer_qty: p.outer_qty ?? null,
     box: p.box ?? null,
+    is_qt: p.is_qt ?? false,
     sort_order: idx
   }))
   const chunk = 500
@@ -1031,6 +1046,12 @@ export async function mergeUpdateCloudProducts(uploadedList, fileName) {
     if (hasVal(u.qty_in_box)) patch.qty_in_box = u.qty_in_box
     if (hasVal(u.outer_qty)) patch.outer_qty = u.outer_qty
     if (hasVal(u.box)) patch.box = u.box
+    // QT differs from the price fields: because it's a true/false status, a
+    // blank in a file that HAS the QT column means "not QT" (unmark), not "no
+    // info". So we set is_qt whenever the file carried the QT column at all
+    // (_qtColPresent) — allowing both marking and unmarking. Files without the
+    // column (old templates) never touch existing QT status.
+    if (u._qtColPresent) patch.is_qt = !!u.is_qt
     // Scheme slabs: only replace when the Excel genuinely carried scheme rows
     // for this product (non-empty). An empty slabs array means "no scheme info
     // in this file" — NOT "clear the existing scheme".
@@ -1067,6 +1088,8 @@ export async function mergeUpdateCloudProducts(uploadedList, fileName) {
       qty_in_box: patch.qty_in_box ?? cur.qty_in_box ?? null,
       outer_qty: patch.outer_qty ?? cur.outer_qty ?? null,
       box: patch.box ?? cur.box ?? null,
+      // QT status: patched value wins; otherwise keep existing; default false.
+      is_qt: patch.is_qt ?? cur.is_qt ?? false,
       sort_order: cur.sort_order ?? null
     }
   })

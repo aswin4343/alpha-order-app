@@ -177,17 +177,19 @@ function PriceSelector({ product, override, onOverride, lastPrice, defaultPriceT
 
   if (options.length === 0) return null
 
-  // Default selection is driven by the CUSTOMER'S CATEGORY (business rule):
+  // Default selection: the customer's own LAST price for this product wins when
+  // one exists (a real prior sale to this exact customer), matching the
+  // requirement that the default price equals the persistent last price. When
+  // there is NO last price (never bought before / no customer), fall back to
+  // the existing business rule — the customer's CATEGORY:
   //   FMCG - WHOLESALE STORE  -> Wholesale (WP)
   //   every other / no category -> Retail (RP)
-  // `defaultPriceType` carries that decision in from the selected customer.
-  // Fall back gracefully if the preferred price is missing for this product:
-  // preferred -> WHOLESALE -> first available. The rep can still override.
+  // then WHOLESALE, then first available. The rep can still override any of it.
   const preferred = defaultPriceType || 'RETAIL'
   const has = (t) => options.some((o) => o.type === t)
-  const defaultType = has(preferred)
-    ? preferred
-    : (has('WHOLESALE') ? 'WHOLESALE' : options[0].type)
+  const defaultType = has('LAST')
+    ? 'LAST'
+    : (has(preferred) ? preferred : (has('WHOLESALE') ? 'WHOLESALE' : options[0].type))
   const activeType = override?.priceType || defaultType
   const isCustom = activeType === 'CUSTOM'
   const activeOption = options.find((o) => o.type === activeType)

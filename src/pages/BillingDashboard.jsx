@@ -423,6 +423,17 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
 function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, embedded, onlyAddonItems, repName, readOnly = false, statusOverride }) {
   const { products } = useApp()
   const { profile } = useAuth()
+  // Set of product names (upper-cased) currently marked QT (Without Tax) in the
+  // catalogue. Billing uses this to flag QT lines. Reading from the live
+  // catalogue means it reflects the current Master Excel status with no
+  // order-time snapshot — existing orders light up automatically and order
+  // creation is untouched.
+  const qtNameSet = useMemo(() => {
+    const s = new Set()
+    for (const p of products || []) if (p.is_qt) s.add((p.name || '').trim().toUpperCase())
+    return s
+  }, [products])
+  const isQtItem = (it) => qtNameSet.has((it.product_name || '').trim().toUpperCase())
   const [items, setItems] = useState(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(false)
@@ -572,7 +583,7 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
             <div className="space-y-2">
               {displayItems.map((it) => (
                 <div key={it.id}
-                  className={`rounded-xl bg-white shadow-card border p-3 ${it.removed ? 'border-red-100 opacity-60' : it.available ? 'border-green-200' : 'border-slate-100'}`}>
+                  className={`rounded-xl shadow-card border p-3 ${it.removed ? 'bg-white border-red-100 opacity-60' : isQtItem(it) ? 'bg-yellow-100 border-yellow-400' : it.available ? 'bg-white border-green-200' : 'bg-white border-slate-100'}`}>
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
@@ -583,6 +594,12 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
                         <p className={`font-medium text-sm ${it.removed ? 'line-through text-slate-400' : 'text-slate-800'}`}>
                           {it.product_name}
                         </p>
+                        {isQtItem(it) && !it.removed && (
+                          <span className="shrink-0 text-[10px] font-extrabold text-yellow-900 bg-yellow-300 border border-yellow-500 px-1.5 py-0.5 rounded"
+                            title="QT — this product is billed WITHOUT tax">
+                            QT
+                          </span>
+                        )}
                         {it.rescheduled_from_item_id && (
                           <span className="shrink-0 text-[9px] font-bold text-blue-700 bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded"
                             title={it.rescheduled_from_date ? `Rescheduled from stock-out on ${it.rescheduled_from_date}` : 'Rescheduled from a stock-out item'}>

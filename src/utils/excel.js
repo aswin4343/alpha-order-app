@@ -136,6 +136,14 @@ export async function importFullProducts(file) {
     const qtyInBox = numOrNull(['Quantity In Box', 'QuantityInBox', 'Qty In Box', 'Pieces Per Box'])
     const outerQty = numOrNull(['Outer Quantity', 'OuterQuantity', 'Outer Qty', 'Outers Per Box'])
     const box = numOrNull(['Box'])
+    // QT = "Without Tax" flag. The Admin types "QT" (any case) in the QT column
+    // to mark a product tax-free; blank = normal taxable. We also record whether
+    // the QT COLUMN was present in this file at all (qtColPresent) so the merge
+    // can distinguish "file doesn't carry QT info, leave it alone" (old files)
+    // from "file carries QT and this row is blank, so unmark it".
+    const qtRaw = pick(row, ['QT', 'Qt', 'qt', 'Without Tax', 'WithoutTax'])
+    const qtColPresent = Object.keys(row).some((k) => /^\s*(qt|without\s*tax)\s*$/i.test(k))
+    const isQt = /^\s*qt\s*$/i.test(String(qtRaw || '').trim())
 
     const key = name.trim().toUpperCase()
     let prod = byName.get(key)
@@ -154,7 +162,12 @@ export async function importFullProducts(file) {
         // Packaging conversion master data (null when not provided).
         qty_in_box: qtyInBox ?? null,
         outer_qty: outerQty ?? null,
-        box: box ?? null
+        box: box ?? null,
+        // QT (Without Tax). is_qt is the parsed flag; _qtColPresent tells the
+        // merge whether this file even had a QT column, so old files (no column)
+        // never touch existing QT status.
+        is_qt: isQt,
+        _qtColPresent: qtColPresent
       }
       byName.set(key, prod)
       order.push(prod)
@@ -169,6 +182,10 @@ export async function importFullProducts(file) {
       if (prod.qty_in_box == null && qtyInBox != null) prod.qty_in_box = qtyInBox
       if (prod.outer_qty == null && outerQty != null) prod.outer_qty = outerQty
       if (prod.box == null && box != null) prod.box = box
+      // If ANY row for this product carried the QT column, that value wins for
+      // the whole product (a later explicit value overrides). This lets Admin
+      // both mark (QT) and unmark (blank) via the file.
+      if (qtColPresent) { prod._qtColPresent = true; prod.is_qt = isQt }
     }
 
     // Append this row's scheme (if it has one) to the product's slab list.
