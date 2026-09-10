@@ -494,10 +494,11 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
   }
 
   const doVerify = async () => {
+    if (busy) return   // guard: a verify is already in flight — ignore extra clicks
     const label = singleOrderId ? 'this add-on' : 'this order'
     if (!window.confirm(`Are you sure you want to verify ${label}? It will be sent to Delivery.`)) return
     setBusy(true)
-    try { await verifyOrder(scopeIds); onVerified() }
+    try { await verifyOrder(scopeIds); onVerified(singleOrderId || null) }
     catch (e) { console.error(e); alert('Could not verify. Try again.'); setBusy(false) }
   }
 
@@ -1083,6 +1084,33 @@ function AddonAwareDetailPanel({ order, onBackToOrders, onVerified, repName }) {
   // Remove-from-Full-Bill for the consolidated add-on view. Reuses the SAME
   // ReasonModal + removeItem() the per-item panels use — no parallel logic.
   const [reasonModal, setReasonModal] = useState(null) // { mode:'remove', item }
+  // Sub-order ids verified within THIS open session. Verifying a sub-order used
+  // to bubble onVerified() up to the dashboard, which closed the whole order and
+  // dropped the user back to the rep list — so after verifying the original they
+  // had to find the customer again to verify the add-on. Instead we now record
+  // the verified sub-order locally and stay in place: its section flips to
+  // Verified and the still-pending section remains open for verification. We
+  // refresh the rep counts in the background (via onVerified's loadReps) without
+  // closing, and only auto-close once EVERY sub-order in the group is verified.
+  const [localVerified, setLocalVerified] = useState(() => new Set())
+  const allIds = order.orderIds || [order.id]
+  const effStatus = (subOrder) =>
+    (subOrder.billing_status === 'verified' || localVerified.has(subOrder.id)) ? 'verified' : (subOrder.billing_status || 'pending')
+
+  // Called by a child panel after it verifies its one sub-order. Keep the panel
+  // open; mark that sub-order verified locally; refresh the consolidated bill.
+  // If that was the last pending sub-order, THEN let the dashboard close/refresh.
+  const handleSubVerified = (verifiedId) => {
+    const next = new Set(localVerified)
+    if (verifiedId) next.add(verifiedId)
+    setLocalVerified(next)
+    reloadFullBill()
+    const everyVerified = allIds.every((id) =>
+      next.has(id) ||
+      (original?.id === id && original.billing_status === 'verified') ||
+      addons.some((a) => a.id === id && a.billing_status === 'verified'))
+    if (everyVerified) onVerified()   // whole group done → dashboard closes/refreshes as before
+  }
 
   // Re-fetch the consolidated bill after a removal so the removed line drops
   // out (mapBillItems filters removed) and totals recompute — same data path
@@ -1206,7 +1234,7 @@ function AddonAwareDetailPanel({ order, onBackToOrders, onVerified, repName }) {
             order gets its OWN badge + status, since with more than one
             add-on they can be verified independently of each other too. */}
         {addons.map((a, i) => {
-          const isVerified = a.billing_status === 'verified'
+          const isVerified = effStatus(a) === 'verified'
           return (
             <div key={a.id}>
               <div className="flex items-center gap-2 mb-2">
@@ -1221,11 +1249,11 @@ function AddonAwareDetailPanel({ order, onBackToOrders, onVerified, repName }) {
                 <OrderDetailPanel
                   order={order}
                   singleOrderId={a.id}
-                  statusOverride={a.billing_status}
+                  statusOverride={effStatus(a)}
                   onlyAddonItems
                   repName={repName}
                   onBackToOrders={onBackToOrders}
-                  onVerified={onVerified}
+                  onVerified={handleSubVerified}
                   embedded
                 />
               </div>
@@ -1239,25 +1267,19 @@ function AddonAwareDetailPanel({ order, onBackToOrders, onVerified, repName }) {
         <div>
           <div className="flex items-center gap-2 mb-2">
             <span className="text-[10px] font-extrabold text-slate-500 bg-slate-100 px-2 py-1 rounded-full">ORIGINAL ORDER</span>
-            <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${original.billing_status === 'verified' ? 'bg-green-100 text-green-700' : 'bg-amber-50 text-amber-700'}`}>
-              {original.billing_status === 'verified' ? 'Verified' : 'Pending'}
+            <span className={`text-[11px] font-bold px-2 py-0.5 rounded-full ${effStatus(original) === 'verified' ? 'bg-green-100 text-green-700' : 'bg-amber-50 text-amber-700'}`}>
+              {effStatus(original) === 'verified' ? 'Verified' : 'Pending'}
             </span>
           </div>
-          <div className={original.billing_status === 'verified' ? 'opacity-60 pointer-events-none' : ''}>
+          <div className={effStatus(original) === 'verified' ? 'opacity-60 pointer-events-none' : ''}>
             <OrderDetailPanel
               order={order}
               singleOrderId={original.id}
-              statusOverride={original.billing_status}
+              statusOverride={effStatus(original)}
               repName={repName}
-              // NOTE: per the universal item-action rule, item-level actions are
-              // now gated purely by each item's own eligibility, NOT by section.
-              // readOnly no longer suppresses Edit Qty / Replace / Remove; it is
-              // left here as a harmless no-op so this call site is untouched
-              // structurally. Original-order items are now editable during
-              // add-on verification, exactly like add-on items.
               readOnly
               onBackToOrders={onBackToOrders}
-              onVerified={onVerified}
+              onVerified={handleSubVerified}
               embedded
             />
           </div>
