@@ -931,7 +931,12 @@ export async function fetchAllCloudProducts() {
     hsn: p.hsn,
     qty_in_box: p.qty_in_box ?? null,
     outer_qty: p.outer_qty ?? null,
-    box: p.box ?? null
+    box: p.box ?? null,
+    // QT (Without Tax) flag — MUST be carried into the app's product shape, or
+    // the Billing view (which reads product.is_qt to highlight QT lines) never
+    // sees it even when it's set in the database. This omission was why the
+    // yellow QT highlight never appeared despite correct data.
+    is_qt: p.is_qt ?? false
   }))
 }
 
