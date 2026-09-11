@@ -45,7 +45,10 @@ input[type=number] { -moz-appearance: textfield; }
     position: absolute;
     left: 0;
     top: 0;
-    width: 100%;
+    /* Do NOT set width here — each component declares its own exact mm width
+       in its own @media print block. Forcing 100% here fights those
+       declarations and causes the content to be measured against the screen
+       body width instead of the intended print page width. */
     margin: 0;
   }
   .no-print { display: none !important; }

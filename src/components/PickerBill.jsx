@@ -71,104 +71,27 @@ function CopyableProductName({ name }) {
 }
 
 // ============================================================================
-// PRINT MODEL — A5 LANDSCAPE (210mm x 148mm)
+// PRINT MODEL — A5 LANDSCAPE (210mm × 148.5mm)
 //
-// The slip starts at the "WAREHOUSE SLIP" title. There is deliberately NO
-// company letterhead (name / address / GSTIN / FSSAI / logo) — this is an
-// internal picking document, and the agreed reference layout begins at the
-// title. The customer-facing Full Bill still carries the full letterhead and
-// is untouched.
+// Physical paper: A5 sheet loaded LANDSCAPE in the printer.
+// Required: content 210mm wide × 148.5mm tall, no rotation.
 //
-// Each physical A5 sheet is its own explicit `.print-page` box sized exactly
-// 210mm x 148mm, so the slip fills the sheet rather than sitting as a small
-// centred block. Padding is kept small (4mm) because @page already sets
-// margin: 0 — stacking a large inner padding on top of a page margin is what
-// previously left wide unused bands down both sides.
+// IMPORTANT — WHY NO CSS ROTATION:
+// Previous versions used transform: rotate() to rotate the whole page 90°.
+// CSS transforms are applied AFTER layout; many printer drivers ignore or
+// misinterpret them, producing a portrait printout with left/right edges
+// cropped even when the browser preview looked correct. The reliable fix is
+// to tell the browser the page IS landscape via @page { size: 210mm 148.5mm }
+// and render the content at those exact dimensions — no rotation needed.
 //
 // PAGINATION: rows are rendered off-screen at the true print width, their
 // real heights measured, then greedily packed into successive pages up to the
-// genuine available height. Nothing is a fixed rows-per-page count, so a
-// wrapped two-line product name simply consumes more of the budget. A row
-// that would not fully fit moves whole to the next page (never split). Page 1
-// carries the title + order info; later pages continue with product rows
-// only. The column-header row repeats on every page for readability.
-//
-// WHY A PORTAL: index.css has a global print rule that hides the page
-// (`body * { visibility: hidden }`) and rescues only `.picker-bill-print`,
-// giving it `position: absolute`. This component renders inside the billing
-// modal, which is `position: fixed` — and fixed ancestors are designed to
-// repeat their contents on every printed page, which previously duplicated
-// content and produced blank pages. Portaling the print copy to a direct
-// child of <body> removes that ancestor entirely.
-// ============================================================================
-// ---------------------------------------------------------------------------
-// ORIENTATION — the single switch that drives everything below (the @page
-// rule, the page box dimensions, and therefore how many rows fit per page).
-//   'portrait'  -> 148mm wide x 210mm tall
-//   'landscape' -> 210mm wide x 148.5mm tall  <- the actual physical paper:
-//                   a pre-cut A4 half-sheet, landscape orientation. This is
-//                   the correct value — a previous change had it set to
-//                   'portrait', which is what produced the narrow, tall
-//                   layout with a huge blank area underneath in the last
-//                   test (148mm of width is not enough room for 8 columns,
-//                   which pushed the rendered content taller than 210mm and
-//                   triggered the browser's OWN overflow pagination — an
-//                   extra sheet on top of, not instead of, the row chunking
-//                   below, which is why 7 products still produced 2 sheets).
+// genuine available height. Nothing is a fixed rows-per-page count.
+
 const ORIENTATION = 'landscape'
-
-const PAGE_W_MM = ORIENTATION === 'landscape' ? 210 : 148
-const PAGE_H_MM = ORIENTATION === 'landscape' ? 148.5 : 210
-// Minimal printer-safe inset. @page margin is 0, so this small padding is the
-// ONLY horizontal inset — this is what removes the wasted white bands down the
-// left and right of the sheet.
+const PAGE_W_MM = 210   // landscape width
+const PAGE_H_MM = 148.5 // landscape height
 const PAD_MM = 2
-
-// When true, the print CSS explicitly declares the physical page size as raw
-// dimensions (e.g. "210mm 148.5mm") rather than a NAMED size like "A5". This
-// is deliberately a different mechanism from what was tried before: an
-// earlier version requested a named size ("A5 landscape"), and on at least
-// one device the printer failed to respond at all — the working theory was
-// that requesting a specific named media the printer didn't have configured
-// made it wait indefinitely rather than print. Raw custom dimensions ask the
-// driver to fit the content to whatever paper is actually loaded instead of
-// requiring a specific named tray/media, so it does not carry the same
-// failure mode. Kept as a named constant (not hardcoded inline) so it can be
-// flipped back to false in one place if a specific printer still rejects it
-// — that would be a real printer/driver-level limitation no CSS can
-// guarantee around, not something this code can fully control.
-const DECLARE_PAGE_SIZE = true
-
-// ROTATE THE WHOLE PRINTED PAGE 90° CLOCKWISE.
-// The content itself is rendered EXACTLY as before (still PAGE_W_MM wide, same
-// table/columns/fonts/pagination). We rotate the entire printed container as
-// one unit and swap the @page box to the rotated bounding box so nothing is
-// clipped and no extra sheet is produced.
-//
-// Geometry: the content block is PAGE_W_MM wide × PAGE_H_MM tall (210 × 148.5).
-// Rotating it 90°cw makes its BOUNDING box PAGE_H_MM wide × PAGE_W_MM tall
-// (148.5 × 210) — so the printed @page must use those swapped dimensions.
-// With transform-origin at the top-left, a 90°cw rotation swings the block
-// off to the left/up, so we translate it back by the post-rotation page width
-// (PAGE_H_MM) along X to seat it against the sheet's top-left again.
-const ROTATE_90_CW = true
-
-// Which way to turn the whole slip. The physical printer feeds paper the normal
-// (horizontal) way; testing showed the slip must be rotated COUNTER-CLOCKWISE
-// so the printed page lands correctly without turning the paper. If a different
-// printer ever needs the opposite turn, change this one value to 'cw'.
-//   'ccw' -> transform: translateY(PRINT_PAGE_H_MM) rotate(-90deg)
-//   'cw'  -> transform: translateX(PRINT_PAGE_W_MM) rotate(90deg)
-// Both are verified to keep every corner inside the page box (no clipping).
-const ROTATE_DIR = 'ccw'
-const ROT_TRANSFORM = ROTATE_DIR === 'cw'
-  ? `translateX(${PAGE_H_MM}mm) rotate(90deg)`
-  : `translateY(${PAGE_W_MM}mm) rotate(-90deg)`
-
-// Dimensions of the PRINTED PAGE BOX (after any rotation). When rotating, these
-// are the content dimensions swapped; when not, they equal the content box.
-const PRINT_PAGE_W_MM = ROTATE_90_CW ? PAGE_H_MM : PAGE_W_MM
-const PRINT_PAGE_H_MM = ROTATE_90_CW ? PAGE_W_MM : PAGE_H_MM
 
 // Hard cap on rows per printed page. Pagination is done on the DATA (chunk the
 // product array), never by measuring rendered heights and never by letting CSS
@@ -324,97 +247,42 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
     <div className="bg-white">
       <style>{`
         @media print {
-          @page { ${DECLARE_PAGE_SIZE ? `size: ${PRINT_PAGE_W_MM}mm ${PRINT_PAGE_H_MM}mm;` : ''} margin: 0; }
+          /* Tell the browser/driver this is a LANDSCAPE A5 page (210×148.5mm).
+             Raw dimensions (not a named size) work reliably across drivers.
+             No CSS rotation — transforms are unreliable in print pipelines. */
+          @page { size: ${PAGE_W_MM}mm ${PAGE_H_MM}mm; margin: 0; }
           html, body { margin: 0 !important; padding: 0 !important; }
           .no-print-inline { display: none !important; }
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-
-          /* The on-screen copy must be removed from the print FLOW, not just
-             hidden. index.css uses visibility:hidden, which still reserves
-             full layout space and pushes the printed slip down the page. */
           .wh-screen-copy { display: none !important; }
-
-          /* Not overriding position here: index.css pins .picker-bill-print
-             with position:absolute; top:0; left:0, which lifts it clear of the
-             hidden (but still space-taking) app UI and anchors it to the top
-             left of the sheet. Width is pinned to the real CONTENT width so the
-             box is never measured against the body. */
-          /* Override index.css's .picker-bill-print { width:100% } so the
-             printed container is measured at the ACTUAL page box, not the full
-             body width — the mismatch that made the physical print paginate/seat
-             the rotated content wrongly. The rotation itself lives on the inner
-             .wh-slip-root wrapper (identical to the preview), so nothing here
-             applies a transform to .picker-bill-print any more. */
-          .picker-bill-print { width: ${PRINT_PAGE_W_MM}mm !important; max-width: ${PRINT_PAGE_W_MM}mm !important; overflow: visible !important; }
-          .wh-print-rot-outer { width: ${PRINT_PAGE_W_MM}mm !important; height: ${PRINT_PAGE_H_MM}mm !important; overflow: visible !important; }
+          .picker-bill-print { width: ${PAGE_W_MM}mm !important; max-width: ${PAGE_W_MM}mm !important; overflow: visible !important; }
           .wh-slip-root { width: ${PAGE_W_MM}mm !important; max-width: ${PAGE_W_MM}mm !important; overflow: visible !important; }
           .print-page { width: ${PAGE_W_MM}mm !important; box-shadow: none !important; border-radius: 0 !important; }
           .print-page tr { break-inside: avoid !important; page-break-inside: avoid !important; }
-          /* Product names stay on ONE line in the real print output too. */
           .print-page .wh-name, .print-page .wh-name * { white-space: nowrap !important; }
         }
       `}</style>
 
-      {/* On-screen preview — same renderPage() as the printed copy, so what
-          you see is what prints. When ROTATE_90_CW is on, each preview page is
-          wrapped in a box sized to the rotated bounding box and the page block
-          inside it is rotated 90° cw the same way the print output is, so the
-          preview shows the identical sideways result (preview = print). */}
+      {/* On-screen preview — same renderPage() as the printed copy.
+          No rotation: content renders at 210mm×148.5mm (landscape), same as
+          what the printer receives. Preview = print = physical output. */}
       <div className="wh-screen-copy flex flex-col items-center gap-4 py-4 overflow-auto">
         {pages.map((p, i) => (
-          ROTATE_90_CW ? (
-            <div
-              key={i}
-              className="shadow-2xl rounded-lg overflow-hidden bg-white shrink-0"
-              style={{ width: `${PRINT_PAGE_W_MM}mm`, height: `${PRINT_PAGE_H_MM}mm` }}
-            >
-              <div
-                style={{
-                  width: `${PAGE_W_MM}mm`,
-                  transformOrigin: 'top left',
-                  transform: ROT_TRANSFORM
-                }}
-              >
-                {renderPage(p, i, i === pages.length - 1)}
-              </div>
-            </div>
-          ) : (
-            <div key={i} className="shadow-2xl rounded-lg overflow-hidden bg-white shrink-0">
-              {renderPage(p, i, i === pages.length - 1)}
-            </div>
-          )
+          <div key={i} className="shadow-2xl rounded-lg overflow-hidden bg-white shrink-0">
+            {renderPage(p, i, i === pages.length - 1)}
+          </div>
         ))}
       </div>
 
-      {/* Print-only copy, portaled out of the fixed-position modal. It now uses
-          the SAME wrapper structure as the on-screen preview above: an outer box
-          sized to the rotated page (PRINT_PAGE_W_MM × PRINT_PAGE_H_MM) with an
-          inner content-width block rotated 90° cw. Previously the transform was
-          applied directly to .picker-bill-print, whose box index.css forces to
-          width:100% at print time — so the browser measured/paginated the
-          untransformed 100%-width box and the physical print came out in the old
-          orientation even though the preview (which already used this wrapper)
-          looked correct. Matching the two structures makes print === preview. */}
+      {/* Print-only copy portaled to body. No rotation wrapper — the @page
+          CSS declares 210mm×148.5mm so the browser tells the driver "landscape"
+          without any transform. index.css pins this with position:absolute;
+          top:0; left:0 which seats it at the sheet's top-left. */}
       {createPortal(
         <div className="picker-bill-print bg-white">
-          {ROTATE_90_CW ? (
-            <div className="wh-print-rot-outer" style={{ width: `${PRINT_PAGE_W_MM}mm` }}>
-              <div
-                className="wh-slip-root bg-white"
-                style={{
-                  width: `${PAGE_W_MM}mm`,
-                  transformOrigin: 'top left',
-                  transform: ROT_TRANSFORM
-                }}
-              >
-                {pages.map((p, i) => renderPage(p, i, i === pages.length - 1))}
-              </div>
-            </div>
-          ) : (
-            <div className="wh-slip-root bg-white" style={{ width: `${PAGE_W_MM}mm` }}>
-              {pages.map((p, i) => renderPage(p, i, i === pages.length - 1))}
-            </div>
-          )}
+          <div className="wh-slip-root bg-white" style={{ width: `${PAGE_W_MM}mm` }}>
+            {pages.map((p, i) => renderPage(p, i, i === pages.length - 1))}
+          </div>
         </div>,
         document.body
       )}

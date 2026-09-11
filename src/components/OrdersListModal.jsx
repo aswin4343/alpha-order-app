@@ -75,18 +75,36 @@ export default function OrdersListModal({ userId, start, end, route, periodLabel
 
   const openEdit = (o) => {
     setEditOrder(o)
-    setEditDate(o.order_date || o.created_at?.slice(0, 10) || '')
+    // Use IST-correct date for pre-fill so the picker shows the date the rep
+    // actually sees on their calendar, not the UTC date from created_at.
+    const toISTDate = (isoStr) => {
+      try {
+        return new Date(isoStr).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+      } catch { return isoStr?.slice(0, 10) || '' }
+    }
+    setEditDate(o.order_date || toISTDate(o.created_at) || '')
     setEditRoute(o.route || '')
     setEditError('')
-    // Load route options for the dropdown (fire-and-forget; falls back to
-    // current route if it fails so the modal still opens cleanly).
     listAllRoutes().then(setRouteOptions).catch(() => {})
   }
 
   const onSaveEdit = async () => {
     setEditBusy(true); setEditError('')
     try {
-      const origDate  = editOrder.order_date || editOrder.created_at?.slice(0, 10)
+      // Compute the order's current date in IST — the same calendar context
+      // the rep sees and the date picker uses. created_at is a UTC timestamp;
+      // slicing its first 10 chars gives the UTC date, not the IST date.
+      // e.g. "2026-09-11T00:15:00Z" sliced = "2026-09-11" (UTC) but in IST
+      // (UTC+5:30) that is still Sep 11 — however "2026-09-10T20:00:00Z"
+      // sliced = "2026-09-10" (UTC) while in IST it is already Sep 11.
+      // Using toLocaleDateString with IST timezone gives the correct IST date
+      // and prevents a false "no change" match when the user selects today.
+      const toISTDate = (isoStr) => {
+        try {
+          return new Date(isoStr).toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+        } catch { return isoStr?.slice(0, 10) || '' }
+      }
+      const origDate  = editOrder.order_date || toISTDate(editOrder.created_at)
       const origRoute = editOrder.route || ''
       const newDate   = editDate  !== origDate  ? editDate  : undefined
       const newRoute  = editRoute !== origRoute ? editRoute : undefined

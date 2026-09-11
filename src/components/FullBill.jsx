@@ -64,22 +64,22 @@ export default function FullBill({ brand, shopName, route, salesRepName, orderDa
     <div className="bg-white">
       <style>{`
         @media print {
-          /* PHYSICAL PAGE BOX — the fix for the ~90° print rotation + cropping.
-             The Full Bill previously declared NO @page size, so the browser
-             sent the job at its default (portrait A4). The actual media is a
-             pre-cut A4 half-sheet loaded LANDSCAPE (210mm wide × 148.5mm tall),
-             so a portrait page box came out rotated and clipped left/right.
-             We declare the real landscape half-A4 box here — the same raw
-             custom-dimension approach already proven on the Picker Bill (raw
-             mm, not a named size like "A5", because some drivers stall on a
-             named media they don't have configured). margin:0 matches the
-             global print rule that pins .full-bill-print to the top-left.
-             This affects ONLY the printed page box — the on-screen preview
-             keeps its own Tailwind padding / max-width and is untouched. */
+          /* A5 Landscape: 210mm wide × 148.5mm tall. Raw dimensions, not a
+             named size, for maximum driver compatibility. */
           @page { size: 210mm 148.5mm; margin: 0; }
+          html, body { margin: 0 !important; padding: 0 !important; }
           .no-print-inline { display: none !important; }
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-          .full-bill-print { padding: 0 !important; box-shadow: none !important; }
+          .full-bill-print {
+            padding: 4mm !important;
+            box-shadow: none !important;
+            width: 210mm !important;
+            max-width: 210mm !important;
+            box-sizing: border-box !important;
+          }
+          /* Prevent rows splitting across pages; no fixed heights that would
+             force an unnecessary blank second page. */
+          .full-bill-print tr { break-inside: avoid !important; page-break-inside: avoid !important; }
         }
       `}</style>
 
