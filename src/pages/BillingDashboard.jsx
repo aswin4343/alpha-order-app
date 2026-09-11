@@ -213,16 +213,33 @@ export default function BillingDashboard() {
           {reps && reps.map((r) => {
             return (
               <button key={r.id} onClick={() => pickRep(r)}
-                className={`text-left px-4 py-3 border-b border-slate-50 flex items-center justify-between hover:bg-slate-50 ${selectedRep?.id === r.id ? 'bg-brand-50/60 border-l-4 border-l-brand-600' : ''}`}>
-                <div className="min-w-0">
+                className={`text-left px-4 py-3 border-b border-slate-50 flex items-start justify-between hover:bg-slate-50 ${selectedRep?.id === r.id ? 'bg-brand-50/60 border-l-4 border-l-brand-600' : ''}`}>
+                <div className="min-w-0 flex-1">
                   <p className="font-semibold text-slate-800 truncate">{r.name}</p>
                   <p className="text-[11px] text-slate-400">{r.verifiedToday} verified today</p>
-                  {/* The "overdue" backlog tag was removed from the dashboard on
-                      request. The counter (loadOverduePendingCounts) and its
-                      state are left intact but unused, so nothing else changes
-                      and it can be re-surfaced later if ever wanted. */}
+                  {/* Per-category counts — compact chips under each rep so Billing
+                      can see the breakdown at a glance without opening the rep. */}
+                  {r.pending > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {r.pendingExpress > 0 && (
+                        <span className="text-[9px] font-bold text-blue-700 bg-blue-50 border border-blue-200 px-1.5 py-0.5 rounded">
+                          EXP {r.pendingExpress}
+                        </span>
+                      )}
+                      {r.pendingStandard > 0 && (
+                        <span className="text-[9px] font-bold text-slate-600 bg-slate-100 border border-slate-200 px-1.5 py-0.5 rounded">
+                          STD {r.pendingStandard}
+                        </span>
+                      )}
+                      {r.pendingStoreCounter > 0 && (
+                        <span className="text-[9px] font-bold text-orange-700 bg-orange-50 border border-orange-200 px-1.5 py-0.5 rounded">
+                          🏪 {r.pendingStoreCounter}
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
-                <div className="flex items-center gap-1.5 shrink-0">
+                <div className="flex items-center gap-1.5 shrink-0 ml-2">
                   <span className="text-lg font-bold text-amber-600">{r.pending}</span>
                   <span className="text-[10px] text-slate-400">pending</span>
                 </div>
@@ -324,7 +341,7 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
       const [list, badgeCounts] = await Promise.all([
         loadBillingOrders(
           rep.id,
-          type === 'EXP' ? 'EXP' : type === 'STD' ? 'STD' : undefined,
+          type === 'EXP' ? 'EXP' : type === 'STD' ? 'STD' : type === 'STORE-COUNTER' ? 'STORE-COUNTER' : undefined,
           effectiveStatus,
           dateStr || null,
           type === 'EXP' && expressRoute ? expressRoute : null
@@ -386,7 +403,7 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
           className="text-xs font-semibold text-brand-700 px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50">Today</button>
       </div>
       <div className="grid grid-cols-4 gap-1.5 p-3 pb-2 border-b border-slate-50">
-        {[['All','All',counts?.all], ['EXP','Express',counts?.express], ['STD','Standard',counts?.standard], ['Addons','Add-ons',counts?.addons]].map(([t,label,count]) => (
+        {[['All','All',counts?.all], ['EXP','Express',counts?.express], ['STD','Standard',counts?.standard], ['Addons','Add-ons',counts?.addons], ['STORE-COUNTER','Store Counter',counts?.storeCounter]].map(([t,label,count]) => (
           <button key={t} onClick={() => { setType(t); if (t !== 'EXP') setExpressRoute(''); if (t === 'Addons') setStatus('pending') }}
             className={`px-2 py-1.5 rounded-lg text-[11px] font-semibold flex flex-col items-center gap-0.5 ${type===t ? 'bg-brand-600 text-white' : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}>
             <span>{label}</span>

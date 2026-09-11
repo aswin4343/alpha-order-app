@@ -1,6 +1,10 @@
-import { WhatsAppIcon, CopyIcon } from './Icons.jsx'
+import { CopyIcon } from './Icons.jsx'
 
-// Sticky bottom bar: order totals, Copy Order, and SEND ORDER.
+// Sticky bottom bar: order totals and COPY ORDER (the primary submission action).
+// WhatsApp send has been removed — the workflow is now: add products → Copy Order
+// → location captured → order sent to Billing. After Copy Order + location capture
+// the session clears automatically, which locks product entry on that screen.
+// Further additions to a submitted order go through My Performance → Orders Taken → ADD-ON.
 export default function OrderSummaryBar({
   customer,
   productCount,
@@ -48,37 +52,26 @@ export default function OrderSummaryBar({
                   : 'bg-slate-100 text-slate-400'
               }`}
             >
-              <WhatsAppIcon className="h-6 w-6" />
               SAVE VISIT (NO ORDER)
             </button>
           ) : (
-            <div className="flex gap-2">
-              <button
-                onClick={onCopy}
-                disabled={disabled}
-                aria-label="Copy order"
-                className={`h-[52px] w-[52px] shrink-0 rounded-xl flex items-center justify-center border ${
-                  disabled
-                    ? 'border-slate-100 text-slate-300'
-                    : 'border-slate-200 text-slate-600 active:bg-slate-50'
-                }`}
-              >
-                <CopyIcon className="h-5 w-5" />
-              </button>
-
-              <button
-                onClick={onSend}
-                disabled={disabled}
-                className={`flex-1 flex items-center justify-center gap-2 rounded-xl py-4 text-base font-bold transition active:scale-[0.99] ${
-                  disabled
-                    ? 'bg-slate-100 text-slate-400'
-                    : 'bg-brand-600 text-white active:bg-brand-700 shadow-lg shadow-brand-600/20'
-                }`}
-              >
-                <WhatsAppIcon className="h-6 w-6" />
-                SEND ORDER
-              </button>
-            </div>
+            // Single "COPY ORDER" button — saves the order to the database,
+            // captures GPS location, copies the order text to clipboard, then
+            // clears the session (which locks product entry on this screen).
+            // To add more products to an already-submitted order, the rep must
+            // use My Performance → Orders Taken → + ADD-ON.
+            <button
+              onClick={onCopy}
+              disabled={disabled}
+              className={`w-full flex items-center justify-center gap-2 rounded-xl py-4 text-base font-bold transition active:scale-[0.99] ${
+                disabled
+                  ? 'bg-slate-100 text-slate-400'
+                  : 'bg-brand-600 text-white active:bg-brand-700 shadow-lg shadow-brand-600/20'
+              }`}
+            >
+              <CopyIcon className="h-5 w-5" />
+              COPY ORDER
+            </button>
           )}
         </div>
       </div>

@@ -2060,11 +2060,8 @@ export async function loadBillingReps() {
 
   const [repsRes, pendingRes, verifiedRes] = await Promise.all([
     supabase.from('profiles').select('id, full_name').eq('role', 'salesperson'),
-    // Pending count reflects the dashboard's recent-work window (last N days by
-    // order_date). Older pending orders still exist and are reachable via the
-    // rep's date picker and all historical features — they just don't inflate
-    // this dashboard count. Nothing is deleted or hidden in the DB.
-    supabase.from('orders').select('sales_rep_id').eq('billing_status', 'pending').eq('hidden', false).gte('order_date', pendingCutoff),
+    // Include route so we can break down by category (Express/Standard/Store Counter).
+    supabase.from('orders').select('sales_rep_id, route').eq('billing_status', 'pending').eq('hidden', false).gte('order_date', pendingCutoff),
     supabase
       .from('orders')
       .select('sales_rep_id')
@@ -2078,13 +2075,19 @@ export async function loadBillingReps() {
   const verified = verifiedRes.data || []
 
   const countBy = (rows, id) => rows.filter((r) => r.sales_rep_id === id).length
+  const countByRoute = (rows, id, test) => rows.filter((r) => r.sales_rep_id === id && test(r.route || '')).length
 
   return reps
     .map((r) => ({
       id: r.id,
       name: r.full_name || 'Unnamed',
       pending: countBy(pending, r.id),
-      verifiedToday: countBy(verified, r.id)
+      verifiedToday: countBy(verified, r.id),
+      // Per-category counts for the sidebar breakdown
+      pendingExpress:      countByRoute(pending, r.id, (route) => route.toUpperCase().startsWith('EXP')),
+      pendingStandard:     countByRoute(pending, r.id, (route) => route.toUpperCase().startsWith('STD')),
+      pendingStoreCounter: countByRoute(pending, r.id, (route) => route.toUpperCase() === 'STORE-COUNTER'),
+      pendingAddons: 0 // add-ons are grouped differently; 0 is correct here as a safe placeholder
     }))
     .filter((r) => r.pending > 0 || r.verifiedToday > 0)
     .sort((a, b) => b.pending - a.pending)
@@ -2137,6 +2140,7 @@ export async function loadBillingOrders(repId, deliveryType, status = 'pending',
   let rows = data || []
   if (deliveryType === 'EXP') rows = rows.filter((o) => (o.route || '').toUpperCase().startsWith('EXP'))
   if (deliveryType === 'STD') rows = rows.filter((o) => (o.route || '').toUpperCase().startsWith('STD'))
+  if (deliveryType === 'STORE-COUNTER') rows = rows.filter((o) => (o.route || '').toUpperCase() === 'STORE-COUNTER')
   if (expressRoute) {
     const want = expressRoute.toUpperCase().replace(/\s+/g, '')
     rows = rows.filter((o) => (o.route || '').toUpperCase().replace(/\s+/g, '').includes(want))
@@ -2250,12 +2254,13 @@ export async function loadBillingCounts(repId, dateStr = null, status = 'pending
   // two tabs can never show identical numbers again.
   const matchesStatus = (o) => o.billing_status === status
 
-  let all = 0, express = 0, standard = 0, addons = 0
+  let all = 0, express = 0, standard = 0, addons = 0, storeCounter = 0
   for (const g of groups.values()) {
     const original = g.orders[0]
     const rest = g.orders.slice(1)
     const isExpress = (g.route || '').toUpperCase().startsWith('EXP')
-    const isStandard = (g.route || '').toUpperCase().startsWith('STD')
+    const isStandard = (g.route || "").toUpperCase().startsWith("STD")
+    const isStoreCounter = (g.route || "").toUpperCase() === "STORE-COUNTER"
     const originalMatches = matchesStatus(original)
     const addonMatches = rest.some(matchesStatus)
 
@@ -2271,11 +2276,12 @@ export async function loadBillingCounts(repId, dateStr = null, status = 'pending
     if (originalMatches) {
       if (isExpress) express++
       if (isStandard) standard++
+      if (isStoreCounter) storeCounter++
     }
     if (addonMatches) addons++
   }
 
-  return { all, express, standard, addons }
+  return { all, express, standard, addons, storeCounter }
 }
 
 /** Full item list for one order (for the billing detail view). */

@@ -101,6 +101,10 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   const saved = loadSession()
 
   const [customer, setCustomer] = useState(saved?.customer ?? null)
+  // Locks product entry after a successful Copy Order + location capture.
+  // The rep must use My Performance → Orders Taken → ADD-ON to add more items
+  // after this point. Resets to false when a new customer is selected.
+  const [orderSubmitted, setOrderSubmitted] = useState(false)
 
   // Pending Orders (Stock-Out reschedule) — loaded once on mount and after any
   // reschedule action, so the header badge count and the modal stay in sync.
@@ -528,6 +532,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
     setQuantities({})
     setUnits({})
     setPriceOverrides({})
+    setOrderSubmitted(false) // unlock product entry for the new customer's order
     setOriginalQtyById(null)
     setVisitStatus('')
     setVisitRemark('')
@@ -864,6 +869,9 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
       if (showIntro) clearIntro(customer.id)
       // Order has been dispatched — the working session is no longer "unsaved".
       clearSession()
+      // Lock product entry: further additions must go through My Performance
+      // → Orders Taken → ADD-ON, not this order-entry screen.
+      setOrderSubmitted(true)
     } finally {
       setSending(false)
     }
@@ -1007,6 +1015,26 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
           />
         )}
 
+        {orderSubmitted ? (
+          /* ORDER SUBMITTED LOCK — product entry is disabled after a successful
+             Copy Order + location capture. This prevents the rep from adding
+             more products on this screen. Further additions must go through
+             My Performance → Orders Taken → + ADD-ON. */
+          <div className="mt-6 mx-2 rounded-2xl border-2 border-dashed border-green-200 bg-green-50 p-6 text-center">
+            <div className="text-3xl mb-3">✅</div>
+            <p className="font-bold text-green-800 text-base mb-1">Order Submitted</p>
+            <p className="text-sm text-green-700 mb-4">
+              Product entry is locked. To add more items to this order, use:
+            </p>
+            <p className="text-[13px] font-semibold text-green-800 bg-green-100 rounded-xl px-3 py-2 inline-block mb-4">
+              My Performance → Orders Taken → + ADD-ON
+            </p>
+            <p className="text-xs text-green-600 mt-2">
+              To start a new order, select a different customer above.
+            </p>
+          </div>
+        ) : (
+          <>
         <div className="flex items-center gap-2 rounded-2xl bg-white shadow-card border border-slate-100 px-4 sticky top-[52px] z-10">
           <SearchIcon className="h-5 w-5 text-slate-400 shrink-0" />
           <input
@@ -1057,6 +1085,8 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
             </p>
           )}
         </div>
+          </>
+        )}
       </main>
 
       {showPendingOrders && (
