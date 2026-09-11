@@ -51,6 +51,7 @@ export default function OrdersListModal({ userId, start, end, route, periodLabel
   }
 
   useEffect(() => {
+    if (!userId) { setOrders([]); setError(false); return } // not logged in
     let active = true
     setOrders(null); setError(false)
     ;(async () => {
@@ -82,7 +83,7 @@ export default function OrdersListModal({ userId, start, end, route, periodLabel
 
   return (
     <div className="fixed inset-0 z-[60] bg-black/40 flex items-end sm:items-center justify-center">
-      <div className="relative bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl max-h-[85vh] flex flex-col overflow-hidden">
+      <div className="relative bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl max-h-[85vh] flex flex-col">
         <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
           <div className="min-w-0">
             <h2 className="font-bold text-slate-800">Orders Taken</h2>
@@ -169,7 +170,7 @@ export default function OrdersListModal({ userId, start, end, route, periodLabel
           </div>
         )}
 
-        <div className="overflow-y-auto px-4 py-3 scroll-area">
+        <div className="overflow-y-auto flex-1 px-4 py-3 scroll-area">
           {orders === null && (
             <div className="py-10 flex justify-center">
               <div className="h-8 w-8 rounded-full border-4 border-brand-100 border-t-brand-600 animate-spin" />
