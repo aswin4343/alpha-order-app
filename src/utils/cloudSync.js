@@ -135,6 +135,7 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
       .select('id, shop_name, created_at, order_items(product_name, qty)')
       .eq('sales_rep_id', userId)
       .eq('shop_name', customer.name)
+      .eq('hidden', false)                // deleted orders must NOT block new ones
       .gte('created_at', startToday.toISOString())
     const fingerprint = (list) =>
       (list || [])
@@ -3394,6 +3395,60 @@ export async function markDeliveryAdminNotificationRead(id) {
 // ===========================================================================
 // SALES REP: delete own order (any time while still billing_status='pending')
 // ===========================================================================
+
+/**
+ * Correct the date and/or route on an order the rep created, while it is still
+ * pending Billing verification. Both fields can be updated independently —
+ * pass null/undefined for a field to leave it unchanged.
+ *
+ * One-bill-per-day: if the target date already has an ACTIVE (non-hidden,
+ * non-deleted) order from this rep for this shop, the move is blocked so the
+ * rep knows to use the add-on flow instead. The check is purely advisory on
+ * the client; the Billing view groups by order_date so moving an order to a
+ * different date is immediately reflected there.
+ */
+export async function updateOrderDateRoute(orderId, { newDate, newRoute } = {}) {
+  if (!newDate && newRoute == null) return   // nothing to change
+
+  // Fetch the order's own shop/rep so we can do the same-day conflict check.
+  const { data: order, error: fetchErr } = await supabase
+    .from('orders')
+    .select('id, shop_name, route, order_date, sales_rep_id, billing_status, hidden')
+    .eq('id', orderId)
+    .maybeSingle()
+  if (fetchErr || !order) throw new Error('Could not load order details.')
+  if (order.billing_status !== 'pending' || order.hidden)
+    throw new Error('Only pending orders that have not yet been verified can be edited.')
+
+  // Conflict check: if the new date already has a different active order for
+  // this shop+rep, block the move so the rep doesn't create a confusing
+  // multi-order situation for Billing. The rep should use the add-on flow
+  // against that existing order instead.
+  if (newDate && newDate !== order.order_date) {
+    const { data: conflict } = await supabase
+      .from('orders')
+      .select('id')
+      .eq('sales_rep_id', order.sales_rep_id)
+      .eq('shop_name', order.shop_name)
+      .eq('order_date', newDate)
+      .eq('hidden', false)
+      .neq('id', orderId)     // exclude the order itself
+      .limit(1)
+    if (conflict && conflict.length > 0) {
+      throw new Error(
+        `${order.shop_name} already has an active order on ${newDate}. ` +
+        'Use the + ADD-ON button on that order instead of moving this one.'
+      )
+    }
+  }
+
+  const patch = {}
+  if (newDate)     patch.order_date = newDate
+  if (newRoute != null) patch.route = newRoute
+
+  const { error } = await supabase.from('orders').update(patch).eq('id', orderId)
+  if (error) throw error
+}
 
 /** Delete an order the current rep created. Server-side enforces ownership
  *  and that it hasn't been verified by Billing yet. */
