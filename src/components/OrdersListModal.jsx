@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { loadOrdersList, deleteOwnOrder, updateOrderDateRoute } from '../utils/cloudSync.js'
+import { loadOrdersList, deleteOwnOrder, updateOrderDateRoute, listAllRoutes } from '../utils/cloudSync.js'
 import { CloseIcon, ThumbsUpIcon, ClockIcon } from './Icons.jsx'
 import OrderSummaryModal from './OrderSummaryModal.jsx'
 import AddOnFlowModal from './AddOnFlowModal.jsx'
@@ -25,6 +25,7 @@ export default function OrdersListModal({ userId, start, end, route, periodLabel
   const [editRoute, setEditRoute] = useState('')
   const [editBusy, setEditBusy] = useState(false)
   const [editError, setEditError] = useState('')
+  const [routeOptions, setRouteOptions] = useState([])
   const [statusFilter, setStatusFilter] = useState(null)
 
   const pendingOrders  = (orders || []).filter((o) => o.billing_status !== 'verified')
@@ -77,6 +78,9 @@ export default function OrdersListModal({ userId, start, end, route, periodLabel
     setEditDate(o.order_date || o.created_at?.slice(0, 10) || '')
     setEditRoute(o.route || '')
     setEditError('')
+    // Load route options for the dropdown (fire-and-forget; falls back to
+    // current route if it fails so the modal still opens cleanly).
+    listAllRoutes().then(setRouteOptions).catch(() => {})
   }
 
   const onSaveEdit = async () => {
@@ -253,9 +257,16 @@ export default function OrdersListModal({ userId, start, end, route, periodLabel
             <input type="date" value={editDate} onChange={(e) => setEditDate(e.target.value)}
               className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm mb-3 focus:outline-none focus:ring-2 focus:ring-brand-400" />
             <label className="block text-xs font-semibold text-slate-600 mb-1">Route</label>
-            <input type="text" value={editRoute} onChange={(e) => setEditRoute(e.target.value)}
-              placeholder="e.g. STD : KOLLAM"
-              className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-brand-400" />
+            <select value={editRoute} onChange={(e) => setEditRoute(e.target.value)}
+              className="w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-brand-400 bg-white">
+              {/* Keep the current route as an option even if not in the list */}
+              {editRoute && !routeOptions.includes(editRoute) && (
+                <option value={editRoute}>{editRoute}</option>
+              )}
+              {routeOptions.map((r) => (
+                <option key={r} value={r}>{r}</option>
+              ))}
+            </select>
             {editError && <p className="text-xs text-red-600 mb-3 leading-snug">{editError}</p>}
             <div className="flex gap-2">
               <button onClick={() => { setEditOrder(null); setEditError('') }} disabled={editBusy}
