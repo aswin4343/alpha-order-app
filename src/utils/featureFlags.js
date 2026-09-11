@@ -18,4 +18,4 @@
  *   - The Admin "Price Approvals" section is hidden from navigation.
  * Nothing is deleted — re-enable by flipping this back to true.
  */
-export const PRICE_APPROVAL_ENABLED = false
+export const PRICE_APPROVAL_ENABLED = true

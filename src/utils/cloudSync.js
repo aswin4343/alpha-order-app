@@ -301,10 +301,19 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     throw new Error('order_items insert failed: ' + (itemsErr.message || 'unknown error'))
   }
 
+  // Notify Admin if any items require price approval (non-blocking)
+  if (PRICE_APPROVAL_ENABLED) {
+    const specialItems = items.filter((i) => {
+      const effectivePrice = i.finalSellingPrice ?? null
+      return i.normalPrice != null && effectivePrice != null && effectivePrice !== i.normalPrice
+    })
+    if (specialItems.length > 0) {
+      notifyAdminPriceApprovalRequired(specialItems, customer?.name || '', items[0]?.repName || '').catch(() => {})
+    }
+  }
+
   return order.id
 }
-
-/** Save a no-order visit. */
 export async function saveCloudVisit({ customer, userId, visitStatus, remark, location }) {
   const cloudCustomerId = await ensureCloudCustomer(customer, userId)
   const { error } = await supabase.from('visits').insert({
@@ -4276,24 +4285,110 @@ export async function countPendingApprovals() {
   return count || 0
 }
 
-/** Approve a special-priced line — it becomes normally billable immediately. */
-export async function approveSpecialPrice(itemId, adminName, adminId) {
+/** Approve a special-priced line — it becomes normally billable immediately.
+ *  reasonPayload: { reasonType, competitorName?, otherReason? }
+ *  Also writes an immutable record to price_approval_history. */
+export async function approveSpecialPrice(itemId, adminName, adminId, reasonPayload = {}) {
+  const { reasonType, competitorName, otherReason } = reasonPayload || {}
   const { error } = await supabase
     .from('order_items')
-    .update({ approval_status: 'approved', approved_by: adminName || null, approved_by_id: adminId || null, approved_at: new Date().toISOString() })
+    .update({
+      approval_status: 'approved',
+      approved_by: adminName || null,
+      approved_by_id: adminId || null,
+      approved_at: new Date().toISOString(),
+      approval_reason_type: reasonType || null,
+      approval_competitor_name: competitorName || null,
+      approval_other_reason: otherReason || null
+    })
     .eq('id', itemId)
     .eq('approval_status', 'pending') // idempotency guard
   if (error) throw error
+  // Write audit history (non-fatal if history table not yet migrated)
+  try {
+    const { data: it } = await supabase
+      .from('order_items')
+      .select('id, order_id, product_name, qty, unit, unit_price, normal_price, price_type, orders(shop_name, route, order_date, sales_rep_name)')
+      .eq('id', itemId).maybeSingle()
+    if (it) {
+      await supabase.from('price_approval_history').insert({
+        order_item_id: it.id, order_id: it.order_id,
+        product_name: it.product_name, shop_name: it.orders?.shop_name,
+        route: it.orders?.route, sales_rep_name: it.orders?.sales_rep_name,
+        normal_price: it.normal_price, requested_price: it.unit_price,
+        qty: it.qty, unit: it.unit, price_type: it.price_type,
+        order_date: it.orders?.order_date,
+        decision: 'approved', decided_by: adminName || null, decided_by_id: adminId || null,
+        decided_at: new Date().toISOString(),
+        reason_type: reasonType || null, competitor_name: competitorName || null,
+        other_reason: otherReason || null
+      })
+    }
+  } catch (histErr) { console.error('price_approval_history insert failed (non-fatal):', histErr) }
 }
 
 /** Reject a special-priced line — permanently excluded from billing with a reason. */
 export async function rejectSpecialPrice(itemId, adminName, adminId, reason) {
   const { error } = await supabase
     .from('order_items')
-    .update({ approval_status: 'rejected', approved_by: adminName || null, approved_by_id: adminId || null, approved_at: new Date().toISOString(), approval_reason: reason || null })
+    .update({
+      approval_status: 'rejected',
+      approved_by: adminName || null, approved_by_id: adminId || null,
+      approved_at: new Date().toISOString(),
+      rejection_reason: reason || null
+    })
     .eq('id', itemId)
     .eq('approval_status', 'pending')
   if (error) throw error
+  // Write audit history (non-fatal)
+  try {
+    const { data: it } = await supabase
+      .from('order_items')
+      .select('id, order_id, product_name, qty, unit, unit_price, normal_price, price_type, orders(shop_name, route, order_date, sales_rep_name)')
+      .eq('id', itemId).maybeSingle()
+    if (it) {
+      await supabase.from('price_approval_history').insert({
+        order_item_id: it.id, order_id: it.order_id,
+        product_name: it.product_name, shop_name: it.orders?.shop_name,
+        route: it.orders?.route, sales_rep_name: it.orders?.sales_rep_name,
+        normal_price: it.normal_price, requested_price: it.unit_price,
+        qty: it.qty, unit: it.unit, price_type: it.price_type,
+        order_date: it.orders?.order_date,
+        decision: 'rejected', decided_by: adminName || null, decided_by_id: adminId || null,
+        decided_at: new Date().toISOString(), rejection_reason: reason || null
+      })
+    }
+  } catch (histErr) { console.error('price_approval_history insert failed (non-fatal):', histErr) }
+}
+
+/** Load approval history for the Admin reports page. */
+export async function loadApprovalHistory({ fromDate, toDate, repName } = {}) {
+  let q = supabase.from('price_approval_history').select('*').order('created_at', { ascending: false }).limit(500)
+  if (fromDate) q = q.gte('order_date', fromDate)
+  if (toDate)   q = q.lte('order_date', toDate)
+  if (repName)  q = q.eq('sales_rep_name', repName)
+  const { data, error } = await q
+  if (error) { console.error(error); return [] }
+  return data || []
+}
+
+/** Notify Admin when a new order contains special-priced lines.
+ *  Uses the existing sendAnnouncement infrastructure; non-fatal. */
+export async function notifyAdminPriceApprovalRequired(specialItems, shopName, repName) {
+  if (!PRICE_APPROVAL_ENABLED || !specialItems?.length) return
+  try {
+    const lines = specialItems.map((i) =>
+      `• ${i.name}: ₹${i.normalPrice ?? '?'} → ₹${i.finalSellingPrice ?? '?'}`
+    ).join('\n')
+    await sendAnnouncement({
+      title: `Price Approval Required — ${shopName}`,
+      body: `${repName} is requesting a special price.\n${lines}\nGo to Admin → Price Approvals to review.`,
+      highPriority: true,
+      audience: 'admin',
+      expiresInDays: 7,
+      notifType: 'price_approval'
+    })
+  } catch (e) { console.error('price approval notification (non-fatal):', e) }
 }
 
 /**

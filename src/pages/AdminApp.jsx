@@ -5,6 +5,7 @@ import AdminDashboard from '../pages/AdminDashboard.jsx'
 import ProductAdminPage from '../pages/ProductAdminPage.jsx'
 import SalespeopleAdminPage from '../pages/SalespeopleAdminPage.jsx'
 import AnnouncementsAdminPage from '../pages/AnnouncementsAdminPage.jsx'
+import AdminPriceApprovalReportPage from '../pages/AdminPriceApprovalReportPage.jsx'
 import VerifiedOrdersPage from '../pages/VerifiedOrdersPage.jsx'
 import ReportPanel from '../components/ReportPanel.jsx'
 import AdminBillingView from '../pages/AdminBillingView.jsx'
@@ -77,6 +78,7 @@ export default function AdminApp() {
           </div>
         </div>
       )}
+      {section === 'approval-report' && <AdminPriceApprovalReportPage />}
 
       {/* Phase C2 — read-only visibility into Billing/QC/Delivery. These use
           the SAME data functions those teams' own dashboards use, so the
