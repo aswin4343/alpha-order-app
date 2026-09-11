@@ -15,19 +15,31 @@ import './index.css'
 // worker sit in "waiting" and take over only on the next natural full load —
 // so users still get fresh code promptly, without any surprise page refresh.
 import { registerSW } from 'virtual:pwa-register'
-registerSW({
+
+// When a new service worker is installed and ready, show a small non-intrusive
+// "Update available" banner the user can tap when convenient. This avoids both
+// failure modes: (a) silent stale cache — users stuck on old builds indefinitely
+// without knowing, and (b) forced mid-session reload — Billing yanked out of an
+// order when the window regained focus. The user sees the banner and taps it
+// whenever it's safe to refresh.
+let _swUpdateSW = null
+const _swUpdateAvailableEvent = new Event('sw-update-available')
+const _updateSW = registerSW({
   immediate: true,
-  // Intentionally do NOT call updateSW()/reload here. Leaving these callbacks
-  // empty means the register helper will not auto-reload the page when an
-  // update is found; the waiting worker activates on the next real navigation.
-  onNeedRefresh() {},
+  onNeedRefresh() {
+    // New SW is installed and waiting. Notify the app so it can show a banner.
+    _swUpdateSW = _updateSW
+    window.dispatchEvent(_swUpdateAvailableEvent)
+  },
   onOfflineReady() {},
 })
+// Expose so the banner component can call it.
+window.__swUpdate = () => _updateSW && _updateSW(true)
 
 // Prints on every load, on every screen — a fast way to confirm whether a
 // device is actually running the latest deploy or a stale cached bundle,
 // without needing to navigate to any specific feature to check.
-console.log('%cAlpha Flow build v123', 'color:#059669;font-weight:bold;font-size:14px')
+console.log('%cAlpha Flow build v124', 'color:#059669;font-weight:bold;font-size:14px')
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>

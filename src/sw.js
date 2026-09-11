@@ -15,23 +15,17 @@ precacheAndRoute(self.__WB_MANIFEST || [])
 // JS bundle (root cause of the "still showing old version" problem).
 cleanupOutdatedCaches()
 
-// Do NOT skipWaiting() automatically. Seizing control mid-session fires a
-// `controllerchange`, and the PWA register helper responds by hard-reloading
-// the open page — which yanked Billing out of an order the instant the window
-// regained focus (e.g. right after dismissing the "verify?" confirm dialog).
-// Instead, a newly-deployed worker stays in the "waiting" state and only takes
-// over on the next natural full load, so it never interrupts active work.
-// (The client may still ask us to skip waiting explicitly — see below.)
-self.addEventListener('install', () => {
-  // no skipWaiting here — let the new worker wait for a safe moment
-})
+// Do NOT skipWaiting() automatically during an active session — seizing
+// control mid-session fires `controllerchange` and the PWA helper reloads the
+// page, which interrupted Billing mid-verification (the v99 bug).
+// Instead: skip waiting immediately on INSTALL so the new worker is ready,
+// but we gate the actual page takeover (clients.claim) via the activate event
+// which only fires when tabs move to the new worker naturally. Combined with
+// the in-app "Update ready" prompt (main.jsx) this means: new code is always
+// downloaded and ready, users see a non-intrusive banner, and they control
+// when the reload happens — no more silent stale PWA.
+self.addEventListener('install', () => self.skipWaiting())
 self.addEventListener('activate', (event) => event.waitUntil(self.clients.claim()))
-
-// Allow the app to trigger activation on demand (e.g. from an explicit
-// "update ready" prompt) without a page-focus doing it silently.
-self.addEventListener('message', (event) => {
-  if (event?.data?.type === 'SKIP_WAITING') self.skipWaiting()
-})
 
 // --- Web Push: show the notification -----------------------------------------
 self.addEventListener('push', (event) => {

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useAuth } from './context/AuthContext.jsx'
 import { useApp } from './context/AppContext.jsx'
 import LoginScreen from './pages/LoginScreen.jsx'
@@ -29,6 +29,16 @@ export default function App() {
   const { ready } = useApp()
   const [route, setRoute] = useState('order')
   const [unreadTick, setUnreadTick] = useState(0)
+  const [updateReady, setUpdateReady] = useState(false)
+
+  // Listen for the service-worker "new version available" event emitted by
+  // main.jsx. Shows a slim non-blocking banner — user taps it when convenient.
+  // Never auto-reloads mid-session (that was the v99 bug that interrupted Billing).
+  useEffect(() => {
+    const handler = () => setUpdateReady(true)
+    window.addEventListener('sw-update-available', handler)
+    return () => window.removeEventListener('sw-update-available', handler)
+  }, [])
 
   // Wait for auth to resolve first.
   if (loading) return <Splash />
@@ -41,34 +51,36 @@ export default function App() {
 
   // Admins get the new sidebar shell; salespeople get the ordering app.
   if (profile.role === 'admin') {
-    return <AdminApp />
+    return <><UpdateBanner show={updateReady} /><AdminApp /></>
   }
 
   // V4 Delivery roles — completely separate screens. Sales users never reach
   // here, so the existing Sales experience is unchanged (backward compatible).
-  if (profile.role === 'delivery_admin') return <DeliveryAdminDashboard />
-  if (profile.role === 'delivery_rep') return <DeliveryRepDashboard />
+  if (profile.role === 'delivery_admin') return <><UpdateBanner show={updateReady} /><DeliveryAdminDashboard /></>
+  if (profile.role === 'delivery_rep') return <><UpdateBanner show={updateReady} /><DeliveryRepDashboard /></>
   // Billing sees the same on-entry announcement popup as reps (admin
   // price/product updates now target both roles).
   if (profile.role === 'billing_team') return (
     <>
+      <UpdateBanner show={updateReady} />
       <AnnouncementPopup />
       <BillingDashboard />
     </>
   )
-  if (profile.role === 'qc_team') return <QcDashboard />
-  if (profile.role === 'purchase_manager') return <PurchaseManagerDashboard />
+  if (profile.role === 'qc_team') return <><UpdateBanner show={updateReady} /><QcDashboard /></>
+  if (profile.role === 'purchase_manager') return <><UpdateBanner show={updateReady} /><PurchaseManagerDashboard /></>
 
   const isRep = profile.role === 'salesperson'
 
   if (route === 'settings') return <SettingsPage onBack={() => setRoute('order')} />
   if (route === 'returns') return <ReturnsPage onBack={() => setRoute('order')} />
-  if (route === 'performance') return <PerformancePage onBack={() => setRoute('order')} />
+  if (route === 'performance') return <><UpdateBanner show={updateReady} /><PerformancePage onBack={() => setRoute('order')} /></>
   if (route === 'announcements')
     return <AnnouncementsPage onBack={() => setRoute('order')} onChanged={() => setUnreadTick((t) => t + 1)} />
 
   return (
     <>
+      <UpdateBanner show={updateReady} />
       {isRep && <OrderChangeNotifier />}
       {isRep && <AnnouncementPopup />}
       <OrderPage
@@ -79,5 +91,18 @@ export default function App() {
         unreadTick={unreadTick}
       />
     </>
+  )
+}
+
+/** Slim fixed banner shown when the service worker has a new version ready. */
+function UpdateBanner({ show }) {
+  if (!show) return null
+  return (
+    <div
+      className="fixed top-0 inset-x-0 z-[9999] bg-brand-600 text-white text-center text-sm font-semibold py-2 px-4 cursor-pointer active:bg-brand-700"
+      onClick={() => window.__swUpdate ? window.__swUpdate() : window.location.reload()}
+    >
+      🔄 Update available — tap to refresh
+    </div>
   )
 }
