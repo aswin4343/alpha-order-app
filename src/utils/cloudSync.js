@@ -4308,13 +4308,19 @@ export async function approveSpecialPrice(itemId, adminName, adminId, reasonPayl
   try {
     const { data: it } = await supabase
       .from('order_items')
-      .select('id, order_id, product_name, qty, unit, unit_price, normal_price, price_type, orders(shop_name, route, order_date, sales_rep_name)')
+      .select('id, order_id, product_name, qty, unit, unit_price, normal_price, price_type, orders(shop_name, route, order_date, sales_rep_id)')
       .eq('id', itemId).maybeSingle()
     if (it) {
+      // Resolve rep name separately (orders has sales_rep_id, not sales_rep_name)
+      let repName = null
+      if (it.orders?.sales_rep_id) {
+        const { data: prof } = await supabase.from('profiles').select('full_name').eq('id', it.orders.sales_rep_id).maybeSingle()
+        repName = prof?.full_name || null
+      }
       await supabase.from('price_approval_history').insert({
         order_item_id: it.id, order_id: it.order_id,
         product_name: it.product_name, shop_name: it.orders?.shop_name,
-        route: it.orders?.route, sales_rep_name: it.orders?.sales_rep_name,
+        route: it.orders?.route, sales_rep_name: repName,
         normal_price: it.normal_price, requested_price: it.unit_price,
         qty: it.qty, unit: it.unit, price_type: it.price_type,
         order_date: it.orders?.order_date,
@@ -4344,13 +4350,18 @@ export async function rejectSpecialPrice(itemId, adminName, adminId, reason) {
   try {
     const { data: it } = await supabase
       .from('order_items')
-      .select('id, order_id, product_name, qty, unit, unit_price, normal_price, price_type, orders(shop_name, route, order_date, sales_rep_name)')
+      .select('id, order_id, product_name, qty, unit, unit_price, normal_price, price_type, orders(shop_name, route, order_date, sales_rep_id)')
       .eq('id', itemId).maybeSingle()
     if (it) {
+      let repName = null
+      if (it.orders?.sales_rep_id) {
+        const { data: prof } = await supabase.from('profiles').select('full_name').eq('id', it.orders.sales_rep_id).maybeSingle()
+        repName = prof?.full_name || null
+      }
       await supabase.from('price_approval_history').insert({
         order_item_id: it.id, order_id: it.order_id,
         product_name: it.product_name, shop_name: it.orders?.shop_name,
-        route: it.orders?.route, sales_rep_name: it.orders?.sales_rep_name,
+        route: it.orders?.route, sales_rep_name: repName,
         normal_price: it.normal_price, requested_price: it.unit_price,
         qty: it.qty, unit: it.unit, price_type: it.price_type,
         order_date: it.orders?.order_date,
