@@ -236,6 +236,11 @@ export default function BillingDashboard() {
                           🏪 {r.pendingStoreCounter}
                         </span>
                       )}
+                      {r.pendingOnDemand > 0 && (
+                        <span className="text-[9px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 rounded">
+                          📦 {r.pendingOnDemand}
+                        </span>
+                      )}
                     </div>
                   )}
                 </div>
@@ -341,7 +346,7 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
       const [list, badgeCounts] = await Promise.all([
         loadBillingOrders(
           rep.id,
-          type === 'EXP' ? 'EXP' : type === 'STD' ? 'STD' : type === 'STORE-COUNTER' ? 'STORE-COUNTER' : undefined,
+          type === 'EXP' ? 'EXP' : type === 'STD' ? 'STD' : type === 'STORE-COUNTER' ? 'STORE-COUNTER' : type === 'ON-DEMAND' ? 'ON-DEMAND' : undefined,
           effectiveStatus,
           dateStr || null,
           type === 'EXP' && expressRoute ? expressRoute : null
@@ -403,7 +408,7 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
           className="text-xs font-semibold text-brand-700 px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50">Today</button>
       </div>
       <div className="grid grid-cols-4 gap-1.5 p-3 pb-2 border-b border-slate-50">
-        {[['All','All',counts?.all], ['EXP','Express',counts?.express], ['STD','Standard',counts?.standard], ['Addons','Add-ons',counts?.addons], ['STORE-COUNTER','Store Counter',counts?.storeCounter]].map(([t,label,count]) => (
+        {[['All','All',counts?.all], ['EXP','Express',counts?.express], ['STD','Standard',counts?.standard], ['Addons','Add-ons',counts?.addons], ['STORE-COUNTER','Store Counter',counts?.storeCounter], ['ON-DEMAND','On Demand',counts?.onDemand]].map(([t,label,count]) => (
           <button key={t} onClick={() => { setType(t); if (t !== 'EXP') setExpressRoute(''); if (t === 'Addons') setStatus('pending') }}
             className={`px-2 py-1.5 rounded-lg text-[11px] font-semibold flex flex-col items-center gap-0.5 ${type===t ? 'bg-brand-600 text-white' : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}>
             <span>{label}</span>
@@ -1329,15 +1334,17 @@ function NewCustomerInfoModal({ order, onClose }) {
   }, [order.shop_name])
 
   // Build the field list dynamically; skip empty values so no undefined/null shows.
+  // Prefer intro_* fields (exactly what the rep entered) over the live customer record.
   const fields = [
-    ['Store Name', order.shop_name],
+    ['Customer Name', order.shop_name],
+    ['Customer Area', o.intro_area],
+    ['Route', order.route || ledger?.route],
+    ['Customer Category', o.intro_category || ledger?.category],
+    ['Ledger Category', o.intro_ledger_category || ledger?.ledger_category],
+    ['Credit Days', o.intro_credit_days],
     ['Phone Number', o.intro_phone],
     ['GST Number', o.intro_gstn],
-    ['Email', o.intro_email],
-    ['Customer Category', ledger?.category],
-    ['Ledger Category', ledger?.ledger_category],
-    ['Route', order.route || ledger?.route],
-    ['Credit Days', o.intro_credit_days]
+    ['Email', o.intro_email]
   ].filter(([, v]) => v != null && String(v).trim() !== '')
 
   const copy = async (label, value) => {

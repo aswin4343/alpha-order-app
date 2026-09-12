@@ -193,7 +193,10 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
       intro_phone: isNewCustomer ? (introDetails?.phone || null) : null,
       intro_gstn: isNewCustomer ? (introDetails?.gstn || null) : null,
       intro_credit_days: isNewCustomer ? (introDetails?.creditDays || null) : null,
-      intro_email: isNewCustomer ? (introDetails?.email || null) : null
+      intro_email: isNewCustomer ? (introDetails?.email || null) : null,
+      intro_area: isNewCustomer ? (introDetails?.area || null) : null,
+      intro_category: isNewCustomer ? (introDetails?.category || null) : null,
+      intro_ledger_category: isNewCustomer ? (introDetails?.ledgerCategory || null) : null
     })
     .select('id')
     .single()
@@ -2090,6 +2093,7 @@ export async function loadBillingReps() {
       pendingExpress:      countByRoute(pending, r.id, (route) => route.toUpperCase().startsWith('EXP')),
       pendingStandard:     countByRoute(pending, r.id, (route) => route.toUpperCase().startsWith('STD')),
       pendingStoreCounter: countByRoute(pending, r.id, (route) => route.toUpperCase() === 'STORE-COUNTER'),
+      pendingOnDemand:     countByRoute(pending, r.id, (route) => route.toUpperCase() === 'ON-DEMAND'),
       pendingAddons: 0 // add-ons are grouped differently; 0 is correct here as a safe placeholder
     }))
     .filter((r) => r.pending > 0 || r.verifiedToday > 0)
@@ -2144,6 +2148,7 @@ export async function loadBillingOrders(repId, deliveryType, status = 'pending',
   if (deliveryType === 'EXP') rows = rows.filter((o) => (o.route || '').toUpperCase().startsWith('EXP'))
   if (deliveryType === 'STD') rows = rows.filter((o) => (o.route || '').toUpperCase().startsWith('STD'))
   if (deliveryType === 'STORE-COUNTER') rows = rows.filter((o) => (o.route || '').toUpperCase() === 'STORE-COUNTER')
+  if (deliveryType === 'ON-DEMAND') rows = rows.filter((o) => (o.route || '').toUpperCase() === 'ON-DEMAND')
   if (expressRoute) {
     const want = expressRoute.toUpperCase().replace(/\s+/g, '')
     rows = rows.filter((o) => (o.route || '').toUpperCase().replace(/\s+/g, '').includes(want))
@@ -2257,22 +2262,17 @@ export async function loadBillingCounts(repId, dateStr = null, status = 'pending
   // two tabs can never show identical numbers again.
   const matchesStatus = (o) => o.billing_status === status
 
-  let all = 0, express = 0, standard = 0, addons = 0, storeCounter = 0
+  let all = 0, express = 0, standard = 0, addons = 0, storeCounter = 0, onDemand = 0
   for (const g of groups.values()) {
     const original = g.orders[0]
     const rest = g.orders.slice(1)
     const isExpress = (g.route || '').toUpperCase().startsWith('EXP')
     const isStandard = (g.route || "").toUpperCase().startsWith("STD")
     const isStoreCounter = (g.route || "").toUpperCase() === "STORE-COUNTER"
+    const isOnDemand = (g.route || "").toUpperCase() === "ON-DEMAND"
     const originalMatches = matchesStatus(original)
     const addonMatches = rest.some(matchesStatus)
 
-    // "All" = distinct verification WORK ITEMS in the selected status: the
-    // original (if it matches) counts once, and — if it has an add-on that
-    // also matches — that adds ONE more (not one per add-on order row),
-    // matching "do not simply add all counts together" / "avoid double
-    // counting" from the spec. An order counts toward exactly one status at
-    // a time, since billing_status can only ever be one value.
     if (originalMatches) all++
     if (addonMatches) all++
 
@@ -2280,11 +2280,12 @@ export async function loadBillingCounts(repId, dateStr = null, status = 'pending
       if (isExpress) express++
       if (isStandard) standard++
       if (isStoreCounter) storeCounter++
+      if (isOnDemand) onDemand++
     }
     if (addonMatches) addons++
   }
 
-  return { all, express, standard, addons, storeCounter }
+  return { all, express, standard, addons, storeCounter, onDemand }
 }
 
 /** Full item list for one order (for the billing detail view). */
@@ -4265,6 +4266,14 @@ async function myShortageSummaryFallback({ singleDay, dateStr, fromStr, toStr, r
 
 /** All order lines awaiting Admin sign-off, newest first, with shop/rep context. */
 export async function loadPendingApprovals() {
+  // If the admin has turned the approval workflow OFF, show nothing in the
+  // pending list — even if old items have approval_status='pending'. The
+  // admin explicitly chose to bypass approval; those items should not keep
+  // appearing. They remain in the DB and will reappear if approval is
+  // turned back ON.
+  const approvalEnabled = await loadPriceApprovalEnabled()
+  if (!approvalEnabled) return []
+
   const { data, error } = await supabase
     .from('order_items')
     .select(`

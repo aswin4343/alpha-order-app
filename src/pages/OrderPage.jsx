@@ -769,7 +769,8 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
           // "is this genuinely their first order" — not two competing ones.
           isNewCustomer: showIntro,
           introDetails: showIntro
-            ? { phone: customer.phone, gstn: customer.gstn, creditDays: customer.creditDays, email: customer.email }
+            ? { phone: customer.phone, gstn: customer.gstn, creditDays: customer.creditDays, email: customer.email,
+                area: customer.area || null, category: customer.category || null, ledgerCategory: customer.ledgerCategory || null }
             : null
         })
 
