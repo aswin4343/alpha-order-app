@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
-import { loadPendingApprovals, approveSpecialPrice, rejectSpecialPrice } from '../utils/cloudSync.js'
+import { loadPendingApprovals, approveSpecialPrice, rejectSpecialPrice, loadPriceApprovalEnabled, setPriceApprovalEnabled } from '../utils/cloudSync.js'
 
 const APPROVE_REASONS = [
   { value: 'competitor',  label: 'Competitor Price',           needsName: true },
@@ -15,6 +15,26 @@ export default function AdminApprovalsPage() {
   const [rows,setRows]   = useState(null)
   const [busyId,setBusy] = useState(null)
   const [toast,setToast] = useState('')
+  // Runtime toggle — loaded from DB; admin can flip without redeployment
+  const [approvalOn, setApprovalOn]     = useState(true)
+  const [toggleBusy, setToggleBusy]     = useState(false)
+
+  useEffect(() => {
+    loadPriceApprovalEnabled().then(setApprovalOn).catch(() => {})
+  }, [])
+
+  const handleToggle = async () => {
+    setToggleBusy(true)
+    try {
+      const next = !approvalOn
+      await setPriceApprovalEnabled(next)
+      setApprovalOn(next)
+      flash(next ? 'Price Approval is now ON' : 'Price Approval is now OFF')
+    } catch (e) {
+      console.error(e)
+      alert('Could not update setting. Make sure sql/58_price_approval_toggle.sql has been run in Supabase.')
+    } finally { setToggleBusy(false) }
+  }
   const [approving,setApproving] = useState(null)
   const [reasonType,setReasonType]  = useState('')
   const [competitorName,setCompetitorName] = useState('')
@@ -64,8 +84,31 @@ export default function AdminApprovalsPage() {
           <h1 className="text-lg font-bold text-slate-800">Price Approvals</h1>
           <p className="text-[12px] text-slate-400">Special/custom prices awaiting Admin sign-off.</p>
         </div>
-        <button onClick={refresh} className="text-sm font-semibold text-brand-700 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50">Refresh</button>
+        <div className="flex items-center gap-2">
+          {/* Runtime toggle — turns the entire approval workflow on/off
+              without a redeployment. Stored in app_settings table. */}
+          <button
+            onClick={handleToggle}
+            disabled={toggleBusy}
+            title={approvalOn ? 'Click to disable price approval' : 'Click to enable price approval'}
+            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none disabled:opacity-50 ${approvalOn ? 'bg-emerald-500' : 'bg-slate-300'}`}
+          >
+            <span className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${approvalOn ? 'translate-x-6' : 'translate-x-1'}`} />
+          </button>
+          <span className={`text-xs font-semibold ${approvalOn ? 'text-emerald-700' : 'text-slate-400'}`}>
+            {toggleBusy ? '…' : approvalOn ? 'Approval ON' : 'Approval OFF'}
+          </span>
+          <button onClick={refresh} className="text-sm font-semibold text-brand-700 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50 ml-1">Refresh</button>
+        </div>
       </div>
+
+      {/* Informational banner when approval is OFF */}
+      {!approvalOn && (
+        <div className="mb-4 rounded-xl bg-amber-50 border border-amber-200 px-4 py-3">
+          <p className="text-sm font-semibold text-amber-800">⚠ Price Approval is currently OFF</p>
+          <p className="text-xs text-amber-700 mt-0.5">Special prices entered by reps will be accepted without requiring Admin approval. Toggle ON above to re-enable the workflow.</p>
+        </div>
+      )}
 
       {rows==null ? (
         <div className="py-16 flex justify-center"><div className="h-6 w-6 rounded-full border-4 border-slate-200 border-t-slate-800 animate-spin"/></div>

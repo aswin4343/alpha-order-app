@@ -116,6 +116,9 @@ export async function ensureCloudCustomer(customer, userId, repCreated = false) 
 
 /** Save an order + its items. Returns the new order id (or null on failure). */
 export async function saveCloudOrder({ customer, brand, userId, items, location, orderDate, route, isNewCustomer, introDetails }) {
+  // Populate the runtime approval cache before writing order items — this is
+  // what makes the toggle take effect on the NEXT order after admin changes it.
+  await isApprovalEnabled()
   const cloudCustomerId = await ensureCloudCustomer(customer, userId)
   // Per-order route: use the chosen route if provided, else the customer default.
   // NOTE: this never overwrites the customer's default route in the DB.
@@ -240,9 +243,9 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
       // Admin approval gate (spec: ANY deviation from MRP/RP/WP requires
       // sign-off; ONLY this line is held, the rest of the order is unaffected
       // and proceeds through Billing normally). Ordinary lines get null —
-      // no workflow applies to them. Paused via PRICE_APPROVAL_ENABLED — see
-      // utils/featureFlags.js for why and how to re-enable.
-      approval_status: (PRICE_APPROVAL_ENABLED && isSpecial) ? 'pending' : null,
+      // no workflow applies to them. Controlled by the runtime toggle in
+      // Admin → Price Approvals (stored in app_settings.price_approval_enabled).
+      approval_status: (_runtimeApprovalEnabled !== false && PRICE_APPROVAL_ENABLED && isSpecial) ? 'pending' : null,
       scheme_enabled: i.schemeEnabled !== false,
       // Selected Price Type (WHOLESALE | RETAIL | MRP | CUSTOM) alongside the
       // Final Rate above (unit_price) — stored together so Billing/invoicing
@@ -302,7 +305,7 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
   }
 
   // Notify Admin if any items require price approval (non-blocking)
-  if (PRICE_APPROVAL_ENABLED) {
+  if (_runtimeApprovalEnabled !== false && PRICE_APPROVAL_ENABLED) {
     const specialItems = items.filter((i) => {
       const effectivePrice = i.finalSellingPrice ?? null
       return i.normalPrice != null && effectivePrice != null && effectivePrice !== i.normalPrice
@@ -4379,6 +4382,41 @@ export async function rejectSpecialPrice(itemId, adminName, adminId, reason) {
 }
 
 /** Load approval history for the Admin reports page. */
+/** Read the current price_approval_enabled flag from the database.
+ *  Falls back to the build-time constant if the column doesn't exist yet. */
+export async function loadPriceApprovalEnabled() {
+  try {
+    const { data, error } = await supabase
+      .from('app_settings')
+      .select('price_approval_enabled')
+      .eq('id', 1)
+      .maybeSingle()
+    if (error || !data) return PRICE_APPROVAL_ENABLED
+    return data.price_approval_enabled ?? PRICE_APPROVAL_ENABLED
+  } catch { return PRICE_APPROVAL_ENABLED }
+}
+
+/** Admin: set price_approval_enabled on/off at runtime.
+ *  Also clears the module cache so the next order reflects the new setting. */
+export async function setPriceApprovalEnabled(enabled) {
+  const { error } = await supabase
+    .from('app_settings')
+    .update({ price_approval_enabled: enabled })
+    .eq('id', 1)
+  if (error) throw error
+  _runtimeApprovalEnabled = enabled  // update cache immediately
+}
+
+// Runtime cache — populated on first saveCloudOrder call, cleared when admin
+// toggles the setting. Avoids a DB round-trip on every product add.
+let _runtimeApprovalEnabled = null
+
+async function isApprovalEnabled() {
+  if (_runtimeApprovalEnabled !== null) return _runtimeApprovalEnabled
+  _runtimeApprovalEnabled = await loadPriceApprovalEnabled()
+  return _runtimeApprovalEnabled
+}
+
 export async function loadApprovalHistory({ fromDate, toDate, repName } = {}) {
   let q = supabase.from('price_approval_history').select('*').order('created_at', { ascending: false }).limit(500)
   if (fromDate) q = q.gte('order_date', fromDate)
