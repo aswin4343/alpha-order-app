@@ -107,7 +107,21 @@ async function syncCustomersFromCloud(localCustomers) {
 
     const additions = []
     let changed = false
-    const updated = (localCustomers || []).map((c) => c) // shallow copy to mutate in place below
+    // Build the set of deactivated cloud IDs so we can remove them locally.
+    // A customer deactivated by Admin (is_active = false) must not appear in
+    // the Sales Rep's customer search even on devices that already have them.
+    const deactivatedNames = new Set(
+      cloudUnique.filter(cc => cc.is_active === false).map(cc => nameKey(cc.shop_name))
+    )
+
+    // Remove deactivated customers from the local list.
+    const updated = (localCustomers || []).filter((c) => {
+      if (deactivatedNames.has(nameKey(c.name))) {
+        changed = true
+        return false  // drop from local list
+      }
+      return true
+    })
 
     cloudUnique.forEach((cc) => {
       const k = nameKey(cc.shop_name)
@@ -115,6 +129,8 @@ async function syncCustomersFromCloud(localCustomers) {
       const cloudRoute = cc.route || ''
 
       if (!existingLocal) {
+        // Skip deactivated customers — don't add them to the local list
+        if (cc.is_active === false) return
         // Genuinely new shop (from any rep/device) — add it.
         additions.push({
           id: `cloud_${cc.id}`,

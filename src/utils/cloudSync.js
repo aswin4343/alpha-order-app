@@ -1610,7 +1610,7 @@ export async function fetchAllCloudCustomers() {
   while (true) {
     const { data, error } = await supabase
       .from('customers')
-      .select('id, shop_name, route, category, ledger_category, created_at, updated_at')
+      .select('id, shop_name, route, category, ledger_category, created_at, updated_at, is_active')
       // Most recently CHANGED row first. This matters when a shop has
       // duplicate rows: the sync treats shop_name as the identity key, so the
       // row that was edited most recently must be the one that wins. Ordering
