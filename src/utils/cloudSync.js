@@ -3303,8 +3303,9 @@ export async function loadOrderSummary(orderIdOrIds) {
 
   const { data: items, error: itemsErr } = await supabase
     .from('order_items')
-    .select('id, product_name, qty, unit, is_addon, unit_price, scheme_applied')
+    .select('id, product_name, qty, unit, is_addon, unit_price, scheme_applied, removed, order_id')
     .in('order_id', ids)
+    .eq('removed', false)
   if (itemsErr) throw itemsErr
 
   // Rep display name (for the summary header).
@@ -3482,6 +3483,20 @@ export async function updateCloudOrder(orderId, { items }) {
   return orderId
 }
 
+
+/** Remove a single order item (Sales Rep side). Marks removed=true and recalculates order totals. Billing sees it gone immediately. */
+export async function removeOrderItem(itemId, orderId) {
+  if (!itemId || !orderId) throw new Error("itemId and orderId required")
+  const { error } = await supabase.from("order_items").update({ removed: true }).eq("id", itemId)
+  if (error) throw error
+  try {
+    const { data: remaining } = await supabase.from("order_items").select("qty, unit_price").eq("order_id", orderId).eq("removed", false)
+    const totalValue = (remaining || []).reduce((s, i) => s + ((i.unit_price || 0) * i.qty), 0)
+    const totalQty = (remaining || []).reduce((s, i) => s + i.qty, 0)
+    const totalProducts = (remaining || []).length
+    await supabase.from("orders").update({ total_value: totalValue, total_quantity: totalQty, total_products: totalProducts }).eq("id", orderId)
+  } catch (e) { console.error("recalc totals (non-fatal):", e) }
+}
 export async function updateOrderDateRoute(orderId, { newDate, newRoute } = {}) {
   if (!newDate && newRoute == null) return   // nothing to change
 
