@@ -71,26 +71,15 @@ function CopyableProductName({ name }) {
 }
 
 // ============================================================================
-// PRINT MODEL — A5 LANDSCAPE (210mm × 148.5mm)
+// PRINT MODEL — A5 PORTRAIT (148mm × 210mm)
 //
-// Physical paper: A5 sheet loaded LANDSCAPE in the printer.
-// Required: content 210mm wide × 148.5mm tall, no rotation.
-//
-// IMPORTANT — WHY NO CSS ROTATION:
-// Previous versions used transform: rotate() to rotate the whole page 90°.
-// CSS transforms are applied AFTER layout; many printer drivers ignore or
-// misinterpret them, producing a portrait printout with left/right edges
-// cropped even when the browser preview looked correct. The reliable fix is
-// to tell the browser the page IS landscape via @page { size: 210mm 148.5mm }
-// and render the content at those exact dimensions — no rotation needed.
-//
-// PAGINATION: rows are rendered off-screen at the true print width, their
-// real heights measured, then greedily packed into successive pages up to the
-// genuine available height. Nothing is a fixed rows-per-page count.
+// Physical paper: A5 sheet. Content renders at 148mm wide × 210mm tall.
+// This is the original orientation from the first working version of the app.
+// A later update switched this to Landscape (210×148.5mm); this restores it.
 
-const ORIENTATION = 'landscape'
-const PAGE_W_MM = 210   // landscape width
-const PAGE_H_MM = 148.5 // landscape height
+const ORIENTATION = 'portrait'
+const PAGE_W_MM = 148   // portrait width
+const PAGE_H_MM = 210   // portrait height
 const PAD_MM = 2
 
 // Hard cap on rows per printed page. Pagination is done on the DATA (chunk the
@@ -247,9 +236,7 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
     <div className="bg-white">
       <style>{`
         @media print {
-          /* Tell the browser/driver this is a LANDSCAPE A5 page (210×148.5mm).
-             Raw dimensions (not a named size) work reliably across drivers.
-             No CSS rotation — transforms are unreliable in print pipelines. */
+          /* A5 Portrait: 148mm wide × 210mm tall. Restored to original orientation. */
           @page { size: ${PAGE_W_MM}mm ${PAGE_H_MM}mm; margin: 0; }
           html, body { margin: 0 !important; padding: 0 !important; }
           .no-print-inline { display: none !important; }
@@ -264,8 +251,7 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
       `}</style>
 
       {/* On-screen preview — same renderPage() as the printed copy.
-          No rotation: content renders at 210mm×148.5mm (landscape), same as
-          what the printer receives. Preview = print = physical output. */}
+          Content renders at 148mm × 210mm (portrait). Preview = print. */}
       <div className="wh-screen-copy flex flex-col items-center gap-4 py-4 overflow-auto">
         {pages.map((p, i) => (
           <div key={i} className="shadow-2xl rounded-lg overflow-hidden bg-white shrink-0">
