@@ -120,7 +120,10 @@ export default function ProductAdminPage({ onBack }) {
         console.warn('Could not build merge preview:', cmpErr)
       }
       setMsg('')
-      if (!list.length) { setMsg('No products found in that file.'); return }
+      if (!list.length) {
+        setMsg('⚠️ No products found in that file. Make sure the sheet has a column named "ItemName", "Item Name", "Product Name", or "Name" — that column is required for matching.')
+        return
+      }
       setMergePending({ list, fileName: file.name, preview })
     } catch (err) {
       console.error(err)
@@ -327,7 +330,7 @@ export default function ProductAdminPage({ onBack }) {
 
       {/* Confirm replace safety net */}
       {pending && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center px-6">
+        <div className="fixed inset-0 z-[200] bg-black/40 flex items-center justify-center px-6">
           <div className="bg-white w-full max-w-sm rounded-3xl p-5">
             <h2 className="font-bold text-slate-800 text-lg mb-1">Confirm replace</h2>
             <p className="text-sm text-slate-600 mb-1">
@@ -403,7 +406,7 @@ export default function ProductAdminPage({ onBack }) {
 
       {/* Confirm merge (non-destructive) */}
       {mergePending && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center px-6">
+        <div className="fixed inset-0 z-[200] bg-black/40 flex items-center justify-center px-6">
           <div className="bg-white w-full max-w-sm rounded-3xl p-5">
             <div className="flex items-center gap-2 mb-2">
               <span className="text-[10px] font-extrabold text-green-700 bg-green-100 px-2 py-0.5 rounded-full">SAFE MERGE</span>

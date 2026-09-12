@@ -12,7 +12,7 @@ function fmtTime(iso) {
 }
 const rupee = (n) => `\u20B9${Number(n || 0).toLocaleString('en-IN')}`
 
-export default function OrdersListModal({ userId, start, end, route, periodLabel, onClose }) {
+export default function OrdersListModal({ userId, start, end, route, periodLabel, onClose, onEditOrder }) {
   const [orders, setOrders] = useState(null)
   const [error, setError] = useState(false)
   const [openOrderIds, setOpenOrderIds] = useState(null)
@@ -260,7 +260,14 @@ export default function OrdersListModal({ userId, start, end, route, periodLabel
 
       {/* Order Summary modal */}
       {openOrderIds && (
-        <OrderSummaryModal orderId={openOrderIds} onClose={() => setOpenOrderIds(null)} />
+        <OrderSummaryModal
+          orderId={openOrderIds}
+          onClose={() => setOpenOrderIds(null)}
+          onEdit={onEditOrder ? (order) => {
+            setOpenOrderIds(null)
+            onEditOrder(order)
+          } : undefined}
+        />
       )}
 
       {/* Add-on modal */}

@@ -30,6 +30,14 @@ export default function App() {
   const [route, setRoute] = useState('order')
   const [unreadTick, setUnreadTick] = useState(0)
   const [updateReady, setUpdateReady] = useState(false)
+  // When a rep taps "Edit Order" in My Performance, we store the order here
+  // and switch back to the order screen, which pre-loads the order for editing.
+  const [editOrderIntent, setEditOrderIntent] = useState(null)
+
+  const handleEditOrder = (order) => {
+    setEditOrderIntent(order)
+    setRoute('order')
+  }
 
   // Listen for the service-worker "new version available" event emitted by
   // main.jsx. Shows a slim non-blocking banner — user taps it when convenient.
@@ -74,7 +82,7 @@ export default function App() {
 
   if (route === 'settings') return <SettingsPage onBack={() => setRoute('order')} />
   if (route === 'returns') return <ReturnsPage onBack={() => setRoute('order')} />
-  if (route === 'performance') return <><UpdateBanner show={updateReady} /><PerformancePage onBack={() => setRoute('order')} /></>
+  if (route === 'performance') return <><UpdateBanner show={updateReady} /><PerformancePage onBack={() => setRoute('order')} onEditOrder={handleEditOrder} /></>
   if (route === 'announcements')
     return <AnnouncementsPage onBack={() => setRoute('order')} onChanged={() => setUnreadTick((t) => t + 1)} />
 
@@ -89,6 +97,8 @@ export default function App() {
         onOpenPerformance={() => setRoute('performance')}
         onOpenAnnouncements={() => setRoute('announcements')}
         unreadTick={unreadTick}
+        editOrderIntent={editOrderIntent}
+        onClearEditIntent={() => setEditOrderIntent(null)}
       />
     </>
   )

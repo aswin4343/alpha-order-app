@@ -17,7 +17,7 @@ const NAV_ITEMS = [
   { key: 'approval-report', label: 'Approval History', icon: '📋' },
   { key: 'qc', label: 'Quality Check', icon: '✅' },
   { key: 'delivery', label: 'Delivery', icon: '🚚' },
-  { key: 'customers', label: 'Customers', icon: '🏪', soon: true },
+  { key: 'customers', label: 'Customers', icon: '🏪' },
   { key: 'products', label: 'Products', icon: '📦' },
   { key: 'reports', label: 'Reports', icon: '📈' },
   { key: 'users', label: 'Users', icon: '👥' },

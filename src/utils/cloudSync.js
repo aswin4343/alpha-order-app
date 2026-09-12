@@ -128,18 +128,31 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
   const totalQuantity = items.reduce((s, i) => s + i.qty, 0)
 
   // ---- Duplicate guard --------------------------------------------------
-  // If an identical order already exists TODAY for this shop (same products &
-  // quantities), skip saving — this order is a double-submit. Any difference
-  // (product added/removed or qty changed) makes it a legitimate new order.
+  // Two checks:
+  //
+  // 1. EXACT DUPLICATE: same products & quantities already exist today for
+  //    this shop. This is a double-submit (rep re-tapped Copy Order). Block it.
+  //
+  // 2. ONE-NORMAL-ROUTE-BILL-PER-SHOP-PER-DAY: if a non-special route order
+  //    already exists today for this shop AND the new order also uses a
+  //    non-special route, block it. STORE-COUNTER and ON-DEMAND are exempt —
+  //    they are always new separate bills regardless of what else exists.
+  //    Add-ons are already handled upstream and never reach this path as a
+  //    new order creation.
+  const isSpecialChannel = (r) => {
+    const up = (r || '').trim().toUpperCase()
+    return up === 'STORE-COUNTER' || up === 'ON-DEMAND'
+  }
   try {
     const startToday = new Date(); startToday.setHours(0, 0, 0, 0)
     const { data: todays } = await supabase
       .from('orders')
-      .select('id, shop_name, created_at, order_items(product_name, qty)')
+      .select('id, shop_name, route, created_at, order_items(product_name, qty)')
       .eq('sales_rep_id', userId)
       .eq('shop_name', customer.name)
-      .eq('hidden', false)                // deleted orders must NOT block new ones
+      .eq('hidden', false)
       .gte('created_at', startToday.toISOString())
+
     const fingerprint = (list) =>
       (list || [])
         .map((r) => `${(r.product_name || r.name || '').trim().toUpperCase()}::${r.qty}`)
@@ -149,13 +162,17 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     const isDup = (todays || []).some((o) => fingerprint(o.order_items) === mine)
     if (isDup) {
       console.log('Duplicate order detected — skipping save.')
-      // A distinguishable sentinel, not a bare null. The caller was
-      // previously unable to tell "duplicate, intentionally skipped" apart
-      // from any other falsy result, and treated it as regular success —
-      // the WhatsApp message still went out and the session still cleared,
-      // while nothing was ever saved. This is what makes it possible for
-      // OrderPage to actually detect the skip and tell the rep.
       return 'DUPLICATE'
+    }
+
+    // One-normal-route-bill-per-shop-per-day: only applies when the new order
+    // is NOT a special channel (STORE-COUNTER / ON-DEMAND).
+    if (!isSpecialChannel(orderRoute)) {
+      const normalRouteToday = (todays || []).some((o) => !isSpecialChannel(o.route))
+      if (normalRouteToday) {
+        console.log('Normal-route order already exists for this shop today — blocking.')
+        return 'DUPLICATE'
+      }
     }
   } catch (e) {
     // If the check fails, fall through and save normally (never block a sale).
@@ -393,22 +410,34 @@ export async function loadPreviousOrders(shopName, route) {
  * newest-first and de-duplicated per product (first/newest price per product
  * wins). No arbitrary row cap, so a product last sold long ago is still found.
  */
-export async function loadCustomerLastPrices(shopName, route) {
+export async function loadCustomerLastPrices(shopName) {
+  // Last Price = the actual unit_price from the most recent VERIFIED order
+  // for this customer × product combination, regardless of route.
+  //
+  // The previous version filtered by route, which caused two bugs:
+  //   1. If the customer was ordered on a different route last time (e.g.
+  //      STORE-COUNTER vs their default route), the last price was missed.
+  //   2. If the rep overrode the route for this order, customer.route and
+  //      the stored order.route differed, so the query returned nothing.
+  //
+  // Route is irrelevant to "what did we last sell this product for to this
+  // customer". Removing the route filter fixes both cases without affecting
+  // how orders are queried, billed, or verified.
   if (!shopName) return {}
   const { data, error } = await supabase
     .from('orders')
     .select('created_at, billing_verified_at, order_items(product_name, unit_price, removed)')
     .eq('shop_name', shopName)
-    .eq('route', route || '')
     .eq('hidden', false)
     .eq('billing_status', 'verified')
-    .order('created_at', { ascending: false })
+    .order('billing_verified_at', { ascending: false, nullsFirst: false })
   if (error) {
     console.error('load customer last prices failed', error)
     return {}
   }
-  // Sort by the true sale time (verified time preferred), newest first, so the
-  // most recent successful sale of each product wins regardless of insert order.
+  // Sort by the true sale time (billing_verified_at preferred, fallback to
+  // created_at), newest first, so the most recent verified sale of each
+  // product wins regardless of insert order.
   const orders = (data || []).slice().sort((a, b) => {
     const ta = new Date(a.billing_verified_at || a.created_at).getTime()
     const tb = new Date(b.billing_verified_at || b.created_at).getTime()
@@ -419,10 +448,10 @@ export async function loadCustomerLastPrices(shopName, route) {
     for (const it of o.order_items || []) {
       const key = (it.product_name || '').trim().toUpperCase()
       if (!key) continue
-      if (out[key] != null) continue      // already have a newer price
-      if (it.removed) continue            // removed/stock-out line was not sold
+      if (out[key] != null) continue      // already have a newer price for this product
+      if (it.removed) continue            // removed/stock-out line was never sold
       if (it.unit_price == null) continue
-      out[key] = it.unit_price
+      out[key] = it.unit_price            // the actual rate charged: RETAIL/WHOLESALE/CUSTOM/LAST
     }
   }
   return out
@@ -2886,6 +2915,12 @@ export async function listAllRoutes() {
     .not('route', 'is', null)
   if (error) { console.error(error); return [] }
   const set = new Set((data || []).map((c) => (c.route || '').trim()).filter(Boolean))
+  // Special order channels are always present regardless of whether any customer
+  // is already assigned to them. STORE-COUNTER existed before but depended on
+  // at least one customer having that route; ON-DEMAND was never in the customer
+  // table. Both are guaranteed here so they always appear in the route dropdown.
+  set.add('STORE-COUNTER')
+  set.add('ON-DEMAND')
   return [...set].sort()
 }
 
@@ -3426,6 +3461,30 @@ export async function markDeliveryAdminNotificationRead(id) {
  * the client; the Billing view groups by order_date so moving an order to a
  * different date is immediately reflected there.
  */
+
+/**
+ * Update an existing order's product line items in-place.
+ * Reconciles: updated qty/price, removed products, newly added products.
+ * Order totals are recalculated. Order ID/customer/route/date preserved.
+ */
+export async function updateCloudOrder(orderId, { items }) {
+  if (!orderId || !items) throw new Error("orderId and items required")
+  const { data: existing, error: fetchErr } = await supabase.from("order_items").select("id, product_name, qty, unit_price, unit").eq("order_id", orderId).eq("removed", false)
+  if (fetchErr) throw fetchErr
+  const exMap = new Map((existing || []).map(e => [e.product_name.trim().toUpperCase(), e]))
+  const newMap = new Map(items.map(i => [(i.name || "").trim().toUpperCase(), i]))
+  for (const e of [...exMap.values()]) { if (!newMap.has(e.product_name.trim().toUpperCase())) await supabase.from("order_items").delete().eq("id", e.id) }
+  for (const [key, i] of newMap.entries()) {
+    const ep = i.finalSellingPrice != null ? i.finalSellingPrice : null
+    const ex = exMap.get(key)
+    if (ex) { await supabase.from("order_items").update({ qty: i.qty, unit: i.unit || ex.unit || "Piece", unit_price: ep != null ? ep : ex.unit_price, price_type: i.priceType || null, normal_price: i.normalPrice ?? null }).eq("id", ex.id) }
+    else { await supabase.from("order_items").insert({ order_id: orderId, product_name: i.name, qty: i.qty, unit: i.unit || "Piece", is_addon: false, unit_price: ep, price_type: i.priceType || null, normal_price: i.normalPrice ?? null, mrp: i.mrp ?? null, gst_percent: i.gst ?? null, hsn: i.hsn ?? null, scheme_enabled: i.schemeEnabled !== false }) }
+  }
+  const totalValue = items.reduce((s, i) => s + (i.finalSellingPrice || 0) * i.qty, 0)
+  await supabase.from("orders").update({ total_value: totalValue, total_products: items.length, total_quantity: items.reduce((s, i) => s + i.qty, 0) }).eq("id", orderId)
+  return orderId
+}
+
 export async function updateOrderDateRoute(orderId, { newDate, newRoute } = {}) {
   if (!newDate && newRoute == null) return   // nothing to change
 
@@ -3531,6 +3590,98 @@ export async function loadBillingItemsByOrder(orderIds) {
  * route independently (route column on `orders`), so changing the customer's
  * default here can never retroactively alter what an old order shows.
  */
+/**
+ * Update a customer's name (shop_name) in the cloud.
+ * Called by reps and admins from the Edit Customer modal.
+ * Only the authenticated creator or an admin may update.
+ * Returns the updated customer row or throws.
+ */
+export async function updateCustomerName(cloudCustomerId, newName) {
+  if (!cloudCustomerId) throw new Error('No customer ID provided.')
+  const name = (newName || '').trim()
+  if (!name) throw new Error('Customer name cannot be empty.')
+  const patch = { shop_name: name }
+  try { patch.updated_at = new Date().toISOString() } catch {}
+  const { error } = await supabase
+    .from('customers')
+    .update(patch)
+    .eq('id', cloudCustomerId)
+  if (error) throw error
+}
+
+/**
+ * Update customer details (category, ledger_category) in the cloud.
+ * PII (phone/area/email/gstn/creditDays) stays local — only cloud-managed
+ * fields are persisted here.
+ */
+export async function updateCustomerCloudFields(cloudCustomerId, { category, ledgerCategory } = {}) {
+  if (!cloudCustomerId) return
+  const patch = {}
+  if (category != null) patch.category = category
+  if (ledgerCategory != null) patch.ledger_category = ledgerCategory
+  if (!Object.keys(patch).length) return
+  try { patch.updated_at = new Date().toISOString() } catch {}
+  const { error } = await supabase.from('customers').update(patch).eq('id', cloudCustomerId)
+  if (error) throw error
+}
+
+/**
+ * Load all customers for the Admin Customers page.
+ * Returns rows with shop_name, route, category, ledger_category, created_at,
+ * updated_at, is_active, created_by, and the creator's full_name via join.
+ * Admin-only: RLS ensures only admins can list all customers.
+ */
+export async function loadAdminCustomers({ search, showInactive } = {}) {
+  let q = supabase
+    .from('customers')
+    .select('id, shop_name, route, category, ledger_category, created_at, updated_at, is_active, created_by, profiles(full_name)')
+    .order('created_at', { ascending: false })
+    .limit(500)
+  if (!showInactive) q = q.eq('is_active', true)
+  if (search && search.trim()) {
+    q = q.ilike('shop_name', `%${search.trim()}%`)
+  }
+  const { data, error } = await q
+  if (error) { console.error(error); return [] }
+  return (data || []).map((c) => ({
+    id: c.id,
+    name: c.shop_name,
+    route: c.route,
+    category: c.category,
+    ledgerCategory: c.ledger_category,
+    createdAt: c.created_at,
+    updatedAt: c.updated_at,
+    isActive: c.is_active !== false,
+    createdByName: c.profiles?.full_name || '—'
+  }))
+}
+
+/**
+ * Deactivate (soft-delete) a customer. Admin only.
+ * Sets is_active = false — the customer stays in the DB and all historical
+ * orders remain linked, but they no longer appear in active customer lists.
+ */
+export async function deactivateCustomer(cloudCustomerId) {
+  if (!cloudCustomerId) throw new Error('No customer ID provided.')
+  const { error } = await supabase
+    .from('customers')
+    .update({ is_active: false, updated_at: new Date().toISOString() })
+    .eq('id', cloudCustomerId)
+  if (error) throw error
+}
+
+/**
+ * Reactivate a previously deactivated customer. Admin only.
+ */
+export async function reactivateCustomer(cloudCustomerId) {
+  if (!cloudCustomerId) throw new Error('No customer ID provided.')
+  const { error } = await supabase
+    .from('customers')
+    .update({ is_active: true, updated_at: new Date().toISOString() })
+    .eq('id', cloudCustomerId)
+  if (error) throw error
+}
+
 export async function updateCustomerDefaultRoute(customerCloudId, newRoute) {
   if (!customerCloudId) throw new Error('No customer record to update.')
 

@@ -20,7 +20,7 @@ const rupee = (n) => `₹${Number(n || 0).toLocaleString('en-IN')}`
  * price/scheme capture was added); older orders show product + qty only,
  * which is the honest limit of what was recorded for them.
  */
-export default function OrderSummaryModal({ orderId, onClose }) {
+export default function OrderSummaryModal({ orderId, onClose, onEdit }) {
   const [order, setOrder] = useState(null) // null = loading
   const [error, setError] = useState(false)
 
@@ -100,6 +100,17 @@ export default function OrderSummaryModal({ orderId, onClose }) {
                 <span className="text-sm text-slate-600">Total qty: <b className="text-slate-800">{order.total_quantity}</b></span>
                 <span className="text-base font-bold text-brand-700">{rupee(order.total_value)}</span>
               </div>
+
+              {/* Edit Order — only available on pending (unverified) orders.
+                  Verified orders use the Add-On flow from Orders Taken. */}
+              {onEdit && order.billing_status === 'pending' && (
+                <button
+                  onClick={() => onEdit(order)}
+                  className="mt-3 w-full rounded-2xl border border-brand-200 bg-white py-2.5 text-sm font-semibold text-brand-700 active:bg-brand-50"
+                >
+                  ✏️ Edit Order
+                </button>
+              )}
             </>
           )}
         </div>

@@ -33,7 +33,7 @@ const PERIOD_MODES = [
   ['date', 'Pick a date']
 ]
 
-export default function PerformancePage({ onBack }) {
+export default function PerformancePage({ onBack, onEditOrder }) {
   const { user, profile } = useAuth()
   const { customers } = useApp()
   const [uid, setUid] = useState(null)
@@ -267,6 +267,7 @@ export default function PerformancePage({ onBack }) {
         <OrdersListModal
           userId={uid} start={range.start} end={range.end} route={route}
           periodLabel={periodLabel} onClose={() => setOpenModal(null)}
+          onEditOrder={onEditOrder ? (order) => { setOpenModal(null); onEditOrder(order) } : undefined}
         />
       )}
       {openModal === 'newShops' && uid && (

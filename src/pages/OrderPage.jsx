@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
-import { saveCloudOrder, currentUserId, countUnreadAnnouncements, listAllRoutes, ensureCloudCustomer, updateCustomerDefaultRoute, loadCustomerLastPrices, loadPendingStockOuts, notifyBillingOfAddon } from '../utils/cloudSync.js'
+import { saveCloudOrder, currentUserId, countUnreadAnnouncements, listAllRoutes, ensureCloudCustomer, updateCustomerDefaultRoute, loadCustomerLastPrices, loadPendingStockOuts, notifyBillingOfAddon, updateCloudOrder } from '../utils/cloudSync.js'
 import PreviousOrdersModal from '../components/PreviousOrdersModal.jsx'
 import PendingOrdersModal from '../components/PendingOrdersModal.jsx'
 import OrderSummaryModal from '../components/OrderSummaryModal.jsx'
@@ -91,7 +91,7 @@ function clearSession() {
   }
 }
 
-export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerformance, onOpenAnnouncements, unreadTick }) {
+export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerformance, onOpenAnnouncements, unreadTick, editOrderIntent, onClearEditIntent }) {
   const { settings, products, isIntroPending, clearIntro, saveVisit, updateCustomer } = useApp()
   const { user, profile } = useAuth()
 
@@ -138,17 +138,43 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   // One-time price overrides for THIS order only: { id: { retail?, wholesale? } }
   // Cleared on reset / new order / customer switch — never touches the DB.
   const [priceOverrides, setPriceOverrides] = useState(saved?.priceOverrides ?? {})
-  // Customer-specific "last sold price" map { PRODUCT_NAME_UPPER: price }, used
-  // only to show a subtle "Last ₹X" reference badge on product cards. Never
-  // affects price selection. Refetched whenever the selected customer changes.
   const [lastPrices, setLastPrices] = useState({})
   const [toast, setToast] = useState('')
   const [visitStatus, setVisitStatus] = useState(saved?.visitStatus ?? '')
   const [visitRemark, setVisitRemark] = useState(saved?.visitRemark ?? '')
   const [gpsBusy, setGpsBusy] = useState(false)
-  const [sending, setSending] = useState(false) // blocks double-submit
-  const [visitBusy, setVisitBusy] = useState(false) // blocks double-tap on Copy/Save Visit
+  const [sending, setSending] = useState(false)
+  const [visitBusy, setVisitBusy] = useState(false)
   const [gpsFailed, setGpsFailed] = useState(false)
+  // When editing an existing order, this holds the order ID being edited.
+  // saveCloudOrder is replaced with updateCloudOrder for this session.
+  const [editingOrderId, setEditingOrderId] = useState(null)
+
+  // Pre-load an existing order for editing when editOrderIntent arrives.
+  useEffect(() => {
+    if (!editOrderIntent) return
+    const o = editOrderIntent
+    // Reset current session then load the order's data
+    setQuantities({})
+    setUnits({})
+    setPriceOverrides({})
+    setOrderSubmitted(false)
+    setEditingOrderId(o.id)
+    clearSession()
+    // Pre-fill quantities from the order's items
+    const qs = {}, us = {}
+    for (const it of o.items || []) {
+      if (!it.product_name || it.removed) continue
+      const productId = it.product_id || it.id // may need lookup
+      qs[it.product_id || it.product_name] = it.qty
+      us[it.product_id || it.product_name] = it.unit || 'Piece'
+    }
+    // Store edit intent in session so it survives refresh during edit
+    try { localStorage.setItem('atl_edit_intent', JSON.stringify({ orderId: o.id, items: o.items || [] })) } catch {}
+    onClearEditIntent?.()
+    setToast(`Editing order for ${o.shop_name} — make changes and tap Save`)
+    setTimeout(() => setToast(''), 4000)
+  }, [editOrderIntent])
   // #1 Order date — always defaults to TODAY (in IST, not UTC — a rep working
   // late evening should not get tomorrow's date, and vice versa near
   // midnight). The rep can still deliberately pick a different date.
@@ -679,7 +705,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   useEffect(() => {
     let cancelled = false
     if (!customer?.name) { setLastPrices({}); return }
-    loadCustomerLastPrices(customer.name, customer.route)
+    loadCustomerLastPrices(customer.name)
       .then((map) => { if (!cancelled) setLastPrices(map || {}) })
       .catch((e) => { console.error('last prices load failed', e); if (!cancelled) setLastPrices({}) })
     return () => { cancelled = true }
@@ -754,7 +780,15 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
       // lost, and tell the rep to retry.
       try {
         const uid = (await currentUserId()) || user.id
-        const savedOrderId = await saveCloudOrder({
+        let savedOrderId
+
+        if (editingOrderId) {
+          // EDIT MODE: update the existing order in-place, no new order created
+          savedOrderId = await updateCloudOrder(editingOrderId, { items, userId: uid })
+          setEditingOrderId(null)
+          try { localStorage.removeItem('atl_edit_intent') } catch {}
+        } else {
+          savedOrderId = await saveCloudOrder({
           customer,
           brand: settings.brand,
           userId: uid,
@@ -762,17 +796,13 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
           location: ok ? loc : null,
           orderDate,
           route: routeOverride,
-          // The customer's first order only — this is what makes Billing's
-          // NEW CUSTOMER tag and the one-time intro details appear. Reuses
-          // the SAME first-order detection (isIntroPending) already driving
-          // the WhatsApp intro message, so there's one source of truth for
-          // "is this genuinely their first order" — not two competing ones.
           isNewCustomer: showIntro,
           introDetails: showIntro
             ? { phone: customer.phone, gstn: customer.gstn, creditDays: customer.creditDays, email: customer.email,
                 area: customer.area || null, category: customer.category || null, ledgerCategory: customer.ledgerCategory || null }
             : null
-        })
+          })
+        }
 
         // A previously invisible failure mode: saveCloudOrder's duplicate
         // guard returns this sentinel (not a thrown error) when today's
