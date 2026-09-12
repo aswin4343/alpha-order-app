@@ -236,9 +236,7 @@ export default function BillingDashboard() {
                           🏪 {r.pendingStoreCounter}
                         </span>
                       )}
-                      {r.pendingOnDemand > 0 && (
                         <span className="text-[9px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 rounded">
-                          📦 {r.pendingOnDemand}
                         </span>
                       )}
                     </div>
@@ -346,7 +344,7 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
       const [list, badgeCounts] = await Promise.all([
         loadBillingOrders(
           rep.id,
-          type === 'EXP' ? 'EXP' : type === 'STD' ? 'STD' : type === 'STORE-COUNTER' ? 'STORE-COUNTER' : type === 'ON-DEMAND' ? 'ON-DEMAND' : undefined,
+          type === 'EXP' ? 'EXP' : type === 'STD' ? 'STD' : type === 'STORE-COUNTER' ? 'STORE-COUNTER' : undefined,
           effectiveStatus,
           dateStr || null,
           type === 'EXP' && expressRoute ? expressRoute : null
@@ -408,7 +406,7 @@ function OrdersPanel({ rep, openOrderId, onBackToReps, onOpenOrder, hideOnMobile
           className="text-xs font-semibold text-brand-700 px-2.5 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50">Today</button>
       </div>
       <div className="grid grid-cols-4 gap-1.5 p-3 pb-2 border-b border-slate-50">
-        {[['All','All',counts?.all], ['EXP','Express',counts?.express], ['STD','Standard',counts?.standard], ['Addons','Add-ons',counts?.addons], ['STORE-COUNTER','Store Counter',counts?.storeCounter], ['ON-DEMAND','On Demand',counts?.onDemand]].map(([t,label,count]) => (
+        {[['All','All',counts?.all], ['EXP','Express',counts?.express], ['STD','Standard',counts?.standard], ['Addons','Add-ons',counts?.addons], ['STORE-COUNTER','Store Counter',counts?.storeCounter]].map(([t,label,count]) => (
           <button key={t} onClick={() => { setType(t); if (t !== 'EXP') setExpressRoute(''); if (t === 'Addons') setStatus('pending') }}
             className={`px-2 py-1.5 rounded-lg text-[11px] font-semibold flex flex-col items-center gap-0.5 ${type===t ? 'bg-brand-600 text-white' : 'bg-slate-50 border border-slate-200 text-slate-600 hover:bg-slate-100'}`}>
             <span>{label}</span>
@@ -706,7 +704,7 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
                       during add-on verification; that source-based suppression is
                       removed so the rule is uniform per the universal
                       requirement.) */}
-                  {!it.removed && effectiveStatus !== 'verified' && (!PRICE_APPROVAL_ENABLED || (it.approval_status !== 'pending' && it.approval_status !== 'rejected')) && (
+                  {!it.removed && (!PRICE_APPROVAL_ENABLED || (it.approval_status !== 'pending' && it.approval_status !== 'rejected')) && (
                     <div className="flex gap-2 mt-2.5 ml-6">
                       <button onClick={() => setEditItem(it)}
                         className="text-xs font-semibold text-brand-700 border border-brand-200 rounded-lg px-2.5 py-1 hover:bg-brand-50">Edit Qty</button>
@@ -760,13 +758,7 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
           orderDate={order.created_at}
           orderRef={orderRefFrom(order.id)}
           items={mapBillItems(displayItems, products)}
-          onRemove={effectiveStatus === 'verified' ? undefined : (line) => {
-            // Reuse the EXACT existing removal flow — same reason dialog (with
-            // Stock Out), same removeItem(), same audit + rep notification +
-            // reschedule + Partial-Verification signals. Closing the Full Bill
-            // first so the shared ReasonModal is the focused surface; the panel
-            // reload on its onDone refreshes both the list and (on reopen) the
-            // recomputed bill. No-op if the line has no traceable source item.
+          onRemove={(line) => {
             if (!line?._sourceItem) return
             setShowFullBill(false)
             setReasonModal({ mode: 'remove', item: line._sourceItem })

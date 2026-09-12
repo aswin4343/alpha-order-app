@@ -141,7 +141,7 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
   //    new order creation.
   const isSpecialChannel = (r) => {
     const up = (r || '').trim().toUpperCase()
-    return up === 'STORE-COUNTER' || up === 'ON-DEMAND'
+    return up === 'STORE-COUNTER'
   }
   try {
     const startToday = new Date(); startToday.setHours(0, 0, 0, 0)
@@ -2122,7 +2122,6 @@ export async function loadBillingReps() {
       pendingExpress:      countByRoute(pending, r.id, (route) => route.toUpperCase().startsWith('EXP')),
       pendingStandard:     countByRoute(pending, r.id, (route) => route.toUpperCase().startsWith('STD')),
       pendingStoreCounter: countByRoute(pending, r.id, (route) => route.toUpperCase() === 'STORE-COUNTER'),
-      pendingOnDemand:     countByRoute(pending, r.id, (route) => route.toUpperCase() === 'ON-DEMAND'),
       pendingAddons: 0 // add-ons are grouped differently; 0 is correct here as a safe placeholder
     }))
     .filter((r) => r.pending > 0 || r.verifiedToday > 0)
@@ -2177,7 +2176,6 @@ export async function loadBillingOrders(repId, deliveryType, status = 'pending',
   if (deliveryType === 'EXP') rows = rows.filter((o) => (o.route || '').toUpperCase().startsWith('EXP'))
   if (deliveryType === 'STD') rows = rows.filter((o) => (o.route || '').toUpperCase().startsWith('STD'))
   if (deliveryType === 'STORE-COUNTER') rows = rows.filter((o) => (o.route || '').toUpperCase() === 'STORE-COUNTER')
-  if (deliveryType === 'ON-DEMAND') rows = rows.filter((o) => (o.route || '').toUpperCase() === 'ON-DEMAND')
   if (expressRoute) {
     const want = expressRoute.toUpperCase().replace(/\s+/g, '')
     rows = rows.filter((o) => (o.route || '').toUpperCase().replace(/\s+/g, '').includes(want))
@@ -2189,7 +2187,7 @@ export async function loadBillingOrders(repId, deliveryType, status = 'pending',
   const order = []
   for (const o of rows) {
     const day = o.order_date || (o.created_at || '').slice(0, 10)
-    const key = `${(o.shop_name || '').toUpperCase()}__${day}`
+    const key = `${(o.shop_name || "").toUpperCase()}__${day}__${(o.route || "").toUpperCase()}`
     let g = groups.get(key)
     if (!g) {
       g = {
@@ -2275,7 +2273,7 @@ export async function loadBillingCounts(repId, dateStr = null, status = 'pending
   const groups = new Map()
   for (const o of rows) {
     const day = o.order_date || (o.created_at || '').slice(0, 10)
-    const key = `${(o.shop_name || '').toUpperCase()}__${day}`
+    const key = `${(o.shop_name || "").toUpperCase()}__${day}__${(o.route || "").toUpperCase()}`
     let g = groups.get(key)
     if (!g) { g = { orders: [o], route: o.route }; groups.set(key, g) }
     else g.orders.push(o)
@@ -2291,14 +2289,13 @@ export async function loadBillingCounts(repId, dateStr = null, status = 'pending
   // two tabs can never show identical numbers again.
   const matchesStatus = (o) => o.billing_status === status
 
-  let all = 0, express = 0, standard = 0, addons = 0, storeCounter = 0, onDemand = 0
+  let all = 0, express = 0, standard = 0, addons = 0, storeCounter = 0
   for (const g of groups.values()) {
     const original = g.orders[0]
     const rest = g.orders.slice(1)
     const isExpress = (g.route || '').toUpperCase().startsWith('EXP')
     const isStandard = (g.route || "").toUpperCase().startsWith("STD")
     const isStoreCounter = (g.route || "").toUpperCase() === "STORE-COUNTER"
-    const isOnDemand = (g.route || "").toUpperCase() === "ON-DEMAND"
     const originalMatches = matchesStatus(original)
     const addonMatches = rest.some(matchesStatus)
 
@@ -2309,12 +2306,11 @@ export async function loadBillingCounts(repId, dateStr = null, status = 'pending
       if (isExpress) express++
       if (isStandard) standard++
       if (isStoreCounter) storeCounter++
-      if (isOnDemand) onDemand++
     }
     if (addonMatches) addons++
   }
 
-  return { all, express, standard, addons, storeCounter, onDemand }
+  return { all, express, standard, addons, storeCounter }
 }
 
 /** Full item list for one order (for the billing detail view). */
@@ -2920,7 +2916,6 @@ export async function listAllRoutes() {
   // at least one customer having that route; ON-DEMAND was never in the customer
   // table. Both are guaranteed here so they always appear in the route dropdown.
   set.add('STORE-COUNTER')
-  set.add('ON-DEMAND')
   return [...set].sort()
 }
 

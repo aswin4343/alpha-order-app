@@ -151,30 +151,50 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   const [editingOrderId, setEditingOrderId] = useState(null)
 
   // Pre-load an existing order for editing when editOrderIntent arrives.
+  // Items from loadOrderSummary have product_name (not product_id), so we
+  // store them by name and resolve to IDs in the next effect below.
+  const [editItemsByName, setEditItemsByName] = useState(null)
+
   useEffect(() => {
     if (!editOrderIntent) return
     const o = editOrderIntent
-    // Reset current session then load the order's data
     setQuantities({})
     setUnits({})
     setPriceOverrides({})
     setOrderSubmitted(false)
     setEditingOrderId(o.id)
     clearSession()
-    // Pre-fill quantities from the order's items
-    const qs = {}, us = {}
+    // Store items by product_name (uppercase) to resolve to IDs once products load
+    const byName = {}
     for (const it of o.items || []) {
       if (!it.product_name || it.removed) continue
-      const productId = it.product_id || it.id // may need lookup
-      qs[it.product_id || it.product_name] = it.qty
-      us[it.product_id || it.product_name] = it.unit || 'Piece'
+      byName[(it.product_name || '').trim().toUpperCase()] = { qty: it.qty, unit: it.unit || 'Piece' }
     }
-    // Store edit intent in session so it survives refresh during edit
-    try { localStorage.setItem('atl_edit_intent', JSON.stringify({ orderId: o.id, items: o.items || [] })) } catch {}
+    setEditItemsByName(byName)
     onClearEditIntent?.()
-    setToast(`Editing order for ${o.shop_name} — make changes and tap Save`)
-    setTimeout(() => setToast(''), 4000)
+    setToast(`Editing order for ${o.shop_name} — find and adjust products below`)
+    setTimeout(() => setToast(''), 5000)
   }, [editOrderIntent])
+
+  // Once both editItemsByName and products are available, resolve product names
+  // to IDs and pre-fill quantities so the rep sees the correct items.
+  useEffect(() => {
+    if (!editItemsByName || !products || !products.length) return
+    const qs = {}, us = {}
+    for (const p of products) {
+      const key = (p.name || '').trim().toUpperCase()
+      const match = editItemsByName[key]
+      if (match) {
+        qs[p.id] = match.qty
+        us[p.id] = match.unit
+      }
+    }
+    if (Object.keys(qs).length > 0) {
+      setQuantities(qs)
+      setUnits(us)
+    }
+    setEditItemsByName(null) // consumed
+  }, [editItemsByName, products])
   // #1 Order date — always defaults to TODAY (in IST, not UTC — a rep working
   // late evening should not get tomorrow's date, and vice versa near
   // midnight). The rep can still deliberately pick a different date.
