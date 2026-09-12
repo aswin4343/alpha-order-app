@@ -115,7 +115,7 @@ export async function ensureCloudCustomer(customer, userId, repCreated = false) 
 }
 
 /** Save an order + its items. Returns the new order id (or null on failure). */
-export async function saveCloudOrder({ customer, brand, userId, items, location, orderDate, route, isNewCustomer, introDetails }) {
+export async function saveCloudOrder({ customer, brand, userId, items, location, orderDate, route, isNewCustomer, introDetails, isAddon }) {
   // Populate the runtime approval cache before writing order items — this is
   // what makes the toggle take effect on the NEXT order after admin changes it.
   await isApprovalEnabled()
@@ -135,10 +135,11 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
   //
   // 2. ONE-NORMAL-ROUTE-BILL-PER-SHOP-PER-DAY: if a non-special route order
   //    already exists today for this shop AND the new order also uses a
-  //    non-special route, block it. STORE-COUNTER and ON-DEMAND are exempt —
-  //    they are always new separate bills regardless of what else exists.
-  //    Add-ons are already handled upstream and never reach this path as a
-  //    new order creation.
+  //    non-special route, block it. STORE-COUNTER is exempt.
+  //
+  // Add-ons are intentional additions to an existing bill — they must NEVER
+  // be blocked by either guard. isAddon is passed explicitly from AddOnFlowModal.
+  if (!isAddon) {
   const isSpecialChannel = (r) => {
     const up = (r || '').trim().toUpperCase()
     return up === 'STORE-COUNTER'
@@ -178,6 +179,7 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     // If the check fails, fall through and save normally (never block a sale).
     console.error('duplicate check failed', e)
   }
+  } // end if (!isAddon)
 
   // Order value: sum of (Final Selling Price × qty). Final Selling Price is
   // whatever the rep manually edited (any price field), or Retail Price if

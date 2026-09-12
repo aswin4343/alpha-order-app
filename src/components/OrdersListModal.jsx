@@ -120,8 +120,9 @@ export default function OrdersListModal({ userId, start, end, route, periodLabel
   }
 
   const OrderCard = ({ o, inFilteredList }) => {
-    const canEdit = o.billing_status === 'pending'
-    const canAddon = true  // Add-on allowed on both pending AND verified orders
+    const canDelete = o.billing_status === 'pending'  // delete only for pending
+    const canEdit   = true   // edit allowed on both pending AND verified orders
+    const canAddon  = true   // add-on allowed on both pending AND verified orders
     return (
       <div className="w-full rounded-2xl border border-slate-200 mb-2.5 p-3 flex items-start gap-2">
         <button
@@ -149,10 +150,8 @@ export default function OrdersListModal({ userId, start, end, route, periodLabel
             {o.total_products} products &middot; {o.total_quantity} qty &middot; {fmtDate(o.created_at)}, {fmtTime(o.created_at)}
           </p>
         </button>
-        {!inFilteredList && (canAddon || canEdit) && (
+        {!inFilteredList && (
           <div className="shrink-0 flex flex-col gap-1.5 items-center">
-            {/* ADD-ON allowed on BOTH pending and verified orders — a customer
-                may call after their bill is verified to add another product. */}
             <button
               onClick={() => setAddOnOrder(o)}
               className="h-8 px-2.5 rounded-lg flex items-center justify-center text-[11px] font-bold text-brand-700 bg-brand-50 active:bg-brand-100"
@@ -160,9 +159,16 @@ export default function OrdersListModal({ userId, start, end, route, periodLabel
             >
               + ADD-ON
             </button>
-            {/* Delete and Edit only for pending orders */}
-            {canEdit && (
-              <>
+            {/* Edit allowed on all orders; Delete only for pending */}
+            <>
+              <button
+                onClick={() => openEdit(o)}
+                className="h-8 w-8 rounded-lg flex items-center justify-center text-slate-500 active:bg-slate-100"
+                title="Edit date / route"
+              >
+                &#9999;&#65039;
+              </button>
+              {canDelete && (
                 <button
                   onClick={() => setConfirmDelete(o)}
                   className="h-8 w-8 rounded-lg flex items-center justify-center text-red-500 active:bg-red-50"
@@ -170,15 +176,8 @@ export default function OrdersListModal({ userId, start, end, route, periodLabel
                 >
                   &#128465;
                 </button>
-                <button
-                  onClick={() => openEdit(o)}
-                  className="h-8 w-8 rounded-lg flex items-center justify-center text-slate-500 active:bg-slate-100"
-                  title="Edit date / route"
-                >
-                  &#9999;&#65039;
-                </button>
-              </>
-            )}
+              )}
+            </>
           </div>
         )}
       </div>
