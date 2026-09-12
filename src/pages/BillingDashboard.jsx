@@ -236,9 +236,6 @@ export default function BillingDashboard() {
                           🏪 {r.pendingStoreCounter}
                         </span>
                       )}
-                        <span className="text-[9px] font-bold text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.5 rounded">
-                        </span>
-                      )}
                     </div>
                   )}
                 </div>

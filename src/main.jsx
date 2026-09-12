@@ -39,7 +39,7 @@ window.__swUpdate = () => _updateSW && _updateSW(true)
 // Prints on every load, on every screen — a fast way to confirm whether a
 // device is actually running the latest deploy or a stale cached bundle,
 // without needing to navigate to any specific feature to check.
-console.log('%cAlpha Flow build v139', 'color:#059669;font-weight:bold;font-size:14px')
+console.log('%cAlpha Flow build v140', 'color:#059669;font-weight:bold;font-size:14px')
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
