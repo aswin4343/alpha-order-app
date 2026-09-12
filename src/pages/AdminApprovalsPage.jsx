@@ -39,6 +39,7 @@ export default function AdminApprovalsPage() {
   const [reasonType,setReasonType]  = useState('')
   const [competitorName,setCompetitorName] = useState('')
   const [otherReason,setOtherReason]       = useState('')
+  const [approvedPrice,setApprovedPrice]   = useState('')  // admin can change the price
   const [rejecting,setRejecting]           = useState(null)
   const [rejectReason,setRejectReason]     = useState('')
 
@@ -52,18 +53,24 @@ export default function AdminApprovalsPage() {
     return Array.from(m.entries())
   },[rows])
 
-  const startApprove=(it)=>{setApproving(it);setReasonType('');setCompetitorName('');setOtherReason('')}
+  const startApprove=(it)=>{setApproving(it);setReasonType('');setCompetitorName('');setOtherReason('');setApprovedPrice(String(it.unit_price ?? ''))}
 
   const confirmApprove=async()=>{
     if(!reasonType){alert('Please select an approval reason.');return}
     const r=APPROVE_REASONS.find(r=>r.value===reasonType)
     if(r?.needsName&&!competitorName.trim()){alert('Competitor Name is required.');return}
     if(r?.needsOther&&!otherReason.trim()){alert('Reason is required.');return}
+    const finalApprovedPrice = approvedPrice !== '' && !isNaN(Number(approvedPrice)) ? Number(approvedPrice) : null
     setBusy(approving.id)
     try{
-      await approveSpecialPrice(approving.id,profile?.full_name,profile?.id,{reasonType,competitorName:competitorName.trim()||undefined,otherReason:otherReason.trim()||undefined})
+      await approveSpecialPrice(approving.id,profile?.full_name,profile?.id,{
+        reasonType,
+        competitorName:competitorName.trim()||undefined,
+        otherReason:otherReason.trim()||undefined,
+        approvedPrice: finalApprovedPrice
+      })
       setRows(prev=>prev.filter(r=>r.id!==approving.id));setApproving(null)
-      flash(`Approved ₹${approving.unit_price} for ${approving.product_name}.`)
+      flash(`Approved ₹${finalApprovedPrice ?? approving.unit_price} for ${approving.product_name}.`)
     }catch(e){console.error(e);alert('Could not approve.')}finally{setBusy(null)}
   }
 
@@ -157,6 +164,23 @@ export default function AdminApprovalsPage() {
                       {approving?.id===it.id ? (
                         <div className="mt-2.5 space-y-2">
                           <p className="text-xs font-semibold text-slate-700">Why are you approving this?</p>
+                          {/* Approved Price — admin can change the price before approving */}
+                          <div>
+                            <label className="text-[10px] font-semibold text-slate-500 uppercase tracking-wide">Approved Price (₹)</label>
+                            <div className="flex items-center gap-2 mt-1">
+                              <input type="number" value={approvedPrice} onChange={e=>setApprovedPrice(e.target.value)}
+                                placeholder={String(approving?.unit_price ?? '')}
+                                className="w-32 rounded-lg border border-slate-200 px-2 py-1.5 text-sm outline-none focus:border-brand-500" />
+                              {approvedPrice !== '' && Number(approvedPrice) !== approving?.unit_price && (
+                                <span className="text-[10px] text-amber-700 bg-amber-50 px-2 py-0.5 rounded font-semibold">
+                                  Modified from ₹{approving?.unit_price}
+                                </span>
+                              )}
+                              {(approvedPrice === '' || Number(approvedPrice) === approving?.unit_price) && (
+                                <span className="text-[10px] text-slate-400">Requested: ₹{approving?.unit_price}</span>
+                              )}
+                            </div>
+                          </div>
                           <select value={reasonType} onChange={e=>{setReasonType(e.target.value);setCompetitorName('');setOtherReason('')}}
                             className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm outline-none focus:border-brand-500 bg-white">
                             <option value="">Select reason…</option>

@@ -547,6 +547,14 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
             // customer's default (WP for wholesale, RP otherwise) is not falsely
             // flagged as special.
             normalPrice: defaultPriceValueFor(p, defaultPriceType),
+            // Box unit flag: when the rep selected "Box" as the unit, the line
+            // bills at Wholesale Price automatically. This is a valid business
+            // rule (box qty = wholesale) that must NOT trigger Admin approval
+            // even for Retail customers.
+            isBoxUnit: enteredUnit === 'Box',
+            // Wholesale value at order time — used in saveCloudOrder to check
+            // whether a Box-unit price equals wholesale (exempt from approval).
+            wholesaleAtOrderTime: p.wholesale ?? null,
             // Per-line scheme exception — defaults true (ON), only ever set
             // false when the rep explicitly toggles it for this order/line.
             schemeEnabled: priceOverrides[id]?.schemeEnabled !== false

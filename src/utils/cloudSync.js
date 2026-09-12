@@ -243,6 +243,7 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     // differs from the product's Default Retail Price — never just because
     // a price field happens to be populated.
     const isSpecial = i.normalPrice != null && effectivePrice != null && effectivePrice !== i.normalPrice
+      && !(i.isBoxUnit && effectivePrice >= (i.wholesaleAtOrderTime ?? effectivePrice))
     const schemeSnapshot = i.schemeEnabled === false ? null : schemeText(i)
     // The ACTUAL free quantity that applied to this order line, captured NOW
     // — never recomputed later from the product's current slabs, which can
@@ -4470,18 +4471,24 @@ export async function countPendingApprovals() {
  *  reasonPayload: { reasonType, competitorName?, otherReason? }
  *  Also writes an immutable record to price_approval_history. */
 export async function approveSpecialPrice(itemId, adminName, adminId, reasonPayload = {}) {
-  const { reasonType, competitorName, otherReason } = reasonPayload || {}
+  const { reasonType, competitorName, otherReason, approvedPrice } = reasonPayload || {}
+  const patch = {
+    approval_status: 'approved',
+    approved_by: adminName || null,
+    approved_by_id: adminId || null,
+    approved_at: new Date().toISOString(),
+    approval_reason_type: reasonType || null,
+    approval_competitor_name: competitorName || null,
+    approval_other_reason: otherReason || null
+  }
+  // If admin modified the price, store it separately (unit_price = what rep
+  // requested is preserved; approved_price = what admin actually allows).
+  if (approvedPrice != null && !isNaN(Number(approvedPrice))) {
+    patch.approved_price = Number(approvedPrice)
+  }
   const { error } = await supabase
     .from('order_items')
-    .update({
-      approval_status: 'approved',
-      approved_by: adminName || null,
-      approved_by_id: adminId || null,
-      approved_at: new Date().toISOString(),
-      approval_reason_type: reasonType || null,
-      approval_competitor_name: competitorName || null,
-      approval_other_reason: otherReason || null
-    })
+    .update(patch)
     .eq('id', itemId)
     .eq('approval_status', 'pending') // idempotency guard
   if (error) throw error
@@ -4508,7 +4515,8 @@ export async function approveSpecialPrice(itemId, adminName, adminId, reasonPayl
         decision: 'approved', decided_by: adminName || null, decided_by_id: adminId || null,
         decided_at: new Date().toISOString(),
         reason_type: reasonType || null, competitor_name: competitorName || null,
-        other_reason: otherReason || null
+        other_reason: otherReason || null,
+        approved_price: approvedPrice != null ? Number(approvedPrice) : it.unit_price
       })
     }
   } catch (histErr) { console.error('price_approval_history insert failed (non-fatal):', histErr) }
