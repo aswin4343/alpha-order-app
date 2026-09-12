@@ -92,7 +92,7 @@ function clearSession() {
 }
 
 export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerformance, onOpenAnnouncements, unreadTick, editOrderIntent, onClearEditIntent }) {
-  const { settings, products, isIntroPending, clearIntro, saveVisit, updateCustomer } = useApp()
+  const { settings, products, customers, isIntroPending, clearIntro, saveVisit, updateCustomer } = useApp()
   const { user, profile } = useAuth()
 
   // Restore any in-progress order that was interrupted (app switch, background
@@ -164,6 +164,21 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
     setOrderSubmitted(false)
     setEditingOrderId(o.id)
     clearSession()
+
+    // Look up the customer by shop_name from the local customers list so the
+    // customer field is pre-filled and COPY ORDER becomes enabled.
+    const match = (customers || []).find(
+      (c) => (c.name || '').trim().toUpperCase() === (o.shop_name || '').trim().toUpperCase()
+    )
+    if (match) {
+      setCustomer(match)
+      if (o.route) setRouteOverride(o.route)
+    } else {
+      // customers not yet loaded — store shop name and resolve in the fallback effect
+      setPendingShopName(o.shop_name || '')
+      if (o.route) setRouteOverride(o.route)
+    }
+
     // Store items by product_name (uppercase) to resolve to IDs once products load
     const byName = {}
     for (const it of o.items || []) {
@@ -172,11 +187,21 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
     }
     setEditItemsByName(byName)
     onClearEditIntent?.()
-    setToast(`Editing order for ${o.shop_name} — find and adjust products below`)
+    setToast(`Editing order for ${o.shop_name} — adjust products and tap Save`)
     setTimeout(() => setToast(''), 5000)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editOrderIntent])
 
-  // Once both editItemsByName and products are available, resolve product names
+  // Fallback: if customers wasn't loaded yet when editOrderIntent fired, look up
+  // the customer once customers is available and editingOrderId is set but customer is still null.
+  const [pendingShopName, setPendingShopName] = useState(null)
+  useEffect(() => {
+    if (!pendingShopName || !customers?.length || customer) return
+    const match = customers.find(
+      (c) => (c.name || '').trim().toUpperCase() === pendingShopName.trim().toUpperCase()
+    )
+    if (match) { setCustomer(match); setPendingShopName(null) }
+  }, [pendingShopName, customers, customer])
   // to IDs and pre-fill quantities so the rep sees the correct items.
   useEffect(() => {
     if (!editItemsByName || !products || !products.length) return
@@ -1168,6 +1193,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
         isVisit={isVisit}
         visitReady={visitReady}
         onSaveVisit={handleVisit}
+        isEditMode={!!editingOrderId}
       />
 
 

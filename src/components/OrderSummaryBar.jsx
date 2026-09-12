@@ -14,7 +14,8 @@ export default function OrderSummaryBar({
   onCopy,
   isVisit = false,
   visitReady = false,
-  onSaveVisit
+  onSaveVisit,
+  isEditMode = false
 }) {
   return (
     <div className="fixed bottom-0 left-0 right-0 z-30">
@@ -70,7 +71,7 @@ export default function OrderSummaryBar({
               }`}
             >
               <CopyIcon className="h-5 w-5" />
-              COPY ORDER
+              {isEditMode ? 'SAVE CHANGES' : 'COPY ORDER'}
             </button>
           )}
         </div>
