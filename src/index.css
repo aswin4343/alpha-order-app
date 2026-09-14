@@ -38,17 +38,20 @@ input[type=number] { -moz-appearance: textfield; }
    what else is in the DOM (sidebars, modals, sticky headers, etc.).
    ----------------------------------------------------------------------- */
 @media print {
-  body * { visibility: hidden; }
-  .picker-bill-print, .picker-bill-print *,
-  .full-bill-print, .full-bill-print * { visibility: visible; }
+  /* Hide ALL body children then reveal only the print target.
+     Using display:none (not visibility:hidden) so hidden elements contribute
+     zero layout height — visibility:hidden preserves layout space, which
+     pushes the total printable body height past the content and produces
+     blank trailing pages. */
+  body > * { display: none !important; }
+  body > .picker-bill-print,
+  body > .full-bill-print { display: block !important; }
+  body > .picker-bill-print *,
+  body > .full-bill-print * { visibility: visible !important; }
   .picker-bill-print, .full-bill-print {
     position: absolute;
     left: 0;
     top: 0;
-    /* Do NOT set width here — each component declares its own exact mm width
-       in its own @media print block. Forcing 100% here fights those
-       declarations and causes the content to be measured against the screen
-       body width instead of the intended print page width. */
     margin: 0;
   }
   .no-print { display: none !important; }

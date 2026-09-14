@@ -238,7 +238,12 @@ export default function PickerBill({ shopName, route, salesRepName, orderDate, o
         @media print {
           /* A5 Portrait: 148mm wide × 210mm tall. Restored to original orientation. */
           @page { size: ${PAGE_W_MM}mm ${PAGE_H_MM}mm; margin: 0; }
-          html, body { margin: 0 !important; padding: 0 !important; }
+          html, body { margin: 0 !important; padding: 0 !important; height: auto !important; }
+          /* Collapse the hidden app shell so it contributes zero layout height.
+             Without this, invisible-but-present app elements push the total
+             printable body height past the content, producing a blank second page. */
+          body > * { display: none !important; }
+          body > .picker-bill-print { display: block !important; }
           .no-print-inline { display: none !important; }
           body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           .wh-screen-copy { display: none !important; }
