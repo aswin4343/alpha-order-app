@@ -475,12 +475,13 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
           const enteredUnit = units[id] || 'Piece'
           // Convert the rep's entered (qty, unit) into individual PIECES using
           // this product's own packaging data. Billing always works in pieces.
-          // If the unit has no valid conversion (should not happen, since the
-          // dropdown hides unavailable units), fall back to treating the entry
-          // as pieces rather than silently sending a wrong/zero quantity.
           const converted = toPieces(p, enteredQty, enteredUnit)
+          // If conversion data is available, store as pieces (unit='Piece').
+          // If not (no qty_in_box/outer_qty), store the original unit/qty so
+          // billing can display the correct information rather than silently
+          // showing wrong piece counts.
           const qty = converted != null ? converted : enteredQty
-          const unit = 'Piece'
+          const unit = converted != null ? 'Piece' : enteredUnit
           // Original order-entry retained for audit/history (spec #8).
           const entry = { entered_qty: enteredQty, entered_unit: enteredUnit }
           const priceFields = {

@@ -33,36 +33,38 @@ import { PRICE_APPROVAL_ENABLED } from '../utils/featureFlags.js'
 function mapBillItems(rawItems, products) {
   return (rawItems || [])
     .filter((i) => !i.removed)
-    // Admin-approval gate: a special/custom price line stays OFF the actual
-    // invoice/Warehouse Slip until Admin approves it — only THIS line is
-    // held, everything else in the order bills normally. Rejected lines never
-    // bill at all. Approved (or never-special) lines are unaffected. Gated by
-    // PRICE_APPROVAL_ENABLED — paused for now, so nothing is excluded (any
-    // items already flagged from earlier testing bill normally again).
     .filter((i) => !PRICE_APPROVAL_ENABLED || (i.approval_status !== 'pending' && i.approval_status !== 'rejected'))
     .map((i) => {
     const nameKey = (i.product_name || '').trim().toUpperCase()
-    const liveProduct = i.mrp == null
-      ? (products || []).find((p) => (p.name || '').trim().toUpperCase() === nameKey)
-      : null
-    // QT (Without Tax) flag, read from the live catalogue by product name — the
-    // same source the verification list uses, so the Full Bill agrees with it.
-    const qtProduct = (products || []).find((p) => (p.name || '').trim().toUpperCase() === nameKey)
+    const liveProduct = (products || []).find((p) => (p.name || '').trim().toUpperCase() === nameKey)
+    const qtProduct = liveProduct
+
+    // If an order item was stored with unit='Box' or unit='Outer' (conversion
+    // data was missing at order time), resolve to pieces now using the live
+    // product master so billing calculations are correct.
+    let resolvedQty = i.qty
+    let resolvedUnit = i.unit
+    if (liveProduct) {
+      const u = (i.unit || 'Piece').toLowerCase()
+      if (u === 'box' && liveProduct.qty_in_box > 0) {
+        resolvedQty = Math.round(i.qty * liveProduct.qty_in_box)
+        resolvedUnit = 'Piece'
+      } else if (u === 'outer' && liveProduct.outer_qty > 0) {
+        resolvedQty = Math.round(i.qty * liveProduct.outer_qty)
+        resolvedUnit = 'Piece'
+      }
+    }
+
     return {
       name: i.product_name,
       hsn: i.hsn ?? liveProduct?.hsn ?? null,
       mrp: i.mrp ?? liveProduct?.mrp ?? null,
-      unit: i.unit,
-      qty: i.qty,
+      unit: resolvedUnit,
+      qty: resolvedQty,
       unit_price: i.unit_price,
       gst_percent: i.gst_percent ?? liveProduct?.gst ?? null,
       free_qty: i.free_qty || 0,
-      // Source order-item, carried through so a Full Bill row can trace back to
-      // the real record for the optional Remove action. Additive only — every
-      // existing consumer (PickerBill, print, computeBill) ignores this field.
       _sourceItem: i,
-      // QT (Without Tax) marker for the Full Bill highlight. Additive; ignored
-      // by consumers that don't use it.
       _isQt: !!qtProduct?.is_qt
     }
   })
