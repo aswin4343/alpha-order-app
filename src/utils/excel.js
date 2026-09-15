@@ -145,6 +145,21 @@ export async function importFullProducts(file) {
     const qtColPresent = Object.keys(row).some((k) => /^\s*(qt|without\s*tax)\s*$/i.test(k))
     const isQt = /^\s*qt\s*$/i.test(String(qtRaw || '').trim())
 
+    // Selling-unit permissions. Admin enters YES / NO (case-insensitive) in
+    // SELL BY PIECE / SELL BY OUTER / SELL BY BOX columns. Blank = not provided
+    // by this file (preserve existing DB value). "YES" = allowed; anything else
+    // (including "NO") = not allowed. We track _sellByColPresent so the merge
+    // can distinguish "file doesn't carry this column" from "column is blank".
+    const sellByPieceRaw = pick(row, ['SELL BY PIECE', 'Sell By Piece', 'sell_by_piece', 'SellByPiece'])
+    const sellByOuterRaw = pick(row, ['SELL BY OUTER', 'Sell By Outer', 'sell_by_outer', 'SellByOuter'])
+    const sellByBoxRaw   = pick(row, ['SELL BY BOX',   'Sell By Box',   'sell_by_box',   'SellByBox'])
+    const sellColPresent = Object.keys(row).some((k) => /^\s*sell\s*by\s*(piece|outer|box)\s*$/i.test(k))
+    const parseYesNo = (v) => v == null || v === '' ? null : /^\s*yes\s*$/i.test(String(v).trim())
+
+    const sellByPiece = parseYesNo(sellByPieceRaw)
+    const sellByOuter = parseYesNo(sellByOuterRaw)
+    const sellByBox   = parseYesNo(sellByBoxRaw)
+
     const key = name.trim().toUpperCase()
     let prod = byName.get(key)
     if (!prod) {
@@ -167,7 +182,12 @@ export async function importFullProducts(file) {
         // merge whether this file even had a QT column, so old files (no column)
         // never touch existing QT status.
         is_qt: isQt,
-        _qtColPresent: qtColPresent
+        _qtColPresent: qtColPresent,
+        // Sell-by permissions (null = not provided by this file, keep DB value)
+        sell_by_piece: sellByPiece,
+        sell_by_outer: sellByOuter,
+        sell_by_box:   sellByBox,
+        _sellColPresent: sellColPresent
       }
       byName.set(key, prod)
       order.push(prod)
@@ -186,6 +206,13 @@ export async function importFullProducts(file) {
       // the whole product (a later explicit value overrides). This lets Admin
       // both mark (QT) and unmark (blank) via the file.
       if (qtColPresent) { prod._qtColPresent = true; prod.is_qt = isQt }
+      // Sell-by: if file has the column, later non-null values override
+      if (sellColPresent) {
+        prod._sellColPresent = true
+        if (sellByPiece != null) prod.sell_by_piece = sellByPiece
+        if (sellByOuter != null) prod.sell_by_outer = sellByOuter
+        if (sellByBox   != null) prod.sell_by_box   = sellByBox
+      }
     }
 
     // Append this row's scheme (if it has one) to the product's slab list.

@@ -47,10 +47,33 @@ export function outersPerBox(product) {
 }
 
 /**
- * Which units this product can be ordered in. Piece is always allowed; Box and
- * Outer only when their conversion is valid (spec: hide units with no data).
+ * Which units this product can be ordered in.
+ *
+ * If the product carries sell_by_* permission flags (from Admin Master File),
+ * those are the authoritative source. If the flags are absent (old data before
+ * migration), falls back to the previous logic: Piece always allowed, Outer/Box
+ * only when their conversion data is present.
+ *
+ * Priority for default unit (first in the returned array):
+ *   Piece → Outer → Box
  */
 export function availableUnits(product) {
+  const hasSellFlags =
+    product?.sell_by_piece != null ||
+    product?.sell_by_outer != null ||
+    product?.sell_by_box   != null
+
+  if (hasSellFlags) {
+    const units = []
+    if (product.sell_by_piece !== false) units.push('Piece')
+    if (product.sell_by_outer === true && piecesPerOuter(product) != null) units.push('Outer')
+    if (product.sell_by_box   === true && piecesPerBox(product) != null)   units.push('Box')
+    // Safety: if all flags are false (shouldn't happen if validation ran, but
+    // guard anyway) fall back to Piece so the rep is never left with zero options.
+    return units.length > 0 ? units : ['Piece']
+  }
+
+  // Legacy path (no flags set yet — same behaviour as before this feature).
   const units = ['Piece']
   if (piecesPerOuter(product) != null) units.push('Outer')
   if (piecesPerBox(product) != null) units.push('Box')

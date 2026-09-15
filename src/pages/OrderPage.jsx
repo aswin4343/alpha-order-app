@@ -410,7 +410,20 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
       else delete next[id]
       return next
     })
-  }, [])
+    // When a product is first added, default to the first permitted unit.
+    setUnits((prev) => {
+      if (prev[id]) return prev   // already has a unit — don't override
+      const p = products.find((x) => x.id === id)
+      if (!p) return prev
+      // Mirror availableUnits() priority: Piece → Outer → Box
+      const defaultUnit =
+        p.sell_by_piece !== false ? 'Piece' :
+        p.sell_by_outer === true  ? 'Outer' :
+        p.sell_by_box   === true  ? 'Box'   : 'Piece'
+      if (defaultUnit === 'Piece') return prev  // existing default, no change needed
+      return { ...prev, [id]: defaultUnit }
+    })
+  }, [products])
 
 
   const onOverride = useCallback((id, patch) => {
@@ -555,6 +568,10 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
             // Wholesale value at order time — used in saveCloudOrder to check
             // whether a Box-unit price equals wholesale (exempt from approval).
             wholesaleAtOrderTime: p.wholesale ?? null,
+            // Sell-by permissions — passed through for backend validation
+            sell_by_piece: p.sell_by_piece ?? true,
+            sell_by_outer: p.sell_by_outer ?? false,
+            sell_by_box:   p.sell_by_box   ?? false,
             // Per-line scheme exception — defaults true (ON), only ever set
             // false when the rep explicitly toggles it for this order/line.
             schemeEnabled: priceOverrides[id]?.schemeEnabled !== false

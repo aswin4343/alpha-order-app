@@ -127,6 +127,18 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
   const totalProducts = items.length
   const totalQuantity = items.reduce((s, i) => s + i.qty, 0)
 
+
+  // ---- Sell-by unit validation ------------------------------------------
+  // Backend guard: reject items sold in a unit not permitted by the product.
+  for (const i of items) {
+    const u = (i.unit || "Piece").toLowerCase()
+    if (u === "piece" && i.sell_by_piece === false)
+      throw new Error(`${i.name} cannot be sold by Piece.`)
+    if (u === "outer" && i.sell_by_outer === false)
+      throw new Error(`${i.name} cannot be sold by Outer.`)
+    if (u === "box" && i.sell_by_box === false)
+      throw new Error(`${i.name} cannot be sold by Box.`)
+  }
   // ---- Duplicate guard --------------------------------------------------
   // Two checks:
   //
@@ -984,7 +996,10 @@ export async function fetchAllCloudProducts() {
     // the Billing view (which reads product.is_qt to highlight QT lines) never
     // sees it even when it's set in the database. This omission was why the
     // yellow QT highlight never appeared despite correct data.
-    is_qt: p.is_qt ?? false
+    is_qt: p.is_qt ?? false,
+    sell_by_piece: p.sell_by_piece ?? true,
+    sell_by_outer: p.sell_by_outer ?? false,
+    sell_by_box:   p.sell_by_box   ?? false
   }))
 }
 
@@ -1014,6 +1029,9 @@ export async function replaceAllCloudProducts(products, fileName) {
     outer_qty: p.outer_qty ?? null,
     box: p.box ?? null,
     is_qt: p.is_qt ?? false,
+    sell_by_piece: p.sell_by_piece ?? true,
+    sell_by_outer: p.sell_by_outer ?? false,
+    sell_by_box:   p.sell_by_box   ?? false,
     sort_order: idx
   }))
   const chunk = 500
@@ -1105,6 +1123,22 @@ export async function mergeUpdateCloudProducts(uploadedList, fileName) {
     // (_qtColPresent) — allowing both marking and unmarking. Files without the
     // column (old templates) never touch existing QT status.
     if (u._qtColPresent) patch.is_qt = !!u.is_qt
+    // Selling-unit permissions: same pattern as QT — only update when the file
+    // carried the SELL BY column(s). Blank = not provided, existing value kept.
+    // Validate: at least one unit must be YES per product.
+    if (u._sellColPresent) {
+      const piece = u.sell_by_piece != null ? !!u.sell_by_piece : (target.sell_by_piece ?? true)
+      const outer = u.sell_by_outer != null ? !!u.sell_by_outer : (target.sell_by_outer ?? false)
+      const box   = u.sell_by_box   != null ? !!u.sell_by_box   : (target.sell_by_box   ?? false)
+      if (!piece && !outer && !box) {
+        // Validation error — skip this product and surface the problem
+        console.warn(`Sell-by validation: ${u.name} has all units set to NO — skipped.`)
+        skippedNoData++; continue
+      }
+      patch.sell_by_piece = piece
+      patch.sell_by_outer = outer
+      patch.sell_by_box   = box
+    }
     // Scheme slabs: only replace when the Excel genuinely carried scheme rows
     // for this product (non-empty). An empty slabs array means "no scheme info
     // in this file" — NOT "clear the existing scheme".
@@ -1143,6 +1177,9 @@ export async function mergeUpdateCloudProducts(uploadedList, fileName) {
       box: patch.box ?? cur.box ?? null,
       // QT status: patched value wins; otherwise keep existing; default false.
       is_qt: patch.is_qt ?? cur.is_qt ?? false,
+      sell_by_piece: patch.sell_by_piece ?? cur.sell_by_piece ?? true,
+      sell_by_outer: patch.sell_by_outer ?? cur.sell_by_outer ?? false,
+      sell_by_box:   patch.sell_by_box   ?? cur.sell_by_box   ?? false,
       sort_order: cur.sort_order ?? null
     }
   })
