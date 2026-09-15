@@ -15,6 +15,7 @@ const NAV_ITEMS = [
   { key: 'billing', label: 'Billing', icon: '🧾' },
   { key: 'approvals', label: 'Price Approvals', icon: '🛡️' },
   { key: 'approval-report', label: 'Approval History', icon: '📋' },
+  { key: 'bill-approvals', label: 'Bill Approvals', icon: '📋' },
   { key: 'qc', label: 'Quality Check', icon: '✅' },
   { key: 'delivery', label: 'Delivery', icon: '🚚' },
   { key: 'customers', label: 'Customers', icon: '🏪' },

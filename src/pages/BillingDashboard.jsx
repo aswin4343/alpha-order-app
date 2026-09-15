@@ -39,19 +39,32 @@ function mapBillItems(rawItems, products) {
     const liveProduct = (products || []).find((p) => (p.name || '').trim().toUpperCase() === nameKey)
     const qtProduct = liveProduct
 
-    // If an order item was stored with unit='Box' or unit='Outer' (conversion
-    // data was missing at order time), resolve to pieces now using the live
-    // product master so billing calculations are correct.
+    // If an order item was stored with unit='Box' or unit='Outer', convert to
+    // pieces using qty_in_box / outer_qty — but ONLY when qty_in_box > 1,
+    // meaning the box contains multiple pieces. When qty_in_box is null/0/1,
+    // the "Box" IS the selling unit (e.g. a 2.5kg box = 1 box of product),
+    // so we just show it as-is or normalise to "Piece" at quantity 1.
     let resolvedQty = i.qty
     let resolvedUnit = i.unit
     if (liveProduct) {
       const u = (i.unit || 'Piece').toLowerCase()
-      if (u === 'box' && liveProduct.qty_in_box > 0) {
-        resolvedQty = Math.round(i.qty * liveProduct.qty_in_box)
-        resolvedUnit = 'Piece'
-      } else if (u === 'outer' && liveProduct.outer_qty > 0) {
-        resolvedQty = Math.round(i.qty * liveProduct.outer_qty)
-        resolvedUnit = 'Piece'
+      if (u === 'box') {
+        const piecesPerBox = liveProduct.qty_in_box
+        if (piecesPerBox > 1) {
+          resolvedQty = Math.round(i.qty * piecesPerBox)
+          resolvedUnit = 'Piece'
+        } else {
+          // qty_in_box is null/0/1 — the box is the unit itself; show as Piece
+          resolvedUnit = 'Piece'
+        }
+      } else if (u === 'outer') {
+        const piecesPerOuter = liveProduct.outer_qty
+        if (piecesPerOuter > 1) {
+          resolvedQty = Math.round(i.qty * piecesPerOuter)
+          resolvedUnit = 'Piece'
+        } else {
+          resolvedUnit = 'Piece'
+        }
       }
     }
 

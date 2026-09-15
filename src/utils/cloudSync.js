@@ -210,6 +210,28 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     return s + price * (i.qty || 0)
   }, 0)
 
+  // Determine if any item requires bill-level approval (entire bill held from Billing)
+  const billNeedsApproval = await isApprovalEnabled() && items.some((i) => {
+    const ep = i.finalSellingPrice != null ? i.finalSellingPrice : null
+    if (ep == null || i.normalPrice == null) return false
+    const { approvalRequired } = evaluatePriceApproval({
+      product: {
+        retail: i.normalPrice,
+        wholesale: i.wholesaleAtOrderTime,
+        wholesale_threshold: i.wholesaleThreshold ?? null,
+        price_version: i.priceVersion ?? 1,
+        last_approved_price: i.lastApprovedPrice ?? null,
+        last_approved_version: i.lastApprovedVersion ?? null,
+        price_increased: i.priceIncreased ?? false
+      },
+      qty: i.qty,
+      selectedPrice: ep,
+      priceType: i.priceType,
+      isBoxUnit: i.isBoxUnit
+    })
+    return approvalRequired
+  })
+
   const { data: order, error } = await supabase
     .from('orders')
     .insert({
@@ -224,6 +246,13 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
       order_date: orderDate || new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }),
       latitude: location?.latitude ?? null,
       longitude: location?.longitude ?? null,
+      // Bill-level approval: when true, billing_status stays 'pending_approval'
+      // (NOT 'pending') so the Billing Team queue never shows this bill until
+      // Admin approves it. When approved, saveCloudOrder flips it to 'pending'.
+      bill_approval_required: billNeedsApproval,
+      bill_approval_status: billNeedsApproval ? 'pending' : null,
+      // billing_status: pending_approval keeps it OUT of Billing queue
+      billing_status: billNeedsApproval ? 'pending_approval' : 'pending',
       // New-customer intro: stored ONLY on this order (never on the customer
       // record), and only when this genuinely is their first order — see
       // isIntroPending/clearIntro in AppContext, the existing "first order"
@@ -1007,7 +1036,13 @@ export async function fetchAllCloudProducts() {
     is_qt: p.is_qt ?? false,
     sell_by_piece: p.sell_by_piece ?? true,
     sell_by_outer: p.sell_by_outer ?? false,
-    sell_by_box:   p.sell_by_box   ?? false
+    sell_by_box:   p.sell_by_box   ?? false,
+    // Price governance fields
+    price_version:       p.price_version ?? 1,
+    wholesale_threshold: p.wholesale_threshold ?? p.qty_in_box ?? null,
+    last_approved_price:   p.last_approved_price ?? null,
+    last_approved_version: p.last_approved_version ?? null,
+    price_increased:     p.price_increased ?? false
   }))
 }
 
@@ -1167,27 +1202,59 @@ export async function mergeUpdateCloudProducts(uploadedList, fileName) {
   //    within request limits; ~800 rows becomes a couple of calls, seconds not
   //    minutes.
   const byId = new Map(existing.map((p) => [p.id, p]))
+  const nowTs = new Date().toISOString()
+  let adminId = null
+  try { const { data: u } = await supabase.auth.getUser(); adminId = u?.user?.id || null } catch {}
+
   const fullRows = updates.map(({ id, patch }) => {
     const cur = byId.get(id) || {}
+
+    // Price change detection — if retail or wholesale changed, bump price_version
+    // and invalidate the last_approved_price so old approvals can't be reused.
+    const newRetail = patch.retail ?? cur.retail ?? null
+    const newWholesale = patch.wholesale ?? cur.wholesale ?? null
+    const priceRaised =
+      (newRetail != null && cur.retail != null && newRetail > cur.retail) ||
+      (newWholesale != null && cur.wholesale != null && newWholesale > cur.wholesale)
+    const priceChanged =
+      (patch.retail != null && patch.retail !== cur.retail) ||
+      (patch.wholesale != null && patch.wholesale !== cur.wholesale)
+
+    const curVersion = cur.price_version ?? 1
+    const nextVersion = priceChanged ? curVersion + 1 : curVersion
+
     return {
       id,
       name: cur.name,
       slabs: patch.slabs ?? cur.slabs ?? [],
       base: patch.base ?? cur.base ?? null,
       mrp: patch.mrp ?? cur.mrp ?? null,
-      retail: patch.retail ?? cur.retail ?? null,
-      wholesale: patch.wholesale ?? cur.wholesale ?? null,
+      retail: newRetail,
+      wholesale: newWholesale,
       net: patch.net ?? cur.net ?? [],
       gst: patch.gst ?? cur.gst ?? null,
       hsn: patch.hsn ?? cur.hsn ?? null,
       qty_in_box: patch.qty_in_box ?? cur.qty_in_box ?? null,
       outer_qty: patch.outer_qty ?? cur.outer_qty ?? null,
       box: patch.box ?? cur.box ?? null,
-      // QT status: patched value wins; otherwise keep existing; default false.
       is_qt: patch.is_qt ?? cur.is_qt ?? false,
       sell_by_piece: patch.sell_by_piece ?? cur.sell_by_piece ?? true,
       sell_by_outer: patch.sell_by_outer ?? cur.sell_by_outer ?? false,
       sell_by_box:   patch.sell_by_box   ?? cur.sell_by_box   ?? false,
+      // Price versioning
+      price_version:    nextVersion,
+      price_changed_at: priceChanged ? nowTs : (cur.price_changed_at ?? null),
+      price_changed_by: priceChanged ? adminId : (cur.price_changed_by ?? null),
+      price_increased:  priceRaised,
+      previous_retail:    priceChanged ? (cur.retail ?? null) : (cur.previous_retail ?? null),
+      previous_wholesale: priceChanged ? (cur.wholesale ?? null) : (cur.previous_wholesale ?? null),
+      // Wholesale threshold defaults to qty_in_box if not explicitly set
+      wholesale_threshold: cur.wholesale_threshold ?? patch.qty_in_box ?? cur.qty_in_box ?? null,
+      // Invalidate last_approved_price when price version bumps
+      last_approved_price:   priceChanged ? null : (cur.last_approved_price ?? null),
+      last_approved_version: priceChanged ? null : (cur.last_approved_version ?? null),
+      last_approved_at:      priceChanged ? null : (cur.last_approved_at ?? null),
+      last_approved_by:      priceChanged ? null : (cur.last_approved_by ?? null),
       sort_order: cur.sort_order ?? null
     }
   })
@@ -2194,7 +2261,12 @@ export async function loadBillingOrders(repId, deliveryType, status = 'pending',
     'orders',
     'id, shop_name, route, total_quantity, total_value, created_at, order_date, sales_rep_id, billing_status, billing_verified_at, is_new_customer, intro_phone, intro_gstn, intro_credit_days, intro_email, brand',
     (q) => {
-      q = q.eq('sales_rep_id', repId).eq('hidden', false).order('created_at', { ascending: true }) // oldest first
+      q = q.eq('sales_rep_id', repId).eq('hidden', false)
+        // Bills requiring Admin approval use billing_status='pending_approval'
+        // to keep them OUT of the Billing Team queue. Only 'pending' and
+        // 'verified' bills should ever appear in the Billing view.
+        .neq('billing_status', 'pending_approval')
+        .order('created_at', { ascending: true }) // oldest first
       // PENDING orders must never disappear just because a day passed without
       // being verified — order_date represents WHEN an order is due, and an
       // exact-date match here meant that once "today" moved on, any order
@@ -4474,6 +4546,172 @@ async function myShortageSummaryFallback({ singleDay, dateStr, fromStr, toStr, r
 // ===========================================================================
 
 /** All order lines awaiting Admin sign-off, newest first, with shop/rep context. */
+/**
+ * CENTRALIZED PRICE APPROVAL DECISION ENGINE
+ *
+ * Returns whether a given selling price requires Admin approval,
+ * and why. All approval logic lives here — never duplicated in UI.
+ *
+ * @param {object} opts
+ *   product          — product object (from AppContext/cloud)
+ *   qty              — quantity being sold (in pieces after unit conversion)
+ *   selectedPrice    — the price the rep selected
+ *   priceType        — 'RETAIL' | 'WHOLESALE' | 'LAST' | 'CUSTOM'
+ *   isBoxUnit        — true if sold as Box unit (auto-wholesale eligible)
+ * @returns {object}  { approvalRequired, reason, currentPrice, lastApprovedPrice, priceVersion }
+ */
+export function evaluatePriceApproval({ product, qty, selectedPrice, priceType, isBoxUnit }) {
+  if (!product || selectedPrice == null) return { approvalRequired: false, reason: null }
+
+  const retail    = product.retail    ?? null
+  const wholesale = product.wholesale ?? null
+  const threshold = product.wholesale_threshold ?? product.qty_in_box ?? null
+  const priceVer  = product.price_version ?? 1
+  const lastApprovedPrice   = product.last_approved_price ?? null
+  const lastApprovedVersion = product.last_approved_version ?? null
+
+  // 1. LAST APPROVED PRICE — valid only if it still belongs to the current
+  //    price version. Admin-approved prices from before a price change are invalid.
+  const lastApprovedValid =
+    lastApprovedPrice != null &&
+    lastApprovedVersion != null &&
+    lastApprovedVersion === priceVer
+
+  if (lastApprovedValid && Math.abs(selectedPrice - lastApprovedPrice) < 0.001) {
+    return { approvalRequired: false, reason: null, currentPrice: retail, lastApprovedPrice, priceVersion: priceVer }
+  }
+
+  // 2. RETAIL PRICE — always valid for retail customers
+  if (retail != null && Math.abs(selectedPrice - retail) < 0.001) {
+    return { approvalRequired: false, reason: null, currentPrice: retail, priceVersion: priceVer }
+  }
+
+  // 3. WHOLESALE PRICE — valid when qty >= threshold OR sold as Box unit
+  if (wholesale != null && Math.abs(selectedPrice - wholesale) < 0.001) {
+    const thresholdMet = threshold != null && qty >= threshold
+    const boxUnitOk    = isBoxUnit === true
+    if (thresholdMet || boxUnitOk) {
+      return { approvalRequired: false, reason: null, currentPrice: retail, priceVersion: priceVer }
+    }
+    // Wholesale selected but threshold not met
+    return {
+      approvalRequired: true,
+      reason: 'WHOLESALE_BELOW_THRESHOLD',
+      currentPrice: retail,
+      lastApprovedPrice,
+      priceVersion: priceVer,
+      message: `Wholesale price selected but order qty (${qty}) is below the threshold (${threshold ?? 'unset'})`
+    }
+  }
+
+  // 4. ANY PRICE BELOW RETAIL/CURRENT — requires approval
+  const currentFloor = retail ?? wholesale ?? 0
+  if (selectedPrice < currentFloor - 0.001) {
+    const reason = product.price_increased ? 'RECENT_PRICE_INCREASE' : 'PRICE_BELOW_CURRENT'
+    return {
+      approvalRequired: true,
+      reason,
+      currentPrice: currentFloor,
+      lastApprovedPrice,
+      priceVersion: priceVer,
+      message: `Selected price ₹${selectedPrice} is below current authorized price ₹${currentFloor}`
+    }
+  }
+
+  // 5. CUSTOM PRICE (above retail but still custom) — allow unless explicitly below floor
+  return { approvalRequired: false, reason: null, currentPrice: retail, priceVersion: priceVer }
+}
+
+/**
+ * Load all orders where bill_approval_required=true and bill_approval_status='pending'.
+ * Used by Admin approval screen and Sales Rep pending bills view.
+ */
+export async function loadPendingApprovalBills({ salesRepId } = {}) {
+  let q = supabase
+    .from('orders')
+    .select(`id, shop_name, route, order_date, created_at, total_value, total_products,
+             sales_rep_id, bill_approval_status, bill_approval_required,
+             profiles(full_name),
+             order_items(id, product_name, qty, unit, unit_price, normal_price,
+                         approval_status, approved_price, approval_reason_type, approval_other_reason, approval_competitor_name)`)
+    .eq('bill_approval_required', true)
+    .eq('bill_approval_status', 'pending')
+    .eq('hidden', false)
+    .order('created_at', { ascending: false })
+  if (salesRepId) q = q.eq('sales_rep_id', salesRepId)
+  const { data, error } = await q
+  if (error) { console.error(error); return [] }
+  return data || []
+}
+
+/**
+ * Admin: approve an entire bill.
+ * Sets bill_approval_status='approved', updates item-level approved prices,
+ * saves last_approved_price on products for valid approved prices.
+ * @param {string} orderId
+ * @param {Array}  itemOverrides  [{ itemId, approvedPrice }]
+ * @param {object} adminUser      { id, full_name }
+ * @param {object} reasonPayload  { reasonType, competitorName, otherReason }
+ */
+export async function approveBill(orderId, itemOverrides, adminUser, reasonPayload = {}) {
+  const now = new Date().toISOString()
+
+  // 1. Update each special-priced item with the admin's approved price
+  for (const override of (itemOverrides || [])) {
+    const patch = {
+      approval_status: 'approved',
+      approved_by: adminUser?.full_name || null,
+      approved_by_id: adminUser?.id || null,
+      approved_at: now,
+      approval_reason_type: reasonPayload.reasonType || null,
+      approval_competitor_name: reasonPayload.competitorName || null,
+      approval_other_reason: reasonPayload.otherReason || null
+    }
+    if (override.approvedPrice != null) patch.approved_price = Number(override.approvedPrice)
+    await supabase.from('order_items').update(patch).eq('id', override.itemId)
+
+    // 2. Save last_approved_price on the product (by product_name lookup)
+    if (override.approvedPrice != null && override.productId) {
+      try {
+        const { data: prod } = await supabase.from('products').select('price_version').eq('id', override.productId).maybeSingle()
+        if (prod) {
+          await supabase.from('products').update({
+            last_approved_price: Number(override.approvedPrice),
+            last_approved_version: prod.price_version,
+            last_approved_at: now,
+            last_approved_by: adminUser?.id || null
+          }).eq('id', override.productId)
+        }
+      } catch (e) { console.error('last_approved_price update (non-fatal):', e) }
+    }
+  }
+
+  // 3. Mark the bill as approved — now eligible for Billing
+  const { error } = await supabase.from('orders').update({
+    bill_approval_status: 'approved',
+    bill_approved_at: now,
+    bill_approved_by: adminUser?.id || null,
+    billing_status: 'pending'   // Billing team can now see and verify it
+  }).eq('id', orderId)
+  if (error) throw error
+}
+
+/**
+ * Admin: reject an entire bill.
+ */
+export async function rejectBill(orderId, adminUser, reason) {
+  const { error } = await supabase.from('orders').update({
+    bill_approval_status: 'rejected',
+    bill_rejection_reason: reason || null,
+    bill_approved_at: new Date().toISOString(),
+    bill_approved_by: adminUser?.id || null
+  }).eq('id', orderId)
+  if (error) throw error
+  // Reject all pending items too
+  await supabase.from('order_items').update({ approval_status: 'rejected' })
+    .eq('order_id', orderId).eq('approval_status', 'pending')
+}
+
 export async function loadPendingApprovals() {
   // If the admin has turned the approval workflow OFF, show nothing in the
   // pending list — even if old items have approval_status='pending'. The

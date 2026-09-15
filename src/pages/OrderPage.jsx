@@ -473,15 +473,13 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
           if (!p) return []
           const enteredQty = quantities[id]
           const enteredUnit = units[id] || 'Piece'
-          // Convert the rep's entered (qty, unit) into individual PIECES using
-          // this product's own packaging data. Billing always works in pieces.
+          // Convert the rep's entered (qty, unit) into individual PIECES.
+          // Only convert when meaningful conversion data exists (qty_in_box > 1).
+          // If no conversion data, the Box/Outer IS the unit — store as Piece
+          // at the entered quantity so billing shows correct piece count.
           const converted = toPieces(p, enteredQty, enteredUnit)
-          // If conversion data is available, store as pieces (unit='Piece').
-          // If not (no qty_in_box/outer_qty), store the original unit/qty so
-          // billing can display the correct information rather than silently
-          // showing wrong piece counts.
           const qty = converted != null ? converted : enteredQty
-          const unit = converted != null ? 'Piece' : enteredUnit
+          const unit = 'Piece'   // billing always works in Pieces
           // Original order-entry retained for audit/history (spec #8).
           const entry = { entered_qty: enteredQty, entered_unit: enteredUnit }
           const priceFields = {
@@ -569,6 +567,12 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
             // Wholesale value at order time — used in saveCloudOrder to check
             // whether a Box-unit price equals wholesale (exempt from approval).
             wholesaleAtOrderTime: p.wholesale ?? null,
+            // Price governance fields — passed to saveCloudOrder for evaluatePriceApproval
+            wholesaleThreshold:    p.wholesale_threshold ?? p.qty_in_box ?? null,
+            priceVersion:          p.price_version ?? 1,
+            lastApprovedPrice:     p.last_approved_price ?? null,
+            lastApprovedVersion:   p.last_approved_version ?? null,
+            priceIncreased:        p.price_increased ?? false,
             // Sell-by permissions — passed through for backend validation
             sell_by_piece: p.sell_by_piece ?? true,
             sell_by_outer: p.sell_by_outer ?? false,

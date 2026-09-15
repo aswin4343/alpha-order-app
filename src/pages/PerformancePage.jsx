@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
 import { useApp } from '../context/AppContext.jsx'
-import { loadMyPerformance, loadPerformanceForDate, currentUserId, resolvePeriodRange, loadMyShortageSummary } from '../utils/cloudSync.js'
+import { loadMyPerformance, loadPerformanceForDate, currentUserId, resolvePeriodRange, loadMyShortageSummary, loadPendingApprovalBills } from '../utils/cloudSync.js'
 import { BackIcon } from '../components/Icons.jsx'
 import VisitsListModal from '../components/VisitsListModal.jsx'
 import OrdersListModal from '../components/OrdersListModal.jsx'
@@ -37,6 +37,7 @@ export default function PerformancePage({ onBack, onEditOrder }) {
   const { user, profile } = useAuth()
   const { customers } = useApp()
   const [uid, setUid] = useState(null)
+  const [pendingBills, setPendingBills] = useState(null)
   const [periodMode, setPeriodMode] = useState('today') // 'today' | 'week' | 'month' | 'date'
   const [dateStr, setDateStr] = useState(() => new Date().toISOString().slice(0, 10))
   const [route, setRoute] = useState('') // '' = All routes (unchanged behaviour)
@@ -61,6 +62,8 @@ export default function PerformancePage({ onBack, onEditOrder }) {
     (async () => {
       const id = (await currentUserId()) || user.id
       setUid(id)
+      // Load this rep's bills awaiting Admin approval
+      loadPendingApprovalBills({ salesRepId: id }).then(setPendingBills).catch(() => setPendingBills([]))
       try { setTotals(await loadMyPerformance(id)) } catch {}
     })()
   }, [user])
@@ -253,6 +256,32 @@ export default function PerformancePage({ onBack, onEditOrder }) {
             <div className="flex items-center justify-between"><span className="text-sm text-slate-500">Orders</span><span className="font-bold text-slate-800">{totals.totalOrders}</span></div>
             <div className="flex items-center justify-between mt-2"><span className="text-sm text-slate-500">Visits</span><span className="font-bold text-slate-800">{totals.totalVisits}</span></div>
             <div className="flex items-center justify-between mt-2"><span className="text-sm text-slate-500">New shops</span><span className="font-bold text-slate-800">{totals.totalNewCustomers}</span></div>
+          </div>
+        )}
+
+        {/* PENDING BILLS — bills awaiting Admin approval before Billing */}
+        {pendingBills && pendingBills.length > 0 && (
+          <div className="mt-4 mx-3">
+            <div className="rounded-2xl bg-amber-50 border border-amber-200 p-4">
+              <p className="text-sm font-bold text-amber-800 mb-0.5">⏳ Pending Admin Approval</p>
+              <p className="text-[12px] text-amber-700 mb-3">These bills have not reached Billing yet. Admin must approve them first.</p>
+              <div className="space-y-2">
+                {pendingBills.map(bill => (
+                  <div key={bill.id} className="rounded-xl bg-white border border-amber-200 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-slate-800 truncate">{bill.shop_name}</p>
+                        <p className="text-[11px] text-slate-400">{bill.order_date} · {bill.total_products} products</p>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-sm font-bold text-slate-800">₹{Number(bill.total_value || 0).toLocaleString('en-IN')}</p>
+                        <span className="text-[9px] font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full uppercase">Awaiting Approval</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         )}
       </main>
