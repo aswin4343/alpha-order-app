@@ -210,27 +210,42 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     return s + price * (i.qty || 0)
   }, 0)
 
-  // Determine if any item requires bill-level approval (entire bill held from Billing)
-  const billNeedsApproval = await isApprovalEnabled() && items.some((i) => {
-    const ep = i.finalSellingPrice != null ? i.finalSellingPrice : null
-    if (ep == null || i.normalPrice == null) return false
-    const { approvalRequired } = evaluatePriceApproval({
-      product: {
-        retail: i.normalPrice,
-        wholesale: i.wholesaleAtOrderTime,
-        wholesale_threshold: i.wholesaleThreshold ?? null,
-        price_version: i.priceVersion ?? 1,
-        last_approved_price: i.lastApprovedPrice ?? null,
-        last_approved_version: i.lastApprovedVersion ?? null,
-        price_increased: i.priceIncreased ?? false
-      },
-      qty: i.qty,
-      selectedPrice: ep,
-      priceType: i.priceType,
-      isBoxUnit: i.isBoxUnit
-    })
-    return approvalRequired
-  })
+  // Determine if any item requires bill-level approval.
+  // Only active when SQL migration 63_price_versioning.sql has been run
+  // (checked via the items having priceVersion data from the products).
+  // Falls back to normal 'pending' billing_status if not yet migrated.
+  let billNeedsApproval = false
+  try {
+    const approvalOn = await isApprovalEnabled()
+    if (approvalOn) {
+      billNeedsApproval = items.some((i) => {
+        const ep = i.finalSellingPrice != null ? i.finalSellingPrice : null
+        if (ep == null || i.normalPrice == null) return false
+        // Only run if price governance fields are available (post-migration)
+        if (!i.priceVersion && !i.wholesaleThreshold) return false
+        const { approvalRequired } = evaluatePriceApproval({
+          product: {
+            retail: i.normalPrice,
+            wholesale: i.wholesaleAtOrderTime,
+            wholesale_threshold: i.wholesaleThreshold ?? null,
+            price_version: i.priceVersion ?? 1,
+            last_approved_price: i.lastApprovedPrice ?? null,
+            last_approved_version: i.lastApprovedVersion ?? null,
+            price_increased: i.priceIncreased ?? false
+          },
+          qty: i.qty,
+          selectedPrice: ep,
+          priceType: i.priceType,
+          isBoxUnit: i.isBoxUnit
+        })
+        return approvalRequired
+      })
+    }
+  } catch (e) {
+    // Never block order saving due to approval engine errors
+    console.warn('bill approval check failed (non-fatal):', e.message)
+    billNeedsApproval = false
+  }
 
   const { data: order, error } = await supabase
     .from('orders')
@@ -246,12 +261,14 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
       order_date: orderDate || new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }),
       latitude: location?.latitude ?? null,
       longitude: location?.longitude ?? null,
-      // Bill-level approval: when true, billing_status stays 'pending_approval'
-      // (NOT 'pending') so the Billing Team queue never shows this bill until
-      // Admin approves it. When approved, saveCloudOrder flips it to 'pending'.
-      bill_approval_required: billNeedsApproval,
-      bill_approval_status: billNeedsApproval ? 'pending' : null,
-      // billing_status: pending_approval keeps it OUT of Billing queue
+      // Bill-level approval (requires SQL migration 63_price_versioning.sql).
+      // When not migrated, billNeedsApproval is always false (see above guard),
+      // so billing_status always stays 'pending' — orders reach Billing normally.
+      // billing_status: always 'pending' unless bill-level approval is active.
+      // bill_approval_required column is ONLY included in insert if it already
+      // exists (i.e. 63_price_versioning.sql has been run). Sending an unknown
+      // column to Supabase causes a 400 error that returns null from this
+      // function — which was the root cause of orders not saving.
       billing_status: billNeedsApproval ? 'pending_approval' : 'pending',
       // New-customer intro: stored ONLY on this order (never on the customer
       // record), and only when this genuinely is their first order — see
@@ -271,7 +288,7 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
 
   if (error) {
     console.error('cloud order insert failed', error)
-    return null
+    throw new Error("Order could not be saved: " + (error.message || "database error"))
   }
 
   // Build the item rows. This is wrapped in try/catch because it runs AFTER

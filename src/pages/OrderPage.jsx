@@ -889,6 +889,15 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
         // never received it, and the rep had no way to know. Stop here, the
         // same way a genuine save failure already stops below, so the rep
         // is told rather than misled.
+        // Safety: saveCloudOrder should throw on failure (not return null),
+        // but guard here too so any unexpected null never silently continues.
+        if (!savedOrderId && savedOrderId !== 'DUPLICATE') {
+          setToast('⚠ Order NOT saved — please try again')
+          setTimeout(() => setToast(''), 5000)
+          setSending(false)
+          return
+        }
+
         if (savedOrderId === 'DUPLICATE') {
           // Send Order and Copy share this same function, so both were being
           // blocked identically — correct for Send (it would create a real
