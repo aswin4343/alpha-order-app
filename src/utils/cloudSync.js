@@ -129,15 +129,25 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
 
 
   // ---- Sell-by unit validation ------------------------------------------
-  // Backend guard: reject items sold in a unit not permitted by the product.
+  // Only enforce when the Admin has explicitly set sell_by flags via the new
+  // Master Price List Excel upload. The sentinel for "flags not yet set" is
+  // sell_by_piece = true AND sell_by_outer = false AND sell_by_box = false
+  // simultaneously on a product that is being sold as Outer/Box — that's the
+  // DB default before any upload, not a deliberate restriction. We skip
+  // validation in that state so existing orders keep working.
   for (const i of items) {
-    const u = (i.unit || "Piece").toLowerCase()
-    if (u === "piece" && i.sell_by_piece === false)
+    const u = (i.unit || 'Piece').toLowerCase()
+    // A product with explicitly managed flags has at least one non-default value.
+    // Default state: sell_by_piece=true, sell_by_outer=false, sell_by_box=false.
+    // If sell_by_outer OR sell_by_box is explicitly true, the flags are managed.
+    const flagsManaged = i.sell_by_outer === true || i.sell_by_box === true || i.sell_by_piece === false
+    if (!flagsManaged) continue  // flags not yet configured — allow all units
+    if (u === 'piece' && i.sell_by_piece === false)
       throw new Error(`${i.name} cannot be sold by Piece.`)
-    if (u === "outer" && i.sell_by_outer === false)
-      throw new Error(`${i.name} cannot be sold by Outer.`)
-    if (u === "box" && i.sell_by_box === false)
-      throw new Error(`${i.name} cannot be sold by Box.`)
+    if (u === 'outer' && i.sell_by_outer === false)
+      throw new Error(`${i.name} cannot be sold by Outer. Please select a valid unit.`)
+    if (u === 'box' && i.sell_by_box === false)
+      throw new Error(`${i.name} cannot be sold by Box. Please select a valid unit.`)
   }
   // ---- Duplicate guard --------------------------------------------------
   // Two checks:

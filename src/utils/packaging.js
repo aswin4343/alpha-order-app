@@ -58,22 +58,26 @@ export function outersPerBox(product) {
  *   Piece → Outer → Box
  */
 export function availableUnits(product) {
-  const hasSellFlags =
-    product?.sell_by_piece != null ||
-    product?.sell_by_outer != null ||
-    product?.sell_by_box   != null
+  // Detect whether Admin has explicitly configured sell_by flags via the new
+  // Master Price List upload. Default DB state is sell_by_piece=true,
+  // sell_by_outer=false, sell_by_box=false. Flags are "managed" when at least
+  // one non-default value has been explicitly set — i.e. sell_by_outer/box=true
+  // OR sell_by_piece=false.
+  const flagsManaged =
+    product?.sell_by_outer === true ||
+    product?.sell_by_box   === true ||
+    product?.sell_by_piece === false
 
-  if (hasSellFlags) {
+  if (flagsManaged) {
     const units = []
     if (product.sell_by_piece !== false) units.push('Piece')
     if (product.sell_by_outer === true && piecesPerOuter(product) != null) units.push('Outer')
     if (product.sell_by_box   === true && piecesPerBox(product) != null)   units.push('Box')
-    // Safety: if all flags are false (shouldn't happen if validation ran, but
-    // guard anyway) fall back to Piece so the rep is never left with zero options.
     return units.length > 0 ? units : ['Piece']
   }
 
-  // Legacy path (no flags set yet — same behaviour as before this feature).
+  // Legacy path: flags not yet configured — use the original logic
+  // (Piece always; Outer/Box only when conversion data exists).
   const units = ['Piece']
   if (piecesPerOuter(product) != null) units.push('Outer')
   if (piecesPerBox(product) != null) units.push('Box')
