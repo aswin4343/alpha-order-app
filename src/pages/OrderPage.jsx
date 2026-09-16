@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
-import { saveCloudOrder, currentUserId, countUnreadAnnouncements, listAllRoutes, ensureCloudCustomer, updateCustomerDefaultRoute, loadCustomerLastPrices, loadPendingStockOuts, notifyBillingOfAddon, updateCloudOrder } from '../utils/cloudSync.js'
+import { saveCloudOrder, currentUserId, countUnreadAnnouncements, listAllRoutes, ensureCloudCustomer, updateCustomerDefaultRoute, loadCustomerLastPrices, loadPendingStockOuts, notifyBillingOfAddon, updateCloudOrder, evaluatePriceApproval } from '../utils/cloudSync.js'
 import PreviousOrdersModal from '../components/PreviousOrdersModal.jsx'
 import PendingOrdersModal from '../components/PendingOrdersModal.jsx'
 import OrderSummaryModal from '../components/OrderSummaryModal.jsx'
@@ -994,7 +994,54 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
 
   const handleSend = () => dispatchOrder(false)
 
-  const handleCopy = () => dispatchOrder(true)
+  // Pre-submit price validation (spec §10–12):
+  // Before dispatching, check all items for price violations. If any exist,
+  // show a modal with two choices: remove violating items or send for approval.
+  const [priceWarningModal, setPriceWarningModal] = useState(null)
+  // { violations: [{name, selectedPrice, currentPrice, diff, productId}], viaCopy }
+
+  const handleCopy = () => {
+    if (!items.length) { dispatchOrder(true); return }
+
+    // Check each item against evaluatePriceApproval
+    const violations = []
+    for (const i of items) {
+      const ep = i.finalSellingPrice != null ? i.finalSellingPrice : null
+      if (ep == null) continue
+      // Skip if price governance not yet active (SQL 63 not run)
+      if (!i.priceVersion && i.lastApprovedPrice == null && !i.priceIncreased) continue
+      const { approvalRequired, currentPrice } = evaluatePriceApproval({
+        product: {
+          retail: i.normalPrice,
+          wholesale: i.wholesaleAtOrderTime,
+          wholesale_threshold: i.wholesaleThreshold ?? null,
+          price_version: i.priceVersion ?? 1,
+          last_approved_price: i.lastApprovedPrice ?? null,
+          last_approved_version: i.lastApprovedVersion ?? null,
+          price_increased: i.priceIncreased ?? false
+        },
+        qty: i.qty,
+        selectedPrice: ep,
+        priceType: i.priceType,
+        isBoxUnit: i.isBoxUnit
+      })
+      if (approvalRequired) {
+        violations.push({
+          id: i.id,
+          name: i.name,
+          selectedPrice: ep,
+          currentPrice: currentPrice ?? i.normalPrice ?? i.wholesaleAtOrderTime,
+          diff: ep - (currentPrice ?? i.normalPrice ?? i.wholesaleAtOrderTime ?? ep)
+        })
+      }
+    }
+
+    if (violations.length === 0) {
+      dispatchOrder(true)
+    } else {
+      setPriceWarningModal({ violations, viaCopy: true })
+    }
+  }
 
   return (
     <div className="min-h-screen bg-slate-50 pb-44">
@@ -1274,6 +1321,101 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
                 className="flex-1 rounded-xl bg-brand-600 text-white py-3 font-bold active:bg-brand-700 disabled:opacity-50"
               >
                 {makingDefault ? 'Updating…' : 'Confirm'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      )}
+
+      {/* ── Pre-submit Price Warning Modal (spec §10-12) ──────────────────
+          Fires when COPY ORDER is tapped and one or more items have a
+          selected price below the current authorized price.
+          Two options: remove violating products, or send full bill for
+          Admin approval. The existing billNeedsApproval / approveBill
+          flow handles the approval path. */}
+      {priceWarningModal && (
+        <div className="fixed inset-0 z-[100] bg-black/50 flex items-end sm:items-center justify-center">
+          <div className="bg-white w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl p-5 shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div className="text-center mb-4">
+              <div className="text-3xl mb-2">⚠️</div>
+              <p className="font-bold text-slate-800 text-base">
+                {priceWarningModal.violations.length === 1
+                  ? '1 product requires approval'
+                  : `${priceWarningModal.violations.length} products require approval`}
+              </p>
+              <p className="text-sm text-slate-500 mt-0.5">
+                Selected price is below current authorized price
+              </p>
+            </div>
+
+            <div className="space-y-2.5 mb-5">
+              {priceWarningModal.violations.map((v) => (
+                <div key={v.id} className="rounded-xl bg-amber-50 border border-amber-200 p-3">
+                  <p className="font-semibold text-slate-800 text-sm truncate">{v.name}</p>
+                  <div className="grid grid-cols-3 gap-1 mt-1.5 text-center text-[11px]">
+                    <div className="rounded-lg bg-white border border-slate-200 p-1.5">
+                      <div className="font-bold text-purple-700">₹{v.selectedPrice}</div>
+                      <div className="text-slate-400">Selected</div>
+                    </div>
+                    <div className="rounded-lg bg-white border border-slate-200 p-1.5">
+                      <div className="font-bold text-slate-700">₹{v.currentPrice}</div>
+                      <div className="text-slate-400">Current</div>
+                    </div>
+                    <div className="rounded-lg bg-red-50 border border-red-200 p-1.5">
+                      <div className="font-bold text-red-700">₹{Math.abs(v.diff).toFixed(2)}</div>
+                      <div className="text-slate-400">Below</div>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="space-y-2.5">
+              <button
+                onClick={() => {
+                  // Remove violating products from the order
+                  const violatingIds = new Set(priceWarningModal.violations.map(v => v.id))
+                  setQuantities(prev => {
+                    const next = { ...prev }
+                    violatingIds.forEach(id => delete next[id])
+                    return next
+                  })
+                  setPriceOverrides(prev => {
+                    const next = { ...prev }
+                    violatingIds.forEach(id => delete next[id])
+                    return next
+                  })
+                  setPriceWarningModal(null)
+                  // Don't dispatch yet — let the rep see the updated order
+                  // before submitting. If all items removed, nothing to submit.
+                  const remainingQty = Object.keys(quantities).filter(id => !violatingIds.has(id))
+                  if (remainingQty.length > 0) {
+                    setTimeout(() => dispatchOrder(true), 100)
+                  }
+                }}
+                className="w-full rounded-2xl border-2 border-slate-200 py-3.5 text-sm font-bold text-slate-700 active:bg-slate-50"
+              >
+                Remove {priceWarningModal.violations.length === 1 ? 'Product' : `${priceWarningModal.violations.length} Products`} &amp; Continue
+              </button>
+              <button
+                onClick={() => {
+                  setPriceWarningModal(null)
+                  // Dispatch with the violating items — billNeedsApproval will
+                  // set billing_status='pending_approval', keeping it from Billing
+                  // until Admin approves. The existing approveBill() flow handles
+                  // saving last_approved_price per price version.
+                  dispatchOrder(true)
+                }}
+                className="w-full rounded-2xl bg-amber-500 text-white py-3.5 text-sm font-bold active:bg-amber-600"
+              >
+                Send Full Bill for Admin Approval
+              </button>
+              <button
+                onClick={() => setPriceWarningModal(null)}
+                className="w-full text-xs text-slate-400 py-1"
+              >
+                Cancel — go back to edit
               </button>
             </div>
           </div>
