@@ -965,7 +965,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
         // Abort the whole dispatch: do not copy, do not open WhatsApp, do not
         // clear the session. Surface a clear, persistent error so the rep knows
         // the order was NOT saved and can try again with everything intact.
-        setToast('⚠ Order NOT saved — please try again')
+        setToast('⚠ ' + (e?.message || 'Order NOT saved — please try again'))
         setTimeout(() => setToast(''), 5000)
         setSending(false)
         return

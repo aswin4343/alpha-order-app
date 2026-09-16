@@ -300,7 +300,7 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
 
   if (error) {
     console.error('cloud order insert failed', error)
-    throw new Error("Order could not be saved: " + (error.message || "database error"))
+    throw new Error('Order could not be saved: ' + (error.message || error.code || 'database error'))
   }
 
   // Build the item rows. This is wrapped in try/catch because it runs AFTER
