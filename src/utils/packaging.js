@@ -58,15 +58,13 @@ export function outersPerBox(product) {
  *   Piece → Outer → Box
  */
 export function availableUnits(product) {
-  // Detect whether Admin has explicitly configured sell_by flags via the new
-  // Master Price List upload. Default DB state is sell_by_piece=true,
-  // sell_by_outer=false, sell_by_box=false. Flags are "managed" when at least
-  // one non-default value has been explicitly set — i.e. sell_by_outer/box=true
-  // OR sell_by_piece=false.
-  const flagsManaged =
-    product?.sell_by_outer === true ||
-    product?.sell_by_box   === true ||
-    product?.sell_by_piece === false
+  // Flags are "managed" only when at least one unit is explicitly ALLOWED (true)
+  // AND at least one is explicitly BLOCKED (false). If only restrictions exist
+  // with no allowances (e.g. sell_by_piece=false, sell_by_outer=false/missing),
+  // the data is incomplete — fall back to the safe legacy behaviour.
+  const anyAllowed = product?.sell_by_piece === true || product?.sell_by_outer === true || product?.sell_by_box === true
+  const anyRestricted = product?.sell_by_piece === false || product?.sell_by_outer === false || product?.sell_by_box === false
+  const flagsManaged = anyAllowed && anyRestricted
 
   if (flagsManaged) {
     const units = []
@@ -76,8 +74,7 @@ export function availableUnits(product) {
     return units.length > 0 ? units : ['Piece']
   }
 
-  // Legacy path: flags not yet configured — use the original logic
-  // (Piece always; Outer/Box only when conversion data exists).
+  // Legacy path: flags not properly configured — original behaviour
   const units = ['Piece']
   if (piecesPerOuter(product) != null) units.push('Outer')
   if (piecesPerBox(product) != null) units.push('Box')

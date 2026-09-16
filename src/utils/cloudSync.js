@@ -129,23 +129,35 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
 
 
   // ---- Sell-by unit validation ------------------------------------------
-  // Wrapped in try/catch so infrastructure issues (missing column, etc.)
-  // never block order saving. Only deliberate "cannot sell by X" errors propagate.
+  // Only enforced when flags are explicitly and correctly managed:
+  // - At least one unit must be explicitly ALLOWED (true) — if all are false
+  //   or missing, the flags weren't properly set (SQL migration not run, or
+  //   partial upload) → skip entirely so we never block a legitimate sale.
+  // - sell_by_piece=false alone is not enough to trust the other flags.
   try {
     for (const i of items) {
       const u = (i.unit || 'Piece').toLowerCase()
-      const flagsManaged = i.sell_by_outer === true || i.sell_by_box === true || i.sell_by_piece === false
+      const anyAllowed = i.sell_by_piece === true || i.sell_by_outer === true || i.sell_by_box === true
+      const anyRestricted = i.sell_by_piece === false || i.sell_by_outer === false || i.sell_by_box === false
+      // Flags are only "managed" when at least one is explicitly true AND
+      // at least one is explicitly false — i.e. the Admin has intentionally
+      // configured which units are allowed vs blocked.
+      const flagsManaged = anyAllowed && anyRestricted
       if (!flagsManaged) continue
       if (u === 'piece' && i.sell_by_piece === false)
-        throw new Error(`${i.name} cannot be sold by Piece.`)
+        throw new Error(`${i.name} cannot be sold by Piece. Please select Outer or Box.`)
       if (u === 'outer' && i.sell_by_outer === false)
-        throw new Error(`${i.name} cannot be sold by Outer.`)
+        throw new Error(`${i.name} cannot be sold by Outer. Please select a valid unit.`)
       if (u === 'box' && i.sell_by_box === false)
-        throw new Error(`${i.name} cannot be sold by Box.`)
+        throw new Error(`${i.name} cannot be sold by Box. Please select a valid unit.`)
     }
   } catch (sellByErr) {
-    if (sellByErr.message && items.some(i => sellByErr.message.startsWith(i.name || ''))) throw sellByErr
-    console.warn('sell_by validation skipped:', sellByErr.message)
+    // Re-throw only deliberate validation errors (product name in message).
+    // Swallow infrastructure errors (missing column, schema cache, etc.).
+    const msg = sellByErr.message || ''
+    const isValidationError = msg.includes('cannot be sold by')
+    if (isValidationError) throw sellByErr
+    console.warn('sell_by validation skipped (infrastructure):', msg)
   }
   // ---- Duplicate guard --------------------------------------------------
   // Two checks:
