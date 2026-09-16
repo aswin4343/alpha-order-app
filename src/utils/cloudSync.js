@@ -414,7 +414,9 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     throw new Error('order_items insert failed: ' + (itemsErr.message || 'unknown error'))
   }
 
-  // Notify Admin if any items require price approval (non-blocking)
+  // Notify Admin if any items require price approval AND flip all orders for
+  // this shop on this date to pending_approval so Billing Team cannot see them
+  // until Admin decides — including the parent order already in Billing queue.
   if (_runtimeApprovalEnabled !== false && PRICE_APPROVAL_ENABLED) {
     const specialItems = items.filter((i) => {
       const effectivePrice = i.finalSellingPrice ?? null
@@ -422,6 +424,18 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     })
     if (specialItems.length > 0) {
       notifyAdminPriceApprovalRequired(specialItems, customer?.name || '', items[0]?.repName || '').catch(() => {})
+      // Block ALL orders for this shop on this business date from Billing.
+      // This covers the add-on scenario: parent order was already 'pending'
+      // in Billing — now it must also be hidden until Admin approves.
+      const thisOrderDate = orderDate || new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+      try {
+        await supabase.from('orders')
+          .update({ billing_status: 'pending_approval', bill_approval_required: true, bill_approval_status: 'pending' })
+          .eq('shop_name', customer.name)
+          .eq('order_date', thisOrderDate)
+          .eq('hidden', false)
+          .neq('billing_status', 'verified')
+      } catch (e) { console.warn('pending_approval flip (non-fatal):', e) }
     }
   }
 
@@ -4783,14 +4797,25 @@ export async function approveBill(orderId, itemOverrides, adminUser, reasonPaylo
     }
   } catch (e) { console.error('recalc totals (non-fatal):', e) }
 
-  // 4. Release bill to Billing Team
-  const { error } = await supabase.from('orders').update({
+  // 4. Release bill to Billing Team — also release sibling orders for the
+  //    same shop+date that were held when the special-price add-on was added.
+  const { error, data: approvedOrder } = await supabase.from('orders').update({
     bill_approval_status: 'approved',
     bill_approved_at: now,
     bill_approved_by: adminUser?.id || null,
-    billing_status: 'pending'   // now visible to Billing Team
-  }).eq('id', orderId)
+    billing_status: 'pending'
+  }).eq('id', orderId).select('shop_name, order_date').single()
   if (error) throw error
+
+  // Release sibling orders (same shop, same date) that were also blocked
+  if (approvedOrder?.shop_name && approvedOrder?.order_date) {
+    await supabase.from('orders')
+      .update({ billing_status: 'pending', bill_approval_status: 'approved', bill_approved_at: now })
+      .eq('shop_name', approvedOrder.shop_name)
+      .eq('order_date', approvedOrder.order_date)
+      .eq('billing_status', 'pending_approval')
+      .neq('id', orderId)  // don't double-update the main order
+  }
 }
 
 /**
