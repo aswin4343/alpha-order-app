@@ -296,58 +296,66 @@ function PriceSelector({ product, override, onOverride, lastPrice, defaultPriceT
       </button>
     </div>
 
-    {/* ── Last Price Warning Modal (spec 61) ──────────────────────────────
-        Shown when rep taps LAST price but the official price has changed.
-        Two choices: Remove product, or Request Admin Approval for full bill. */}
+    {/* ── Last Price Warning Modal (spec §17-24) ──────────────────────────
+        Fires when rep taps LAST chip and the official price has increased.
+        Three choices: Remove product, Send for Admin Approval, or Cancel. */}
     {showLastPriceWarning && (
       <div className="fixed inset-0 z-[100] bg-black/50 flex items-end sm:items-center justify-center px-0 sm:px-4">
         <div className="bg-white w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl p-5 shadow-2xl">
           <div className="text-center mb-4">
             <div className="text-3xl mb-2">⚠️</div>
-            <p className="font-bold text-slate-800 text-base">Price Has Been Updated</p>
+            <p className="font-bold text-slate-800 text-base">Price Updated</p>
+            <p className="text-sm text-slate-500 mt-0.5">This product's price has increased</p>
           </div>
-          <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-sm mb-4 space-y-1">
-            <div className="flex justify-between">
-              <span className="text-slate-500">Previous Price</span>
-              <span className="font-semibold text-slate-700">₹{product.previous_retail ?? '—'}</span>
+
+          <p className="font-semibold text-slate-700 text-sm text-center mb-3 truncate px-2">{product.name}</p>
+
+          <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-sm mb-4 space-y-1.5">
+            <div className="flex justify-between items-center">
+              <span className="text-slate-500">Your Selected Price</span>
+              <span className="font-bold text-purple-700">₹{lastPrice}</span>
             </div>
-            <div className="flex justify-between">
-              <span className="text-slate-500">Current Official Price</span>
-              <span className="font-bold text-red-700">₹{product.retail ?? product.wholesale ?? '—'}</span>
+            <div className="flex justify-between items-center">
+              <span className="text-slate-500">Current Authorized Price</span>
+              <span className="font-bold text-slate-800">₹{product.retail ?? product.wholesale ?? '—'}</span>
             </div>
-            <div className="flex justify-between border-t border-amber-200 pt-1 mt-1">
-              <span className="text-slate-500">Last Price for this shop</span>
-              <span className="font-semibold text-amber-800">₹{lastPrice}</span>
+            <div className="flex justify-between items-center border-t border-amber-200 pt-1.5 mt-1">
+              <span className="text-slate-500">Difference</span>
+              <span className="font-bold text-red-700">
+                ₹{Math.abs((product.retail ?? product.wholesale ?? 0) - lastPrice).toFixed(2)} Below Current Price
+              </span>
             </div>
           </div>
-          <p className="text-sm text-slate-600 mb-5 text-center leading-snug">
-            This product's official price has been updated by Admin. Using the old Last Price of <b>₹{lastPrice}</b> requires Admin approval.
-          </p>
+
           <div className="space-y-2.5">
             <button
               onClick={() => {
                 setShowLastPriceWarning(false)
-                onRemoveProduct?.()   // remove only this product from cart
+                onRemoveProduct?.()
               }}
-              className="w-full rounded-2xl border-2 border-slate-200 py-3.5 text-sm font-bold text-slate-700 active:bg-slate-50"
+              className="w-full rounded-2xl border-2 border-slate-200 py-3 text-sm font-bold text-slate-700 active:bg-slate-50"
             >
-              Remove This Product
+              Remove Product &amp; Continue
             </button>
             <button
               onClick={() => {
                 setShowLastPriceWarning(false)
-                // Apply the LAST price — bill will be held for Admin approval
-                // by the evaluatePriceApproval engine at saveCloudOrder time.
+                // Apply LAST price — evaluatePriceApproval at saveCloudOrder
+                // time will detect it's below floor and set bill for Admin approval.
                 const opt = options.find((o) => o.type === 'LAST')
                 onOverride(product.id, { priceType: 'LAST', finalRate: opt?.value ?? lastPrice })
               }}
-              className="w-full rounded-2xl bg-amber-500 text-white py-3.5 text-sm font-bold active:bg-amber-600"
+              className="w-full rounded-2xl bg-amber-500 text-white py-3 text-sm font-bold active:bg-amber-600"
             >
-              Request Admin Approval for Full Bill
+              Send for Admin Approval
+            </button>
+            <button
+              onClick={() => setShowLastPriceWarning(false)}
+              className="w-full text-sm text-slate-400 py-1.5 hover:text-slate-600"
+            >
+              Cancel — Go Back to Edit
             </button>
           </div>
-          <button onClick={() => setShowLastPriceWarning(false)}
-            className="mt-3 w-full text-xs text-slate-400 py-1">Cancel</button>
         </div>
       </div>
     )}

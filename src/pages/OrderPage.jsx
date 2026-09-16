@@ -1343,12 +1343,12 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
       )}
       )}
 
-      {/* ── Pre-submit Price Warning Modal (spec §10-12) ──────────────────
-          Fires when COPY ORDER is tapped and one or more items have a
-          selected price below the current authorized price.
-          Two options: remove violating products, or send full bill for
-          Admin approval. The existing billNeedsApproval / approveBill
-          flow handles the approval path. */}
+      {/* ── Pre-submit Price Warning Modal (spec §17-25) ─────────────────
+          Fires at COPY ORDER if any item has selectedPrice < currentFloor.
+          Shows ALL violations (not just first). Three actions:
+          1. Remove violating products & continue
+          2. Send full bill for Admin Approval
+          3. Cancel — go back to edit */}
       {priceWarningModal && (
         <div className="fixed inset-0 z-[100] bg-black/50 flex items-end sm:items-center justify-center">
           <div className="bg-white w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl p-5 shadow-2xl max-h-[90vh] overflow-y-auto">
@@ -1356,29 +1356,31 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
               <div className="text-3xl mb-2">⚠️</div>
               <p className="font-bold text-slate-800 text-base">
                 {priceWarningModal.violations.length === 1
-                  ? '1 product requires approval'
-                  : `${priceWarningModal.violations.length} products require approval`}
+                  ? '1 Product Requires Approval'
+                  : `${priceWarningModal.violations.length} Products Require Approval`}
               </p>
               <p className="text-sm text-slate-500 mt-0.5">
-                Selected price is below current authorized price
+                {priceWarningModal.violations.length === 1
+                  ? 'This product\'s price is below the current authorized price.'
+                  : 'These products\' prices are below the current authorized price.'}
               </p>
             </div>
 
             <div className="space-y-2.5 mb-5">
               {priceWarningModal.violations.map((v) => (
                 <div key={v.id} className="rounded-xl bg-amber-50 border border-amber-200 p-3">
-                  <p className="font-semibold text-slate-800 text-sm truncate">{v.name}</p>
-                  <div className="grid grid-cols-3 gap-1 mt-1.5 text-center text-[11px]">
+                  <p className="font-semibold text-slate-800 text-sm mb-2 leading-snug">{v.name}</p>
+                  <div className="grid grid-cols-3 gap-1.5 text-center text-[11px]">
                     <div className="rounded-lg bg-white border border-slate-200 p-1.5">
                       <div className="font-bold text-purple-700">₹{v.selectedPrice}</div>
-                      <div className="text-slate-400">Selected</div>
+                      <div className="text-slate-400">Your Price</div>
                     </div>
                     <div className="rounded-lg bg-white border border-slate-200 p-1.5">
                       <div className="font-bold text-slate-700">₹{v.currentPrice}</div>
                       <div className="text-slate-400">Current</div>
                     </div>
                     <div className="rounded-lg bg-red-50 border border-red-200 p-1.5">
-                      <div className="font-bold text-red-700">₹{Math.abs(v.diff).toFixed(2)}</div>
+                      <div className="font-bold text-red-700">₹{Math.abs(v.diff).toFixed(2)} ↓</div>
                       <div className="text-slate-400">Below</div>
                     </div>
                   </div>
@@ -1389,7 +1391,6 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
             <div className="space-y-2.5">
               <button
                 onClick={() => {
-                  // Remove violating products from the order
                   const violatingIds = new Set(priceWarningModal.violations.map(v => v.id))
                   setQuantities(prev => {
                     const next = { ...prev }
@@ -1402,8 +1403,6 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
                     return next
                   })
                   setPriceWarningModal(null)
-                  // Don't dispatch yet — let the rep see the updated order
-                  // before submitting. If all items removed, nothing to submit.
                   const remainingQty = Object.keys(quantities).filter(id => !violatingIds.has(id))
                   if (remainingQty.length > 0) {
                     setTimeout(() => dispatchOrder(true), 100)
@@ -1416,21 +1415,17 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
               <button
                 onClick={() => {
                   setPriceWarningModal(null)
-                  // Dispatch with the violating items — billNeedsApproval will
-                  // set billing_status='pending_approval', keeping it from Billing
-                  // until Admin approves. The existing approveBill() flow handles
-                  // saving last_approved_price per price version.
                   dispatchOrder(true)
                 }}
                 className="w-full rounded-2xl bg-amber-500 text-white py-3.5 text-sm font-bold active:bg-amber-600"
               >
-                Send Full Bill for Admin Approval
+                Send for Admin Approval
               </button>
               <button
                 onClick={() => setPriceWarningModal(null)}
-                className="w-full text-xs text-slate-400 py-1"
+                className="w-full text-sm text-slate-500 py-2 hover:text-slate-700"
               >
-                Cancel — go back to edit
+                Cancel — Go Back to Edit
               </button>
             </div>
           </div>
