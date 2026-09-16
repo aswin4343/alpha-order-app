@@ -1003,35 +1003,50 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   const handleCopy = () => {
     if (!items.length) { dispatchOrder(true); return }
 
-    // Check each item against evaluatePriceApproval
     const violations = []
     for (const i of items) {
       const ep = i.finalSellingPrice != null ? i.finalSellingPrice : null
       if (ep == null) continue
-      // Skip if price governance not yet active (SQL 63 not run)
-      if (!i.priceVersion && i.lastApprovedPrice == null && !i.priceIncreased) continue
-      const { approvalRequired, currentPrice } = evaluatePriceApproval({
-        product: {
-          retail: i.normalPrice,
-          wholesale: i.wholesaleAtOrderTime,
-          wholesale_threshold: i.wholesaleThreshold ?? null,
-          price_version: i.priceVersion ?? 1,
-          last_approved_price: i.lastApprovedPrice ?? null,
-          last_approved_version: i.lastApprovedVersion ?? null,
-          price_increased: i.priceIncreased ?? false
-        },
-        qty: i.qty,
-        selectedPrice: ep,
-        priceType: i.priceType,
-        isBoxUnit: i.isBoxUnit
-      })
-      if (approvalRequired) {
+
+      // Method 1: Use evaluatePriceApproval if price governance fields exist (SQL 63 run)
+      if (i.priceVersion || i.lastApprovedPrice != null || i.priceIncreased) {
+        const { approvalRequired, currentPrice } = evaluatePriceApproval({
+          product: {
+            retail: i.normalPrice,
+            wholesale: i.wholesaleAtOrderTime,
+            wholesale_threshold: i.wholesaleThreshold ?? null,
+            price_version: i.priceVersion ?? 1,
+            last_approved_price: i.lastApprovedPrice ?? null,
+            last_approved_version: i.lastApprovedVersion ?? null,
+            price_increased: i.priceIncreased ?? false
+          },
+          qty: i.qty,
+          selectedPrice: ep,
+          priceType: i.priceType,
+          isBoxUnit: i.isBoxUnit
+        })
+        if (approvalRequired) {
+          violations.push({
+            id: i.id,
+            name: i.name,
+            selectedPrice: ep,
+            currentPrice: currentPrice ?? i.normalPrice ?? i.wholesaleAtOrderTime,
+            diff: ep - (currentPrice ?? i.normalPrice ?? i.wholesaleAtOrderTime ?? ep)
+          })
+        }
+        continue
+      }
+
+      // Method 2: Basic check — selected price < current applicable retail/wholesale
+      // Works even without SQL 63. Catches Last/Custom prices below floor.
+      const currentFloor = i.normalPrice ?? i.wholesaleAtOrderTime ?? null
+      if (currentFloor != null && ep < currentFloor - 0.001) {
         violations.push({
           id: i.id,
           name: i.name,
           selectedPrice: ep,
-          currentPrice: currentPrice ?? i.normalPrice ?? i.wholesaleAtOrderTime,
-          diff: ep - (currentPrice ?? i.normalPrice ?? i.wholesaleAtOrderTime ?? ep)
+          currentPrice: currentFloor,
+          diff: ep - currentFloor
         })
       }
     }

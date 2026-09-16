@@ -147,7 +147,31 @@ export default function AdminApprovalsPage() {
                         <span className="shrink-0 text-[10px] font-bold text-purple-700 bg-purple-50 px-2 py-1 rounded-lg">SPECIAL PRICE</span>
                       </div>
 
-                      <div className="grid grid-cols-4 gap-1.5 mt-2.5 text-center">
+                      {/* MRP / Retail / Wholesale — full pricing context for Admin */}
+                      {(it.product_mrp != null || it.product_retail != null || it.product_wholesale != null) && (
+                        <div className={`grid gap-1.5 mt-2.5 text-center ${[it.product_mrp,it.product_retail,it.product_wholesale].filter(v=>v!=null).length===3?'grid-cols-3':it.product_mrp!=null&&it.product_retail!=null?'grid-cols-2':'grid-cols-2'}`}>
+                          {it.product_mrp != null && (
+                            <div className="rounded-lg border border-slate-200 bg-slate-50 py-1.5">
+                              <div className="text-sm font-bold text-slate-600">₹{it.product_mrp}</div>
+                              <div className="text-[9px] text-slate-400 uppercase">MRP</div>
+                            </div>
+                          )}
+                          {it.product_retail != null && (
+                            <div className="rounded-lg border border-blue-100 bg-blue-50 py-1.5">
+                              <div className="text-sm font-bold text-blue-700">₹{it.product_retail}</div>
+                              <div className="text-[9px] text-slate-400 uppercase">Retail</div>
+                            </div>
+                          )}
+                          {it.product_wholesale != null && (
+                            <div className="rounded-lg border border-teal-100 bg-teal-50 py-1.5">
+                              <div className="text-sm font-bold text-teal-700">₹{it.product_wholesale}</div>
+                              <div className="text-[9px] text-slate-400 uppercase">Wholesale</div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      <div className="grid grid-cols-4 gap-1.5 mt-1.5 text-center">
                         {[
                           {label:'Normal',val:`₹${it.normal_price??'—'}`,cls:'border-slate-200'},
                           {label:'Requested',val:`₹${it.unit_price}`,cls:'border-purple-200 bg-purple-50',txt:'text-purple-700'},

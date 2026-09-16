@@ -169,33 +169,50 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     return up === 'STORE-COUNTER'
   }
   try {
-    const startToday = new Date(); startToday.setHours(0, 0, 0, 0)
-    const { data: todays } = await supabase
+    // CRITICAL: compare against order_date (the business date the rep selected),
+    // NOT created_at (the wall-clock time the order was saved).
+    //
+    // Using created_at caused this bug:
+    //   Rep has an order for Shop A on 16/09 (created today).
+    //   Rep creates a NEW order for Shop A on 17/09 (different business date).
+    //   Old guard used .gte('created_at', startToday) → found the 16/09 order
+    //   → wrongly blocked the 17/09 order as a "duplicate".
+    //
+    // The one-shop-per-day rule is: one normal-route bill per shop per BUSINESS
+    // DATE. Two orders on different dates are always separate — even if both
+    // were created (created_at) on the same calendar day.
+    const newOrderDate = orderDate ||
+      new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+
+    const { data: sameDate } = await supabase
       .from('orders')
-      .select('id, shop_name, route, created_at, order_items(product_name, qty)')
+      .select('id, shop_name, route, order_date, order_items(product_name, qty)')
       .eq('sales_rep_id', userId)
       .eq('shop_name', customer.name)
+      .eq('order_date', newOrderDate)   // ← business date, not wall-clock date
       .eq('hidden', false)
-      .gte('created_at', startToday.toISOString())
 
+    // 1. EXACT DUPLICATE: same products & quantities on the SAME business date.
+    //    This is a double-submit (rep re-tapped Copy Order).
     const fingerprint = (list) =>
       (list || [])
         .map((r) => `${(r.product_name || r.name || '').trim().toUpperCase()}::${r.qty}`)
         .sort()
         .join('|')
     const mine = fingerprint(items)
-    const isDup = (todays || []).some((o) => fingerprint(o.order_items) === mine)
+    const isDup = (sameDate || []).some((o) => fingerprint(o.order_items) === mine)
     if (isDup) {
       console.log('Duplicate order detected — skipping save.')
       return 'DUPLICATE'
     }
 
-    // One-normal-route-bill-per-shop-per-day: only applies when the new order
-    // is NOT a special channel (STORE-COUNTER / ON-DEMAND).
+    // 2. ONE-NORMAL-ROUTE-BILL-PER-SHOP-PER-BUSINESS-DATE.
+    //    STORE-COUNTER is exempt (always a new separate bill).
+    //    A different order_date is ALWAYS a different order — no blocking.
     if (!isSpecialChannel(orderRoute)) {
-      const normalRouteToday = (todays || []).some((o) => !isSpecialChannel(o.route))
-      if (normalRouteToday) {
-        console.log('Normal-route order already exists for this shop today — blocking.')
+      const normalRouteOnSameDate = (sameDate || []).some((o) => !isSpecialChannel(o.route))
+      if (normalRouteOnSameDate) {
+        console.log('Normal-route order already exists for this shop on', newOrderDate, '— blocking.')
         return 'DUPLICATE'
       }
     }
@@ -4655,6 +4672,26 @@ export function evaluatePriceApproval({ product, qty, selectedPrice, priceType, 
  * Load all orders where bill_approval_required=true and bill_approval_status='pending'.
  * Used by Admin approval screen and Sales Rep pending bills view.
  */
+/**
+ * Load bills that were REJECTED by Admin for this Sales Rep.
+ * Used by the rep's Performance page to show rejection notifications.
+ */
+export async function loadRejectedBills({ salesRepId } = {}) {
+  if (!salesRepId) return []
+  const { data, error } = await supabase
+    .from('orders')
+    .select(`id, shop_name, route, order_date, created_at, total_value, total_products,
+             bill_approval_status, bill_rejection_reason, bill_approved_at,
+             order_items(id, product_name, qty, unit, unit_price, normal_price, approval_status)`)
+    .eq('sales_rep_id', salesRepId)
+    .eq('bill_approval_status', 'rejected')
+    .eq('hidden', false)
+    .order('bill_approved_at', { ascending: false })
+    .limit(20)
+  if (error) { console.error(error); return [] }
+  return data || []
+}
+
 export async function loadPendingApprovalBills({ salesRepId } = {}) {
   let q = supabase
     .from('orders')
@@ -4733,10 +4770,14 @@ export async function rejectBill(orderId, adminUser, reason) {
     bill_approval_status: 'rejected',
     bill_rejection_reason: reason || null,
     bill_approved_at: new Date().toISOString(),
-    bill_approved_by: adminUser?.id || null
+    bill_approved_by: adminUser?.id || null,
+    // Keep billing_status='pending_approval' so Billing Team never sees it.
+    // The .neq('billing_status','pending_approval') filter in all Billing
+    // queries already excludes it. We do NOT flip to 'hidden' because hidden
+    // has a separate meaning (rep-deleted order). pending_approval + rejected
+    // bill_approval_status = definitively rejected, invisible to Billing.
   }).eq('id', orderId)
   if (error) throw error
-  // Reject all pending items too
   await supabase.from('order_items').update({ approval_status: 'rejected' })
     .eq('order_id', orderId).eq('approval_status', 'pending')
 }
@@ -4766,6 +4807,32 @@ export async function loadPendingApprovals() {
     const nameById = new Map((reps || []).map((r) => [r.id, r.full_name]))
     rows.forEach((r) => { r.sales_rep_name = nameById.get(r.orders.sales_rep_id) || '—' })
   }
+
+  // Fetch current MRP / Retail / Wholesale for each product so Admin can
+  // see full pricing context on the approval card.
+  const productNames = [...new Set(rows.map((r) => (r.product_name || '').trim()).filter(Boolean))]
+  if (productNames.length) {
+    const { data: prods } = await supabase
+      .from('products')
+      .select('name, mrp, retail, wholesale')
+      .in('name', productNames)
+    if (prods) {
+      const priceByName = new Map(prods.map((p) => [
+        (p.name || '').trim().toUpperCase(),
+        { mrp: p.mrp, retail: p.retail, wholesale: p.wholesale }
+      ]))
+      rows.forEach((r) => {
+        const key = (r.product_name || '').trim().toUpperCase()
+        const pricing = priceByName.get(key)
+        if (pricing) {
+          r.product_mrp = pricing.mrp ?? null
+          r.product_retail = pricing.retail ?? null
+          r.product_wholesale = pricing.wholesale ?? null
+        }
+      })
+    }
+  }
+
   return rows
 }
 

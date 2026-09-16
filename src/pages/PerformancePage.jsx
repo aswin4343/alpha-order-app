@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
 import { useApp } from '../context/AppContext.jsx'
-import { loadMyPerformance, loadPerformanceForDate, currentUserId, resolvePeriodRange, loadMyShortageSummary, loadPendingApprovalBills } from '../utils/cloudSync.js'
+import { loadMyPerformance, loadPerformanceForDate, currentUserId, resolvePeriodRange, loadMyShortageSummary, loadPendingApprovalBills, loadRejectedBills } from '../utils/cloudSync.js'
 import { BackIcon } from '../components/Icons.jsx'
 import VisitsListModal from '../components/VisitsListModal.jsx'
 import OrdersListModal from '../components/OrdersListModal.jsx'
@@ -38,6 +38,7 @@ export default function PerformancePage({ onBack, onEditOrder }) {
   const { customers } = useApp()
   const [uid, setUid] = useState(null)
   const [pendingBills, setPendingBills] = useState(null)
+  const [rejectedBills, setRejectedBills] = useState([])
   const [periodMode, setPeriodMode] = useState('today') // 'today' | 'week' | 'month' | 'date'
   const [dateStr, setDateStr] = useState(() => new Date().toISOString().slice(0, 10))
   const [route, setRoute] = useState('') // '' = All routes (unchanged behaviour)
@@ -64,6 +65,7 @@ export default function PerformancePage({ onBack, onEditOrder }) {
       setUid(id)
       // Load this rep's bills awaiting Admin approval
       loadPendingApprovalBills({ salesRepId: id }).then(setPendingBills).catch(() => setPendingBills([]))
+      loadRejectedBills({ salesRepId: id }).then(setRejectedBills).catch(() => setRejectedBills([]))
       try { setTotals(await loadMyPerformance(id)) } catch {}
     })()
   }, [user])
@@ -284,6 +286,37 @@ export default function PerformancePage({ onBack, onEditOrder }) {
             </div>
           </div>
         )}
+        {/* REJECTED BILLS — Admin rejected, notify the rep */}
+        {rejectedBills.length > 0 && (
+          <div className="mt-3 mx-3">
+            <div className="rounded-2xl bg-red-50 border border-red-200 p-4">
+              <p className="text-sm font-bold text-red-800 mb-0.5">❌ Bill{rejectedBills.length > 1 ? 's' : ''} Rejected by Admin</p>
+              <p className="text-[12px] text-red-700 mb-3">Admin rejected the following bill{rejectedBills.length > 1 ? 's' : ''}. Please review and resubmit with the correct price.</p>
+              <div className="space-y-2">
+                {rejectedBills.map(bill => (
+                  <div key={bill.id} className="rounded-xl bg-white border border-red-200 p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-slate-800 truncate">{bill.shop_name}</p>
+                        <p className="text-[11px] text-slate-400">{bill.order_date} · {bill.total_products} products</p>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-sm font-bold text-slate-800">₹{Number(bill.total_value || 0).toLocaleString('en-IN')}</p>
+                        <span className="text-[9px] font-bold text-red-700 bg-red-100 px-2 py-0.5 rounded-full uppercase">Rejected</span>
+                      </div>
+                    </div>
+                    {bill.bill_rejection_reason && (
+                      <div className="mt-2 rounded-lg bg-red-50 border border-red-100 px-2.5 py-1.5">
+                        <p className="text-[11px] text-red-700"><span className="font-semibold">Reason:</span> {bill.bill_rejection_reason}</p>
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
       </main>
 
       {openModal === 'visits' && uid && (
@@ -308,4 +341,3 @@ export default function PerformancePage({ onBack, onEditOrder }) {
     </div>
   )
 }
-
