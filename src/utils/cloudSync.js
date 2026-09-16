@@ -129,19 +129,13 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
 
 
   // ---- Sell-by unit validation ------------------------------------------
-  // Only enforced when flags are explicitly and correctly managed:
-  // - At least one unit must be explicitly ALLOWED (true) — if all are false
-  //   or missing, the flags weren't properly set (SQL migration not run, or
-  //   partial upload) → skip entirely so we never block a legitimate sale.
-  // - sell_by_piece=false alone is not enough to trust the other flags.
+  // IMPORTANT: i.unit is always 'Piece' (converted for billing).
+  // We must check i.entered_unit (the rep's original selection) instead.
   try {
     for (const i of items) {
-      const u = (i.unit || 'Piece').toLowerCase()
+      const u = ((i.entered_unit || i.unit) || 'Piece').toLowerCase()
       const anyAllowed = i.sell_by_piece === true || i.sell_by_outer === true || i.sell_by_box === true
       const anyRestricted = i.sell_by_piece === false || i.sell_by_outer === false || i.sell_by_box === false
-      // Flags are only "managed" when at least one is explicitly true AND
-      // at least one is explicitly false — i.e. the Admin has intentionally
-      // configured which units are allowed vs blocked.
       const flagsManaged = anyAllowed && anyRestricted
       if (!flagsManaged) continue
       if (u === 'piece' && i.sell_by_piece === false)
@@ -152,8 +146,6 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
         throw new Error(`${i.name} cannot be sold by Box. Please select a valid unit.`)
     }
   } catch (sellByErr) {
-    // Re-throw only deliberate validation errors (product name in message).
-    // Swallow infrastructure errors (missing column, schema cache, etc.).
     const msg = sellByErr.message || ''
     const isValidationError = msg.includes('cannot be sold by')
     if (isValidationError) throw sellByErr
