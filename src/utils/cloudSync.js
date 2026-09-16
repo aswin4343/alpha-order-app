@@ -1237,7 +1237,7 @@ export async function mergeUpdateCloudProducts(uploadedList, fileName) {
       (patch.retail != null && patch.retail !== cur.retail) ||
       (patch.wholesale != null && patch.wholesale !== cur.wholesale)
 
-    const curVersion = cur.price_version ?? 1
+    const curVersion = Math.round(cur.price_version ?? 1)
     const nextVersion = priceChanged ? curVersion + 1 : curVersion
 
     return {
@@ -1266,10 +1266,12 @@ export async function mergeUpdateCloudProducts(uploadedList, fileName) {
       previous_retail:    priceChanged ? (cur.retail ?? null) : (cur.previous_retail ?? null),
       previous_wholesale: priceChanged ? (cur.wholesale ?? null) : (cur.previous_wholesale ?? null),
       // Wholesale threshold defaults to qty_in_box if not explicitly set
-      wholesale_threshold: cur.wholesale_threshold ?? patch.qty_in_box ?? cur.qty_in_box ?? null,
+      wholesale_threshold: cur.wholesale_threshold != null
+        ? Math.round(cur.wholesale_threshold)
+        : (patch.qty_in_box != null ? Math.round(patch.qty_in_box) : (cur.qty_in_box != null ? Math.round(cur.qty_in_box) : null)),
       // Invalidate last_approved_price when price version bumps
       last_approved_price:   priceChanged ? null : (cur.last_approved_price ?? null),
-      last_approved_version: priceChanged ? null : (cur.last_approved_version ?? null),
+      last_approved_version: priceChanged ? null : (cur.last_approved_version != null ? Math.round(cur.last_approved_version) : null),
       last_approved_at:      priceChanged ? null : (cur.last_approved_at ?? null),
       last_approved_by:      priceChanged ? null : (cur.last_approved_by ?? null),
       sort_order: cur.sort_order ?? null
