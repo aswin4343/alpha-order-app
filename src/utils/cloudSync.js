@@ -2525,7 +2525,7 @@ const BILLING_ITEM_COLS_CORE =
   'id, order_id, product_name, qty, unit, is_addon, available, original_qty, change_type, change_reason, original_product_name, removed, normal_price, is_special_price, scheme_enabled, unit_price, mrp, gst_percent, hsn, free_qty, price_type'
 const BILLING_ITEM_COLS_FULL =
   BILLING_ITEM_COLS_CORE +
-  ', rescheduled_from_item_id, rescheduled_from_date, approval_status, approved_by, approved_at, approval_reason'
+  ', rescheduled_from_item_id, rescheduled_from_date, approval_status, approved_by, approved_at, approval_reason, approved_price'
 
 export async function loadBillingOrderItemsFull(orderIdOrIds) {
   const ids = Array.isArray(orderIdOrIds) ? orderIdOrIds : [orderIdOrIds]
@@ -2567,7 +2567,7 @@ export async function loadBillingOrderItemsFull(orderIdOrIds) {
       passthrough.push(it)
       continue
     }
-    const key = `${(it.product_name || '').trim().toUpperCase()}__${it.unit || ''}`
+    const key = `${(it.product_name || '').trim().toUpperCase()}__${it.unit || ''}__${it.approval_status || 'null'}`
     let m = merged.get(key)
     if (!m) {
       m = { ...it, itemIds: [it.id], _baseQty: it.is_addon ? 0 : it.qty, _addonQty: it.is_addon ? it.qty : 0 }

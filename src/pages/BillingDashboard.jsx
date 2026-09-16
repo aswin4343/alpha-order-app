@@ -74,7 +74,9 @@ function mapBillItems(rawItems, products) {
       mrp: i.mrp ?? liveProduct?.mrp ?? null,
       unit: resolvedUnit,
       qty: resolvedQty,
-      unit_price: i.unit_price,
+      // Admin-approved price takes priority over the Sales Rep's requested price.
+      // This is how admin price modifications (e.g. ₹78 → ₹79) reach Billing.
+      unit_price: i.approved_price != null ? i.approved_price : i.unit_price,
       gst_percent: i.gst_percent ?? liveProduct?.gst ?? null,
       free_qty: i.free_qty || 0,
       _sourceItem: i,
