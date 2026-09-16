@@ -214,8 +214,16 @@ export default function PerformancePage({ onBack, onEditOrder }) {
               <StatCard label="New Shops Added" value={dayPerf.newShops} onClick={() => setOpenModal('newShops')} />
               <StatCard label="Total Qty" value={dayPerf.quantity} />
             </div>
-            <div className="grid grid-cols-1 gap-2 mb-4">
+            <div className="grid grid-cols-2 gap-2 mb-4">
               <StatCard label="Order Value" value={`₹${dayPerf.orderValue.toLocaleString('en-IN')}`} />
+              {/* Admin Approval Pending — separate from Billing pending */}
+              {pendingBills != null && (
+                <StatCard
+                  label="Admin Approval Pending"
+                  value={pendingBills.length}
+                  onClick={pendingBills.length > 0 ? () => setOpenModal('adminPending') : undefined}
+                />
+              )}
             </div>
             <p className="text-center text-[11px] text-slate-400">
               Order Value uses the actual selling price recorded on each order. Tap a highlighted card to see the details behind it.
@@ -319,6 +327,37 @@ export default function PerformancePage({ onBack, onEditOrder }) {
 
       </main>
 
+      {openModal === 'adminPending' && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center">
+          <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl max-h-[80vh] flex flex-col">
+            <div className="flex items-center justify-between px-4 py-3 border-b">
+              <div>
+                <h2 className="font-bold text-slate-800">Admin Approval Pending</h2>
+                <p className="text-xs text-slate-400">Bills waiting for Admin price approval</p>
+              </div>
+              <button onClick={() => setOpenModal(null)} className="text-slate-400 text-xl px-2">✕</button>
+            </div>
+            <div className="overflow-y-auto flex-1 px-4 py-3 space-y-2">
+              {(pendingBills || []).length === 0 ? (
+                <p className="text-center text-sm text-slate-400 py-8">No bills pending approval</p>
+              ) : (pendingBills || []).map(bill => (
+                <div key={bill.id} className="rounded-xl bg-amber-50 border border-amber-200 p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <p className="text-sm font-semibold text-slate-800 truncate">{bill.shop_name}</p>
+                      <p className="text-[11px] text-slate-400">{bill.order_date} · {bill.total_products} products</p>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <p className="text-sm font-bold text-slate-800">₹{Number(bill.total_value || 0).toLocaleString('en-IN')}</p>
+                      <span className="text-[9px] font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">⏳ Awaiting Admin</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
       {openModal === 'visits' && uid && (
         <VisitsListModal
           userId={uid} start={range.start} end={range.end} route={route}

@@ -4721,8 +4721,21 @@ export async function loadPendingApprovalBills({ salesRepId } = {}) {
  */
 export async function approveBill(orderId, itemOverrides, adminUser, reasonPayload = {}) {
   const now = new Date().toISOString()
+  const { rejectedItems = [] } = reasonPayload || {}
 
-  // 1. Update each special-priced item with the admin's approved price
+  // 1. Mark rejected items as removed — they won't appear in Billing
+  for (const rejected of rejectedItems) {
+    await supabase.from('order_items').update({
+      removed: true,
+      approval_status: 'rejected',
+      approval_reason: rejected.rejectReason || 'Rejected by Admin',
+      approved_by: adminUser?.full_name || null,
+      approved_by_id: adminUser?.id || null,
+      approved_at: now
+    }).eq('id', rejected.itemId)
+  }
+
+  // 2. Approve remaining items with their approved prices
   for (const override of (itemOverrides || [])) {
     const patch = {
       approval_status: 'approved',
@@ -4736,7 +4749,7 @@ export async function approveBill(orderId, itemOverrides, adminUser, reasonPaylo
     if (override.approvedPrice != null) patch.approved_price = Number(override.approvedPrice)
     await supabase.from('order_items').update(patch).eq('id', override.itemId)
 
-    // 2. Save last_approved_price on the product (by product_name lookup)
+    // Save last_approved_price on the product for future reuse
     if (override.approvedPrice != null && override.productId) {
       try {
         const { data: prod } = await supabase.from('products').select('price_version').eq('id', override.productId).maybeSingle()
@@ -4752,12 +4765,30 @@ export async function approveBill(orderId, itemOverrides, adminUser, reasonPaylo
     }
   }
 
-  // 3. Mark the bill as approved — now eligible for Billing
+  // 3. Recalculate order totals after removing rejected items
+  try {
+    const { data: remaining } = await supabase
+      .from('order_items')
+      .select('qty, unit_price, approved_price')
+      .eq('order_id', orderId)
+      .eq('removed', false)
+    if (remaining) {
+      const totalValue = remaining.reduce((s, i) => s + ((i.approved_price ?? i.unit_price ?? 0) * i.qty), 0)
+      const totalQty = remaining.reduce((s, i) => s + i.qty, 0)
+      await supabase.from('orders').update({
+        total_value: Math.round(totalValue),
+        total_quantity: totalQty,
+        total_products: remaining.length
+      }).eq('id', orderId)
+    }
+  } catch (e) { console.error('recalc totals (non-fatal):', e) }
+
+  // 4. Release bill to Billing Team
   const { error } = await supabase.from('orders').update({
     bill_approval_status: 'approved',
     bill_approved_at: now,
     bill_approved_by: adminUser?.id || null,
-    billing_status: 'pending'   // Billing team can now see and verify it
+    billing_status: 'pending'   // now visible to Billing Team
   }).eq('id', orderId)
   if (error) throw error
 }
