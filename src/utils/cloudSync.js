@@ -2397,6 +2397,7 @@ export async function loadBillingCounts(repId, dateStr = null, status = 'pending
     'id, shop_name, route, order_date, created_at, billing_status',
     (q) => {
       q = q.eq('sales_rep_id', repId).eq('hidden', false)
+      .neq('billing_status', 'pending_approval')  // exclude bills awaiting Admin approval
       // Reverted to a plain exact-date match, same reasoning as
       // loadBillingOrders above — this badge needs to stay an accurate count
       // of the selected day specifically. Overdue orders are surfaced
@@ -3606,7 +3607,12 @@ export async function updateCloudOrder(orderId, { items }) {
   if (fetchErr) throw fetchErr
   const exMap = new Map((existing || []).map(e => [e.product_name.trim().toUpperCase(), e]))
   const newMap = new Map(items.map(i => [(i.name || "").trim().toUpperCase(), i]))
-  for (const e of [...exMap.values()]) { if (!newMap.has(e.product_name.trim().toUpperCase())) await supabase.from("order_items").delete().eq("id", e.id) }
+  for (const e of [...exMap.values()]) {
+    if (!newMap.has(e.product_name.trim().toUpperCase())) {
+      // Mark removed instead of hard delete — preserves audit trail and history
+      await supabase.from('order_items').update({ removed: true }).eq('id', e.id)
+    }
+  }
   for (const [key, i] of newMap.entries()) {
     const ep = i.finalSellingPrice != null ? i.finalSellingPrice : null
     const ex = exMap.get(key)
@@ -4649,7 +4655,7 @@ export async function loadPendingApprovalBills({ salesRepId } = {}) {
     .select(`id, shop_name, route, order_date, created_at, total_value, total_products,
              sales_rep_id, bill_approval_status, bill_approval_required,
              profiles(full_name),
-             order_items(id, product_name, qty, unit, unit_price, normal_price,
+             order_items(id, product_name, product_id, qty, unit, unit_price, normal_price,
                          approval_status, approved_price, approval_reason_type, approval_other_reason, approval_competitor_name)`)
     .eq('bill_approval_required', true)
     .eq('bill_approval_status', 'pending')

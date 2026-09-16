@@ -48,9 +48,12 @@ export default function AdminBillApprovalsPage() {
     if (r?.needsOther && !otherReason.trim()) { alert('Reason required.'); return }
     setBusy(true)
     try {
-      const overrides = Object.entries(itemPrices).map(([itemId, approvedPrice]) => ({
-        itemId,
-        approvedPrice: Number(approvedPrice)
+      // Include productId so approveBill can save last_approved_price on the product
+      const itemsNeedingApproval = (reviewing.order_items || []).filter(i => i.approval_status === 'pending')
+      const overrides = itemsNeedingApproval.map(i => ({
+        itemId: i.id,
+        approvedPrice: Number(itemPrices[i.id] ?? i.unit_price),
+        productId: i.product_id ?? null
       }))
       await approveBill(reviewing.id, overrides, profile, {
         reasonType, competitorName: competitorName.trim() || undefined, otherReason: otherReason.trim() || undefined

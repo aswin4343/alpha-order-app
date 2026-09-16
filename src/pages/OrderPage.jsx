@@ -1185,6 +1185,11 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
               lastPrice={customer ? lastPrices[(p.name || '').trim().toUpperCase()] : undefined}
               defaultPriceType={defaultPriceType}
               inventory={inventoryMap.get(p.id)}
+              onRemoveProduct={() => {
+                // Remove product: zero qty and clear any override (spec 61.3)
+                setQuantities(prev => { const n = {...prev}; delete n[p.id]; return n })
+                setPriceOverrides(prev => { const n = {...prev}; delete n[p.id]; return n })
+              }}
             />
           ))}
 
