@@ -1,11 +1,13 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useRef } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
 import { useApp } from '../context/AppContext.jsx'
 import { loadMyPerformance, loadPerformanceForDate, currentUserId, resolvePeriodRange, loadMyShortageSummary, loadPendingApprovalBills, loadRejectedBills } from '../utils/cloudSync.js'
+import { supabase } from '../utils/supabase.js'
 import { BackIcon } from '../components/Icons.jsx'
 import VisitsListModal from '../components/VisitsListModal.jsx'
 import OrdersListModal from '../components/OrdersListModal.jsx'
 import NewShopsListModal from '../components/NewShopsListModal.jsx'
+import ApprovalDetailModal from '../components/ApprovalDetailModal.jsx'
 
 function StatCard({ label, value, sub, onClick }) {
   const clickable = !!onClick
@@ -39,6 +41,9 @@ export default function PerformancePage({ onBack, onEditOrder }) {
   const [uid, setUid] = useState(null)
   const [pendingBills, setPendingBills] = useState(null)
   const [rejectedBills, setRejectedBills] = useState([])
+  // Realtime rejection popup — fires when Admin rejects a line while rep is on this screen
+  const [rejectionPopup, setRejectionPopup] = useState(null) // { title, body } | null
+  const realtimeChannelRef = useRef(null)
   const [periodMode, setPeriodMode] = useState('today') // 'today' | 'week' | 'month' | 'date'
   const [dateStr, setDateStr] = useState(() => new Date().toISOString().slice(0, 10))
   const [route, setRoute] = useState('') // '' = All routes (unchanged behaviour)
@@ -58,16 +63,67 @@ export default function PerformancePage({ onBack, onEditOrder }) {
     return Array.from(s).sort()
   }, [customers])
 
-  // Resolve the user id once.
+  // Resolve the user id once, load approval data, subscribe to realtime rejections.
   useEffect(() => {
-    (async () => {
+    let cancelled = false
+    ;(async () => {
       const id = (await currentUserId()) || user.id
-      setUid(id)
+      if (!cancelled) setUid(id)
       // Load this rep's bills awaiting Admin approval
-      loadPendingApprovalBills({ salesRepId: id }).then(setPendingBills).catch(() => setPendingBills([]))
-      loadRejectedBills({ salesRepId: id }).then(setRejectedBills).catch(() => setRejectedBills([]))
-      try { setTotals(await loadMyPerformance(id)) } catch {}
+      loadPendingApprovalBills({ salesRepId: id }).then((d) => { if (!cancelled) setPendingBills(d) }).catch(() => { if (!cancelled) setPendingBills([]) })
+      loadRejectedBills({ salesRepId: id }).then((d) => { if (!cancelled) setRejectedBills(d) }).catch(() => { if (!cancelled) setRejectedBills([]) })
+      try { const t = await loadMyPerformance(id); if (!cancelled) setTotals(t) } catch {}
+
+      // Realtime: listen for price_rejection notifications addressed to this rep.
+      // When Admin rejects a price-approval item from the Admin dashboard, a
+      // notifyRepOfPriceRejection() call inserts a row into announcement_recipients
+      // with recipient_id = this rep's uid. The realtime channel fires here, and
+      // we surface a non-blocking popup so the rep knows immediately — even if they
+      // are already on this screen rather than navigating in cold.
+      if (realtimeChannelRef.current) {
+        supabase.removeChannel(realtimeChannelRef.current)
+        realtimeChannelRef.current = null
+      }
+      const channel = supabase
+        .channel(`approval_rejection_${id}`)
+        .on(
+          'postgres_changes',
+          {
+            event: 'INSERT',
+            schema: 'public',
+            table: 'announcement_recipients',
+            filter: `recipient_id=eq.${id}`
+          },
+          async (payload) => {
+            // Fetch the announcement to check if it's a price_rejection
+            try {
+              const annId = payload.new?.announcement_id
+              if (!annId) return
+              const { data: ann } = await supabase
+                .from('announcements')
+                .select('id, title, body, notif_type')
+                .eq('id', annId)
+                .maybeSingle()
+              if (ann && ann.notif_type === 'price_rejection') {
+                setRejectionPopup({ title: ann.title || 'Price Rejected', body: ann.body || '' })
+                // Also refresh the pending/rejected lists so counts update
+                loadPendingApprovalBills({ salesRepId: id }).then(setPendingBills).catch(() => {})
+                loadRejectedBills({ salesRepId: id }).then(setRejectedBills).catch(() => {})
+              }
+            } catch (e) { console.error('[PerformancePage] realtime ann fetch failed', e) }
+          }
+        )
+        .subscribe()
+      realtimeChannelRef.current = channel
     })()
+    return () => {
+      cancelled = true
+      if (realtimeChannelRef.current) {
+        supabase.removeChannel(realtimeChannelRef.current)
+        realtimeChannelRef.current = null
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user])
 
   // The concrete date range for the current period selection. Recomputed
@@ -216,12 +272,15 @@ export default function PerformancePage({ onBack, onEditOrder }) {
             </div>
             <div className="grid grid-cols-2 gap-2 mb-4">
               <StatCard label="Order Value" value={`₹${dayPerf.orderValue.toLocaleString('en-IN')}`} />
-              {/* Admin Approval Pending — separate from Billing pending */}
+              {/* Admin Approval Pending — separate from Billing pending.
+                  Also clickable when there are rejected bills (so rep can
+                  take action on rejected items even after count hits 0). */}
               {pendingBills != null && (
                 <StatCard
                   label="Admin Approval Pending"
                   value={pendingBills.length}
-                  onClick={pendingBills.length > 0 ? () => setOpenModal('adminPending') : undefined}
+                  sub={rejectedBills.length > 0 ? `${rejectedBills.length} rejected` : undefined}
+                  onClick={(pendingBills.length > 0 || rejectedBills.length > 0) ? () => setOpenModal('adminPending') : undefined}
                 />
               )}
             </div>
@@ -328,32 +387,29 @@ export default function PerformancePage({ onBack, onEditOrder }) {
       </main>
 
       {openModal === 'adminPending' && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-end sm:items-center justify-center">
-          <div className="bg-white w-full sm:max-w-md rounded-t-3xl sm:rounded-3xl max-h-[80vh] flex flex-col">
-            <div className="flex items-center justify-between px-4 py-3 border-b">
-              <div>
-                <h2 className="font-bold text-slate-800">Admin Approval Pending</h2>
-                <p className="text-xs text-slate-400">Bills waiting for Admin price approval</p>
-              </div>
-              <button onClick={() => setOpenModal(null)} className="text-slate-400 text-xl px-2">✕</button>
-            </div>
-            <div className="overflow-y-auto flex-1 px-4 py-3 space-y-2">
-              {(pendingBills || []).length === 0 ? (
-                <p className="text-center text-sm text-slate-400 py-8">No bills pending approval</p>
-              ) : (pendingBills || []).map(bill => (
-                <div key={bill.id} className="rounded-xl bg-amber-50 border border-amber-200 p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold text-slate-800 truncate">{bill.shop_name}</p>
-                      <p className="text-[11px] text-slate-400">{bill.order_date} · {bill.total_products} products</p>
-                    </div>
-                    <div className="text-right shrink-0">
-                      <p className="text-sm font-bold text-slate-800">₹{Number(bill.total_value || 0).toLocaleString('en-IN')}</p>
-                      <span className="text-[9px] font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded-full">⏳ Awaiting Admin</span>
-                    </div>
-                  </div>
-                </div>
-              ))}
+        <ApprovalDetailModal onClose={() => setOpenModal(null)} />
+      )}
+
+      {/* Realtime rejection popup — fires when Admin rejects a price while this
+          rep is on the Performance page. Non-blocking; rep dismisses when ready. */}
+      {rejectionPopup && (
+        <div className="fixed inset-0 z-[90] bg-black/50 flex items-center justify-center px-4">
+          <div className="bg-white w-full max-w-sm rounded-3xl p-5 shadow-xl">
+            <p className="text-base font-bold text-red-700 mb-2">{rejectionPopup.title}</p>
+            <p className="text-sm text-slate-600 whitespace-pre-line mb-4">{rejectionPopup.body}</p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => { setRejectionPopup(null); setOpenModal('adminPending') }}
+                className="flex-1 rounded-xl bg-brand-600 text-white py-3 font-bold"
+              >
+                View Details
+              </button>
+              <button
+                onClick={() => setRejectionPopup(null)}
+                className="flex-1 rounded-xl border border-slate-200 py-3 font-semibold text-slate-600"
+              >
+                Dismiss
+              </button>
             </div>
           </div>
         </div>

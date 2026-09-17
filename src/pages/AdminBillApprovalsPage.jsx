@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
-import { loadPendingApprovalBills, approveBill, rejectBill } from '../utils/cloudSync.js'
+import { loadPendingApprovalBills, approveBill, rejectBill, notifyRepOfPriceRejection } from '../utils/cloudSync.js'
 
 const APPROVE_REASONS = [
   { value: 'competitor',  label: 'Competitor Price',            needsName: true },
@@ -96,6 +96,24 @@ export default function AdminBillApprovalsPage() {
       setReviewing(null)
       const aCount = approvedItems.length, rCount = rejectedItems.length
       flash(`Done: ${aCount} approved, ${rCount} rejected. Bill sent to Billing.`)
+
+      // Notify the sales rep about each rejected item — fire-and-forget.
+      // The bill is already committed; notification failure must not roll it back.
+      if (rejectedItems.length > 0) {
+        for (const ri of rejectedItems) {
+          // Find the original item data for context (product name, prices)
+          const origItem = (reviewing.order_items || []).find((i) => i.id === ri.itemId)
+          if (!origItem) continue
+          notifyRepOfPriceRejection({
+            orderId: reviewing.id,
+            productName: origItem.product_name,
+            reason: ri.rejectReason || 'Rejected by Admin',
+            adminName: profile?.full_name,
+            requestedPrice: origItem.unit_price,
+            normalPrice: origItem.normal_price
+          }).catch((e) => console.error('[notifyRep] bill-rejection notification failed (non-fatal)', e))
+        }
+      }
     } catch (e) { console.error(e); alert('Failed: ' + (e?.message || 'unknown')) }
     finally { setBusy(false) }
   }

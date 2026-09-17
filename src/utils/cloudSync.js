@@ -115,7 +115,7 @@ export async function ensureCloudCustomer(customer, userId, repCreated = false) 
 }
 
 /** Save an order + its items. Returns the new order id (or null on failure). */
-export async function saveCloudOrder({ customer, brand, userId, items, location, orderDate, route, isNewCustomer, introDetails, isAddon }) {
+export async function saveCloudOrder({ customer, brand, userId, items, location, orderDate, route, isNewCustomer, introDetails, isAddon, isWholesaleCustomer }) {
   // Populate the runtime approval cache before writing order items — this is
   // what makes the toggle take effect on the NEXT order after admin changes it.
   await isApprovalEnabled()
@@ -257,7 +257,8 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
           qty: i.qty,
           selectedPrice: ep,
           priceType: i.priceType,
-          isBoxUnit: i.isBoxUnit
+          isBoxUnit: i.isBoxUnit,
+          isWholesaleCustomer: !!isWholesaleCustomer
         })
         return approvalRequired
       })
@@ -328,9 +329,12 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     const effectivePrice = i.finalSellingPrice != null ? i.finalSellingPrice : null
     // Special Price: only true when the Final Selling Price genuinely
     // differs from the product's Default Retail Price — never just because
-    // a price field happens to be populated.
+    // a price field happens to be populated. Three exemptions:
+    //   (a) Box unit at or above wholesale → normal wholesale sale
+    //   (b) Wholesale customer at exactly the wholesale price → not special
     const isSpecial = i.normalPrice != null && effectivePrice != null && effectivePrice !== i.normalPrice
       && !(i.isBoxUnit && effectivePrice >= (i.wholesaleAtOrderTime ?? effectivePrice))
+      && !(isWholesaleCustomer && i.wholesaleAtOrderTime != null && Math.abs(effectivePrice - i.wholesaleAtOrderTime) < 0.001)
     const schemeSnapshot = i.schemeEnabled === false ? null : schemeText(i)
     // The ACTUAL free quantity that applied to this order line, captured NOW
     // — never recomputed later from the product's current slabs, which can
@@ -4698,14 +4702,19 @@ async function myShortageSummaryFallback({ singleDay, dateStr, fromStr, toStr, r
  * and why. All approval logic lives here — never duplicated in UI.
  *
  * @param {object} opts
- *   product          — product object (from AppContext/cloud)
- *   qty              — quantity being sold (in pieces after unit conversion)
- *   selectedPrice    — the price the rep selected
- *   priceType        — 'RETAIL' | 'WHOLESALE' | 'LAST' | 'CUSTOM'
- *   isBoxUnit        — true if sold as Box unit (auto-wholesale eligible)
+ *   product             — product object (from AppContext/cloud)
+ *   qty                 — quantity being sold (in pieces after unit conversion)
+ *   selectedPrice       — the price the rep selected
+ *   priceType           — 'RETAIL' | 'WHOLESALE' | 'LAST' | 'CUSTOM'
+ *   isBoxUnit           — true if sold as Box unit (auto-wholesale eligible)
+ *   isWholesaleCustomer — true when customer.ledgerCategory === 'WHOLESALE-CUSTOMER'.
+ *                         Bypasses the per-item qty threshold check for the wholesale
+ *                         price: a wholesale customer selling at exactly WP is always
+ *                         valid regardless of qty, same as selling a Box unit.
+ *                         Custom/non-WP prices still follow the existing approval rules.
  * @returns {object}  { approvalRequired, reason, currentPrice, lastApprovedPrice, priceVersion }
  */
-export function evaluatePriceApproval({ product, qty, selectedPrice, priceType, isBoxUnit }) {
+export function evaluatePriceApproval({ product, qty, selectedPrice, priceType, isBoxUnit, isWholesaleCustomer }) {
   if (!product || selectedPrice == null) return { approvalRequired: false, reason: null }
 
   const retail    = product.retail    ?? null
@@ -4731,14 +4740,20 @@ export function evaluatePriceApproval({ product, qty, selectedPrice, priceType, 
     return { approvalRequired: false, reason: null, currentPrice: retail, priceVersion: priceVer }
   }
 
-  // 3. WHOLESALE PRICE — valid when qty >= threshold OR sold as Box unit
+  // 3. WHOLESALE PRICE — valid when:
+  //    (a) qty >= threshold, OR
+  //    (b) sold as Box unit (auto-wholesale eligible), OR
+  //    (c) customer is a Wholesale customer (ledger_category = 'WHOLESALE-CUSTOMER') —
+  //        selling at the exact WP to a wholesale customer never needs approval,
+  //        regardless of qty. Custom prices below WP still follow the rules below.
   if (wholesale != null && Math.abs(selectedPrice - wholesale) < 0.001) {
-    const thresholdMet = threshold != null && qty >= threshold
-    const boxUnitOk    = isBoxUnit === true
-    if (thresholdMet || boxUnitOk) {
+    const thresholdMet       = threshold != null && qty >= threshold
+    const boxUnitOk          = isBoxUnit === true
+    const wholesaleCustomer  = isWholesaleCustomer === true
+    if (thresholdMet || boxUnitOk || wholesaleCustomer) {
       return { approvalRequired: false, reason: null, currentPrice: retail, priceVersion: priceVer }
     }
-    // Wholesale selected but threshold not met
+    // Wholesale selected but threshold not met and not a wholesale customer
     return {
       approvalRequired: true,
       reason: 'WHOLESALE_BELOW_THRESHOLD',
@@ -5369,4 +5384,203 @@ export async function loadCustomerLedgerCategory(shopName, route) {
     .maybeSingle()
   if (error) { console.error('load customer ledger category failed', error); return null }
   return data?.ledger_category || null
+}
+
+// ---------------------------------------------------------------------------
+// Rep-facing product-level approval workflow (Admin Approval Pending feature)
+// ---------------------------------------------------------------------------
+
+/**
+ * Load all order_items in pending-approval state for this sales rep.
+ * Returns items grouped by order so the UI can show per-bill breakdowns.
+ * Each item carries: id, order_id, product_name, qty, unit, unit_price,
+ * normal_price, price_type, approval_status, approved_price, approval_reason,
+ * and parent order fields (shop_name, route, order_date, bill_approval_status).
+ */
+export async function loadMyApprovalItems({ salesRepId } = {}) {
+  if (!salesRepId) return []
+  const { data, error } = await supabase
+    .from('orders')
+    .select(`id, shop_name, route, order_date, created_at, bill_approval_status, bill_approval_required,
+             order_items(id, product_name, product_id, qty, unit, unit_price, normal_price, price_type,
+                         approval_status, approved_price, approved_by, approved_at,
+                         approval_reason_type, approval_competitor_name, approval_other_reason,
+                         approval_reason, removed)`)
+    .eq('bill_approval_required', true)
+    .neq('bill_approval_status', 'approved') // exclude fully-approved bills
+    .eq('hidden', false)
+    .eq('sales_rep_id', salesRepId)
+    .order('created_at', { ascending: false })
+  if (error) { console.error('[loadMyApprovalItems]', error); return [] }
+
+  // Flatten into order objects, each with an items array (only non-removed
+  // items that have a meaningful approval_status).
+  return (data || []).map((order) => ({
+    ...order,
+    items: (order.order_items || []).filter((it) => !it.removed)
+  })).filter((o) => o.items.length > 0)
+}
+
+/**
+ * Rep resubmits a rejected item with a corrected price.
+ * The item reverts to approval_status='pending' so Admin sees it again.
+ * Also saves a history record so the audit trail shows resubmissions.
+ * @param {string} itemId          - order_items.id
+ * @param {number} newPrice        - the corrected unit_price the rep proposes
+ * @param {string} repName         - for audit trail
+ * @param {string} repId           - for audit trail
+ */
+export async function resubmitRejectedItem(itemId, newPrice, repName, repId) {
+  // Read current item for history record
+  const { data: it } = await supabase
+    .from('order_items')
+    .select('id, order_id, product_name, qty, unit, unit_price, normal_price, price_type, orders(shop_name, route, order_date)')
+    .eq('id', itemId)
+    .maybeSingle()
+
+  const { error } = await supabase
+    .from('order_items')
+    .update({
+      unit_price: Number(newPrice),
+      approval_status: 'pending',        // back to pending for Admin to review
+      approved_by: null,
+      approved_by_id: null,
+      approved_at: null,
+      approval_reason: null,
+      approval_reason_type: null,
+      approval_competitor_name: null,
+      approval_other_reason: null,
+      approved_price: null
+    })
+    .eq('id', itemId)
+    .eq('approval_status', 'rejected')   // guard: only resubmit rejected items
+  if (error) throw error
+
+  // Also reset the parent bill to pending so Admin sees it in their queue again
+  if (it?.order_id) {
+    await supabase.from('orders')
+      .update({ bill_approval_status: 'pending' })
+      .eq('id', it.order_id)
+  }
+
+  // Audit trail — non-fatal
+  try {
+    if (it) {
+      await supabase.from('price_approval_history').insert({
+        order_item_id: it.id, order_id: it.order_id,
+        product_name: it.product_name, shop_name: it.orders?.shop_name,
+        route: it.orders?.route, sales_rep_name: repName || null,
+        normal_price: it.normal_price, requested_price: Number(newPrice),
+        qty: it.qty, unit: it.unit, price_type: it.price_type,
+        order_date: it.orders?.order_date,
+        decision: 'resubmitted', decided_by: repName || null, decided_by_id: repId || null,
+        decided_at: new Date().toISOString(), rejection_reason: null
+      })
+    }
+  } catch (e) { console.error('price_approval_history insert (resubmit, non-fatal):', e) }
+}
+
+/**
+ * Rep removes a rejected item from the order so the remaining items can
+ * proceed to Billing. Marks the item as removed=true, approval_status='rejected'
+ * (already is, but ensures consistency). If all items in the bill are
+ * now either approved or removed, releases the bill to Billing.
+ * @param {string} itemId   - order_items.id to remove
+ * @param {string} repId    - for re-evaluation check
+ */
+export async function removeRejectedItemFromOrder(itemId, repId) {
+  const { data: it, error: itErr } = await supabase
+    .from('order_items')
+    .select('id, order_id, product_name, qty, unit, unit_price')
+    .eq('id', itemId)
+    .maybeSingle()
+  if (itErr || !it) throw itErr || new Error('Item not found')
+
+  // Mark removed
+  const { error } = await supabase
+    .from('order_items')
+    .update({ removed: true })
+    .eq('id', itemId)
+  if (error) throw error
+
+  // Check if all remaining (non-removed) items for this order are approved.
+  // If so, release the bill to Billing.
+  const { data: remaining } = await supabase
+    .from('order_items')
+    .select('id, approval_status, removed, qty, unit_price, approved_price')
+    .eq('order_id', it.order_id)
+  const active = (remaining || []).filter((r) => !r.removed)
+  const allApproved = active.length > 0 && active.every((r) => r.approval_status === 'approved' || r.approval_status == null)
+  const stillPending = active.some((r) => r.approval_status === 'pending')
+
+  if (allApproved && !stillPending) {
+    // All remaining items approved — release to Billing automatically
+    const now = new Date().toISOString()
+    const totalValue = active.reduce((s, r) => s + ((r.approved_price ?? r.unit_price ?? 0) * r.qty), 0)
+    const totalQty = active.reduce((s, r) => s + r.qty, 0)
+    await supabase.from('orders').update({
+      bill_approval_status: 'approved',
+      bill_approved_at: now,
+      billing_status: 'pending',
+      total_value: Math.round(totalValue),
+      total_quantity: totalQty,
+      total_products: active.length
+    }).eq('id', it.order_id)
+  } else {
+    // Still pending/rejected items — just recalculate totals
+    const totalValue = active.reduce((s, r) => s + ((r.approved_price ?? r.unit_price ?? 0) * r.qty), 0)
+    const totalQty = active.reduce((s, r) => s + r.qty, 0)
+    await supabase.from('orders').update({
+      total_value: Math.round(totalValue),
+      total_quantity: totalQty,
+      total_products: active.length
+    }).eq('id', it.order_id)
+  }
+}
+
+/**
+ * Notify the sales rep when Admin rejects one of their price-approval items.
+ * Called from the Admin side after rejectSpecialPrice(). Fire-and-forget.
+ * @param {object} params
+ * @param {string} params.orderId
+ * @param {string} params.productName
+ * @param {string} params.reason         - rejection reason text
+ * @param {string} params.adminName      - Admin's display name
+ * @param {number} params.requestedPrice - the price the rep asked for
+ * @param {number} params.normalPrice    - the product's normal (RP/WP) price
+ */
+export async function notifyRepOfPriceRejection({ orderId, productName, reason, adminName, requestedPrice, normalPrice }) {
+  if (!orderId) return null
+  const { data: order, error } = await supabase
+    .from('orders')
+    .select('id, shop_name, route, sales_rep_id')
+    .eq('id', orderId)
+    .single()
+  if (error || !order?.sales_rep_id) {
+    console.error('[notifyRepOfPriceRejection] could not resolve order or rep', { orderId, error })
+    return null
+  }
+
+  const body = [
+    `${productName || 'A product'} price was rejected for ${order.shop_name || 'your order'}.`,
+    '',
+    `Product: ${productName || '—'}`,
+    requestedPrice != null ? `Requested Price: ₹${Number(requestedPrice).toLocaleString('en-IN')}` : null,
+    normalPrice != null ? `Normal Price: ₹${Number(normalPrice).toLocaleString('en-IN')}` : null,
+    reason ? `Reason: ${reason}` : null,
+    adminName ? `Rejected by: ${adminName}` : null,
+    '',
+    'Go to My Performance → Admin Approval Pending to change the price & resubmit, or remove this product.',
+  ].filter((l) => l != null).join('\n')
+
+  return sendAnnouncement({
+    title: '⚠️ Price Rejected by Admin',
+    body,
+    highPriority: true,
+    audience: 'billing',   // repIds below override who receives it
+    repIds: [order.sales_rep_id],
+    expiresInDays: 14,
+    notifType: 'price_rejection',
+    refOrderId: order.id
+  })
 }

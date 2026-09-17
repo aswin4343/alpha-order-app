@@ -878,7 +878,12 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
           introDetails: showIntro
             ? { phone: customer.phone, gstn: customer.gstn, creditDays: customer.creditDays, email: customer.email,
                 area: customer.area || null, category: customer.category || null, ledgerCategory: customer.ledgerCategory || null }
-            : null
+            : null,
+          // Wholesale customer flag — when true, selling at exactly the wholesale
+          // price never requires Admin approval (the qty threshold is waived for
+          // wholesale customers). Derived from ledger_category, same source OrderPage
+          // uses for defaultPriceType.
+          isWholesaleCustomer: defaultPriceType === 'WHOLESALE'
           })
         }
 
@@ -1028,7 +1033,8 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
           qty: i.qty,
           selectedPrice: ep,
           priceType: i.priceType,
-          isBoxUnit: i.isBoxUnit
+          isBoxUnit: i.isBoxUnit,
+          isWholesaleCustomer: defaultPriceType === 'WHOLESALE'
         })
         if (approvalRequired) {
           violations.push({

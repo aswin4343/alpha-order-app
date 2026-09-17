@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
-import { loadPendingApprovals, approveSpecialPrice, rejectSpecialPrice, loadPriceApprovalEnabled, setPriceApprovalEnabled } from '../utils/cloudSync.js'
+import { loadPendingApprovals, approveSpecialPrice, rejectSpecialPrice, loadPriceApprovalEnabled, setPriceApprovalEnabled, notifyRepOfPriceRejection } from '../utils/cloudSync.js'
 
 const APPROVE_REASONS = [
   { value: 'competitor',  label: 'Competitor Price',           needsName: true },
@@ -79,6 +79,21 @@ export default function AdminApprovalsPage() {
     setBusy(rejecting.id)
     try{
       await rejectSpecialPrice(rejecting.id,profile?.full_name,profile?.id,rejectReason)
+      // Notify the sales rep in real-time so they see a popup immediately.
+      // Fire-and-forget — the rejection is already committed above.
+      try {
+        const orderId = rejecting.orders?.id || rejecting.order_id
+        if (orderId) {
+          notifyRepOfPriceRejection({
+            orderId,
+            productName: rejecting.product_name,
+            reason: rejectReason,
+            adminName: profile?.full_name,
+            requestedPrice: rejecting.unit_price,
+            normalPrice: rejecting.normal_price
+          }).catch((e) => console.error('[notifyRep] price rejection notification failed (non-fatal)', e))
+        }
+      } catch (e) { console.error('[notifyRep] failed to initiate (non-fatal)', e) }
       setRows(prev=>prev.filter(r=>r.id!==rejecting.id));setRejecting(null)
       flash(`Rejected ${rejecting.product_name}.`)
     }catch(e){console.error(e);alert('Could not reject.')}finally{setBusy(null)}

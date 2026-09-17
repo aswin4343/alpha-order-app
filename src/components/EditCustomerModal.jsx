@@ -8,8 +8,21 @@ const inputCls =
   'w-full rounded-xl border border-slate-200 px-3 py-3 outline-none text-[15px] focus:border-brand-500'
 
 /**
+ * Derive the ledger_category from the human-readable category string.
+ * FMCG - WHOLESALE STORE → 'WHOLESALE-CUSTOMER' (drives wholesale-price defaults
+ * and bypasses the per-item qty threshold for Admin Approval).
+ * Any other category → empty string (Retail default, existing behaviour).
+ * This keeps the two fields in sync without requiring a separate Ledger Category
+ * UI control — the rep only ever picks a Category.
+ */
+function ledgerCategoryForCategory(cat) {
+  return (cat || '').toUpperCase().includes('WHOLESALE') ? 'WHOLESALE-CUSTOMER' : ''
+}
+
+/**
  * Edit an existing customer. Reps can edit all fields.
  * Customer Name changes are persisted to the cloud (shop_name in customers table).
+ * Category changes are persisted to the cloud (category + ledger_category columns).
  * PII (phone/area/email/gstn/creditDays) remains local per existing architecture.
  */
 export default function EditCustomerModal({ customer, onClose, onSaved }) {
@@ -47,13 +60,23 @@ export default function EditCustomerModal({ customer, onClose, onSaved }) {
       if (nameChanged && cloudId && !cloudId.startsWith('c')) {
         await updateCustomerName(cloudId, f.name.trim())
       }
-      // 2. If category changed, persist to cloud
+      // 2. If category changed, persist BOTH category AND ledger_category to cloud.
+      //    ledger_category is what drives wholesale vs retail default pricing in
+      //    OrderPage and approval logic — it must stay in sync with the category.
+      //    FMCG - WHOLESALE STORE → ledger_category = 'WHOLESALE-CUSTOMER'
+      //    Any other category     → ledger_category = '' (Retail, existing rules)
       const catChanged = f.category !== (customer.category || '')
+      const newLedgerCategory = ledgerCategoryForCategory(f.category)
       if (catChanged && cloudId && !cloudId.startsWith('c')) {
-        await updateCustomerCloudFields(cloudId, { category: f.category })
+        await updateCustomerCloudFields(cloudId, {
+          category: f.category,
+          ledgerCategory: newLedgerCategory
+        })
       }
-      // 3. All fields (including PII) update local store
-      const patch = { ...f, name: f.name.trim() }
+      // 3. All fields (including PII + derived ledgerCategory) update local store
+      //    so OrderPage's defaultPriceType computation sees the new value immediately
+      //    without requiring logout/refresh.
+      const patch = { ...f, name: f.name.trim(), ledgerCategory: newLedgerCategory }
       await updateCustomer(customer.id, patch)
       onSaved({ ...customer, ...patch })
     } catch (e) {
