@@ -566,13 +566,13 @@ export async function loadCustomerLastPrices(shopName, customerId = null) {
   if (!shopName && !customerId) return {}
 
   // ── Helper: run one query and return { data, error } ──────────────────────
+  // Single .order() only — Supabase 400s on multiple .order() for the same table
   const runQuery = async (filter) => {
-    let q = supabase
+    const q = supabase
       .from('orders')
       .select('id, shop_name, customer_id, billing_status, order_date, created_at, billing_verified_at, order_items(product_name, unit_price, approved_price, removed)')
       .eq('hidden', false)
       .eq('billing_status', 'verified')
-      .order('billing_verified_at', { ascending: false, nullsFirst: false })
       .order('created_at', { ascending: false })
     return filter(q)
   }
