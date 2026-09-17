@@ -586,19 +586,6 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, 
                 {product.price_increased ? '↑' : '↓'} PRICE {product.price_increased ? 'RAISED' : 'LOWERED'}
               </span>
             )}
-            {pctStr && lastPrice != null && (
-              <span
-                className={`inline-flex items-center gap-0.5 text-[10px] leading-none font-semibold px-1.5 py-1 rounded-md border ${
-                  pctUp   ? 'text-red-600 bg-red-50 border-red-200'
-                  : pctDown ? 'text-emerald-700 bg-emerald-50 border-emerald-200'
-                  : 'text-slate-500 bg-slate-50 border-slate-200'
-                }`}
-                title={`Last order price: ₹${lastPrice}  •  Current: ₹${applicablePrice}`}
-              >
-                {pctUp ? '↑' : pctDown ? '↓' : ''}
-                {pctStr} from last order (₹{lastPrice})
-              </span>
-            )}
           </div>
         )
       })()}
