@@ -1346,7 +1346,6 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
           </div>
         </div>
       )}
-      )}
 
       {/* ── Pre-submit Price Warning Modal (spec §17-25) ─────────────────
           Fires at COPY ORDER if any item has selectedPrice < currentFloor.

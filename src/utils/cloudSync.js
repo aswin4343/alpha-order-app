@@ -567,16 +567,28 @@ export async function loadCustomerLastPrices(shopName, customerId = null) {
     .eq('billing_status', 'verified')
     .order('billing_verified_at', { ascending: false, nullsFirst: false })
 
+  // Try customer_id first (stable UUID); if it yields nothing — which happens
+  // for historical orders saved before customer_id was populated — fall back
+  // to shop_name so pre-existing verified prices are still surfaced.
+  let data, error
   if (customerId) {
-    q = q.eq('customer_id', customerId)
+    ;({ data, error } = await q.eq('customer_id', customerId))
+    if (error) { console.error('load customer last prices (by id) failed', error); return {} }
+    // Fall back to shop_name when the customer_id query returns nothing
+    if ((!data || data.length === 0) && shopName) {
+      let q2 = supabase
+        .from('orders')
+        .select('created_at, billing_verified_at, order_items(product_name, unit_price, approved_price, removed)')
+        .eq('hidden', false)
+        .eq('billing_status', 'verified')
+        .eq('shop_name', shopName)
+        .order('billing_verified_at', { ascending: false, nullsFirst: false })
+      ;({ data, error } = await q2)
+      if (error) { console.error('load customer last prices (by name) failed', error); return {} }
+    }
   } else {
-    q = q.eq('shop_name', shopName)
-  }
-
-  const { data, error } = await q
-  if (error) {
-    console.error('load customer last prices failed', error)
-    return {}
+    ;({ data, error } = await q.eq('shop_name', shopName))
+    if (error) { console.error('load customer last prices failed', error); return {} }
   }
   // Sort by the true sale time (billing_verified_at preferred, fallback to
   // created_at), newest first, so the most recent verified sale of each
