@@ -998,7 +998,9 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   // Before dispatching, check all items for price violations. If any exist,
   // show a modal with two choices: remove violating items or send for approval.
   const [priceWarningModal, setPriceWarningModal] = useState(null)
-  // { violations: [{name, selectedPrice, currentPrice, diff, productId}], viaCopy }
+  // { violations: [{id, name, selectedPrice, currentPrice, diff}], viaCopy }
+  // Per-product recommended price selection in the warning modal: { [productId]: price }
+  const [recommendedSelections, setRecommendedSelections] = useState({})
 
   const handleCopy = () => {
     if (!items.length) { dispatchOrder(true); return }
@@ -1347,90 +1349,176 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
           Fires at COPY ORDER if any item has selectedPrice < currentFloor.
           Shows ALL violations (not just first). Three actions:
           1. Remove violating products & continue
-          2. Send full bill for Admin Approval
-          3. Cancel — go back to edit */}
-      {priceWarningModal && (
-        <div className="fixed inset-0 z-[100] bg-black/50 flex items-end sm:items-center justify-center">
-          <div className="bg-white w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl p-5 shadow-2xl max-h-[90vh] overflow-y-auto">
-            <div className="text-center mb-4">
-              <div className="text-3xl mb-2">⚠️</div>
-              <p className="font-bold text-slate-800 text-base">
-                {priceWarningModal.violations.length === 1
-                  ? '1 Product Requires Approval'
-                  : `${priceWarningModal.violations.length} Products Require Approval`}
-              </p>
-              <p className="text-sm text-slate-500 mt-0.5">
-                {priceWarningModal.violations.length === 1
-                  ? 'This product\'s price is below the current authorized price.'
-                  : 'These products\' prices are below the current authorized price.'}
-              </p>
-            </div>
+          2. Use Recommended Price — pick a price chip per product (NEW)
+          3. Request Admin Approval — keep old prices, send for approval   */}
+      {priceWarningModal && (() => {
+        const roundPrice = (p) => Math.round(p * 100) / 100
+        // Build recommended chips for each violation
+        const violationsWithChips = priceWarningModal.violations.map((v) => {
+          const actualPct = v.selectedPrice > 0
+            ? ((v.currentPrice - v.selectedPrice) / v.selectedPrice) * 100
+            : 0
+          const chips = [
+            { label: '+5%', price: roundPrice(v.selectedPrice * 1.05), isActual: false },
+            { label: `+${actualPct.toFixed(1)}% (current)`, price: roundPrice(v.currentPrice), isActual: true },
+            { label: '+10%', price: roundPrice(v.selectedPrice * 1.10), isActual: false }
+          ].filter((c, i, arr) =>
+            arr.findIndex(x => Math.abs(x.price - c.price) < 0.01) === i
+          )
+          return { ...v, chips, actualPct }
+        })
 
-            <div className="space-y-2.5 mb-5">
-              {priceWarningModal.violations.map((v) => (
-                <div key={v.id} className="rounded-xl bg-amber-50 border border-amber-200 p-3">
-                  <p className="font-semibold text-slate-800 text-sm mb-2 leading-snug">{v.name}</p>
-                  <div className="grid grid-cols-3 gap-1.5 text-center text-[11px]">
-                    <div className="rounded-lg bg-white border border-slate-200 p-1.5">
-                      <div className="font-bold text-purple-700">₹{v.selectedPrice}</div>
-                      <div className="text-slate-400">Your Price</div>
+        // All violations must have a recommended price selected for the
+        // "Use Recommended Price" confirm button to be enabled
+        const allSelected = violationsWithChips.every(v =>
+          recommendedSelections[v.id] != null
+        )
+
+        return (
+          <div className="fixed inset-0 z-[100] bg-black/50 flex items-end sm:items-center justify-center">
+            <div className="bg-white w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl p-5 shadow-2xl max-h-[90vh] overflow-y-auto">
+              <div className="text-center mb-4">
+                <div className="text-3xl mb-2">⚠️</div>
+                <p className="font-bold text-slate-800 text-base">
+                  {violationsWithChips.length === 1
+                    ? '1 Product — Price Increased'
+                    : `${violationsWithChips.length} Products — Price Increased`}
+                </p>
+                <p className="text-sm text-slate-500 mt-0.5">
+                  Choose how to handle each product below.
+                </p>
+              </div>
+
+              {/* Per-product price info + recommended chips */}
+              <div className="space-y-3 mb-5">
+                {violationsWithChips.map((v) => (
+                  <div key={v.id} className="rounded-xl border border-amber-200 bg-amber-50 p-3">
+                    <p className="font-semibold text-slate-800 text-sm mb-2 leading-snug truncate">{v.name}</p>
+                    {/* Price comparison row */}
+                    <div className="grid grid-cols-3 gap-1 text-center text-[10px] mb-2.5">
+                      <div className="rounded-lg bg-white border border-slate-200 p-1.5">
+                        <div className="font-bold text-purple-700">₹{v.selectedPrice}</div>
+                        <div className="text-slate-400">Last Price</div>
+                      </div>
+                      <div className="rounded-lg bg-white border border-slate-200 p-1.5">
+                        <div className="font-bold text-slate-700">₹{v.currentPrice}</div>
+                        <div className="text-slate-400">Current</div>
+                      </div>
+                      <div className="rounded-lg bg-red-50 border border-red-200 p-1.5">
+                        <div className="font-bold text-red-700">+{v.actualPct.toFixed(1)}%</div>
+                        <div className="text-slate-400">Increase</div>
+                      </div>
                     </div>
-                    <div className="rounded-lg bg-white border border-slate-200 p-1.5">
-                      <div className="font-bold text-slate-700">₹{v.currentPrice}</div>
-                      <div className="text-slate-400">Current</div>
-                    </div>
-                    <div className="rounded-lg bg-red-50 border border-red-200 p-1.5">
-                      <div className="font-bold text-red-700">₹{Math.abs(v.diff).toFixed(2)} ↓</div>
-                      <div className="text-slate-400">Below</div>
+                    {/* Recommended price chips */}
+                    <p className="text-[10px] text-green-700 font-semibold mb-1.5">Recommended Price:</p>
+                    <div className="flex gap-1.5 flex-wrap">
+                      {v.chips.map((chip) => {
+                        const isSelected = recommendedSelections[v.id] != null &&
+                          Math.abs(recommendedSelections[v.id] - chip.price) < 0.01
+                        return (
+                          <button
+                            key={chip.label}
+                            type="button"
+                            onClick={() => setRecommendedSelections(prev => ({ ...prev, [v.id]: chip.price }))}
+                            className={`flex-1 min-w-[70px] rounded-xl py-1.5 px-1 text-center border-2 transition-all ${
+                              isSelected
+                                ? 'border-green-500 bg-green-500 text-white'
+                                : chip.isActual
+                                ? 'border-green-300 bg-white text-green-700'
+                                : 'border-slate-200 bg-white text-slate-600'
+                            }`}
+                          >
+                            <div className="text-[11px] font-bold">₹{chip.price}</div>
+                            <div className="text-[9px] opacity-80 mt-0.5">{chip.label}</div>
+                          </button>
+                        )
+                      })}
                     </div>
                   </div>
-                </div>
-              ))}
-            </div>
+                ))}
+              </div>
 
-            <div className="space-y-2.5">
-              <button
-                onClick={() => {
-                  const violatingIds = new Set(priceWarningModal.violations.map(v => v.id))
-                  setQuantities(prev => {
-                    const next = { ...prev }
-                    violatingIds.forEach(id => delete next[id])
-                    return next
-                  })
-                  setPriceOverrides(prev => {
-                    const next = { ...prev }
-                    violatingIds.forEach(id => delete next[id])
-                    return next
-                  })
-                  setPriceWarningModal(null)
-                  const remainingQty = Object.keys(quantities).filter(id => !violatingIds.has(id))
-                  if (remainingQty.length > 0) {
+              <div className="space-y-2.5">
+                {/* Option 1: Remove all violating products */}
+                <button
+                  onClick={() => {
+                    const violatingIds = new Set(priceWarningModal.violations.map(v => v.id))
+                    setQuantities(prev => {
+                      const next = { ...prev }
+                      violatingIds.forEach(id => delete next[id])
+                      return next
+                    })
+                    setPriceOverrides(prev => {
+                      const next = { ...prev }
+                      violatingIds.forEach(id => delete next[id])
+                      return next
+                    })
+                    setRecommendedSelections({})
+                    setPriceWarningModal(null)
+                    const remainingQty = Object.keys(quantities).filter(id => !violatingIds.has(id))
+                    if (remainingQty.length > 0) {
+                      setTimeout(() => dispatchOrder(true), 100)
+                    }
+                  }}
+                  className="w-full rounded-2xl border-2 border-slate-200 py-3 text-sm font-bold text-slate-700 active:bg-slate-50"
+                >
+                  Remove {violationsWithChips.length === 1 ? 'Product' : `${violationsWithChips.length} Products`} &amp; Continue
+                </button>
+
+                {/* Option 2: Use Recommended Price — apply selected chips, no approval */}
+                <button
+                  disabled={!allSelected}
+                  onClick={() => {
+                    if (!allSelected) return
+                    // Apply each selected recommended price as a CUSTOM override
+                    setPriceOverrides(prev => {
+                      const next = { ...prev }
+                      violationsWithChips.forEach(v => {
+                        next[v.id] = { priceType: 'CUSTOM', finalRate: recommendedSelections[v.id] }
+                      })
+                      return next
+                    })
+                    setRecommendedSelections({})
+                    setPriceWarningModal(null)
                     setTimeout(() => dispatchOrder(true), 100)
-                  }
-                }}
-                className="w-full rounded-2xl border-2 border-slate-200 py-3.5 text-sm font-bold text-slate-700 active:bg-slate-50"
-              >
-                Remove {priceWarningModal.violations.length === 1 ? 'Product' : `${priceWarningModal.violations.length} Products`} &amp; Continue
-              </button>
-              <button
-                onClick={() => {
-                  setPriceWarningModal(null)
-                  dispatchOrder(true)
-                }}
-                className="w-full rounded-2xl bg-amber-500 text-white py-3.5 text-sm font-bold active:bg-amber-600"
-              >
-                Send for Admin Approval
-              </button>
-              <button
-                onClick={() => setPriceWarningModal(null)}
-                className="w-full text-sm text-slate-500 py-2 hover:text-slate-700"
-              >
-                Cancel — Go Back to Edit
-              </button>
+                  }}
+                  className={`w-full rounded-2xl py-3 text-sm font-bold transition-all ${
+                    allSelected
+                      ? 'bg-green-600 text-white active:bg-green-700'
+                      : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                  }`}
+                >
+                  {allSelected
+                    ? 'Use Recommended Prices & Continue'
+                    : `Select Price for ${violationsWithChips.filter(v => recommendedSelections[v.id] == null).length} Remaining Product${violationsWithChips.filter(v => recommendedSelections[v.id] == null).length === 1 ? '' : 's'}`}
+                </button>
+
+                {/* Option 3: Request Admin Approval — keep old prices, send to admin */}
+                <button
+                  onClick={() => {
+                    setRecommendedSelections({})
+                    setPriceWarningModal(null)
+                    dispatchOrder(true)
+                  }}
+                  className="w-full rounded-2xl bg-amber-500 text-white py-3 text-sm font-bold active:bg-amber-600"
+                >
+                  Request Admin Approval
+                </button>
+
+                <button
+                  onClick={() => {
+                    setRecommendedSelections({})
+                    setPriceWarningModal(null)
+                  }}
+                  className="w-full text-sm text-slate-500 py-2 hover:text-slate-700"
+                >
+                  Cancel — Go Back to Edit
+                </button>
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        )
+      })()}
     </div>
   )
 }

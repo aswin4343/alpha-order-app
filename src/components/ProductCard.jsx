@@ -152,8 +152,11 @@ function PriceSelector({ product, override, onOverride, lastPrice, defaultPriceT
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   // Warning modal state: shown when rep selects LAST price but the official
-  // price has changed since that last price was created (spec 61).
+  // price has increased since that last price was created (spec §17-24).
+  // null = hidden; object = visible with selectedRecommendedPrice state.
   const [showLastPriceWarning, setShowLastPriceWarning] = useState(false)
+  // Which recommended price chip the rep has picked (null = none selected yet)
+  const [selectedRecommendedPrice, setSelectedRecommendedPrice] = useState(null)
 
   // Selectable price options. MRP is deliberately NOT offered as a
   // selectable chip — it is already shown once as a display-only tag on the
@@ -298,67 +301,138 @@ function PriceSelector({ product, override, onOverride, lastPrice, defaultPriceT
 
     {/* ── Last Price Warning Modal (spec §17-24) ──────────────────────────
         Fires when rep taps LAST chip and the official price has increased.
-        Three choices: Remove product, Send for Admin Approval, or Cancel. */}
-    {showLastPriceWarning && (
-      <div className="fixed inset-0 z-[100] bg-black/50 flex items-end sm:items-center justify-center px-0 sm:px-4">
-        <div className="bg-white w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl p-5 shadow-2xl">
-          <div className="text-center mb-4">
-            <div className="text-3xl mb-2">⚠️</div>
-            <p className="font-bold text-slate-800 text-base">Price Updated</p>
-            <p className="text-sm text-slate-500 mt-0.5">This product's price has increased</p>
-          </div>
-
-          <p className="font-semibold text-slate-700 text-sm text-center mb-3 truncate px-2">{product.name}</p>
-
-          <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-sm mb-4 space-y-1.5">
-            <div className="flex justify-between items-center">
-              <span className="text-slate-500">Your Selected Price</span>
-              <span className="font-bold text-purple-700">₹{lastPrice}</span>
+        Three options:
+          1. Remove Product & Continue
+          2. Use Recommended Price (chips at +5% / +actual% / +10%)  ← NEW
+          3. Request Admin Approval (keep last price, send for approval)   */}
+    {showLastPriceWarning && (() => {
+      const currentFloor = product.retail ?? product.wholesale ?? 0
+      const actualPct = lastPrice > 0 ? ((currentFloor - lastPrice) / lastPrice) * 100 : 0
+      const roundPrice = (p) => Math.round(p * 100) / 100
+      const recommendedChips = [
+        { label: '+5%',                  price: roundPrice(lastPrice * 1.05), isActual: false },
+        { label: `+${actualPct.toFixed(1)}% (current)`, price: roundPrice(currentFloor), isActual: true },
+        { label: '+10%',                 price: roundPrice(lastPrice * 1.10), isActual: false }
+      ]
+      // Deduplicate chips that land on the same price
+      const uniqueChips = recommendedChips.filter((c, i, arr) =>
+        arr.findIndex(x => Math.abs(x.price - c.price) < 0.01) === i
+      )
+      return (
+        <div className="fixed inset-0 z-[100] bg-black/50 flex items-end sm:items-center justify-center px-0 sm:px-4">
+          <div className="bg-white w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl p-5 shadow-2xl max-h-[92vh] overflow-y-auto">
+            <div className="text-center mb-3">
+              <div className="text-3xl mb-1.5">⚠️</div>
+              <p className="font-bold text-slate-800 text-base">Price Has Increased</p>
+              <p className="text-sm text-slate-500 mt-0.5 truncate px-2">{product.name}</p>
             </div>
-            <div className="flex justify-between items-center">
-              <span className="text-slate-500">Current Authorized Price</span>
-              <span className="font-bold text-slate-800">₹{product.retail ?? product.wholesale ?? '—'}</span>
-            </div>
-            <div className="flex justify-between items-center border-t border-amber-200 pt-1.5 mt-1">
-              <span className="text-slate-500">Difference</span>
-              <span className="font-bold text-red-700">
-                ₹{Math.abs((product.retail ?? product.wholesale ?? 0) - lastPrice).toFixed(2)} Below Current Price
-              </span>
-            </div>
-          </div>
 
-          <div className="space-y-2.5">
-            <button
-              onClick={() => {
-                setShowLastPriceWarning(false)
-                onRemoveProduct?.()
-              }}
-              className="w-full rounded-2xl border-2 border-slate-200 py-3 text-sm font-bold text-slate-700 active:bg-slate-50"
-            >
-              Remove Product &amp; Continue
-            </button>
-            <button
-              onClick={() => {
-                setShowLastPriceWarning(false)
-                // Apply LAST price — evaluatePriceApproval at saveCloudOrder
-                // time will detect it's below floor and set bill for Admin approval.
-                const opt = options.find((o) => o.type === 'LAST')
-                onOverride(product.id, { priceType: 'LAST', finalRate: opt?.value ?? lastPrice })
-              }}
-              className="w-full rounded-2xl bg-amber-500 text-white py-3 text-sm font-bold active:bg-amber-600"
-            >
-              Send for Admin Approval
-            </button>
-            <button
-              onClick={() => setShowLastPriceWarning(false)}
-              className="w-full text-sm text-slate-400 py-1.5 hover:text-slate-600"
-            >
-              Cancel — Go Back to Edit
-            </button>
+            {/* Price comparison */}
+            <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-sm mb-4 space-y-1.5">
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500">Previous Last Price</span>
+                <span className="font-bold text-purple-700">₹{lastPrice}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-slate-500">Current Price</span>
+                <span className="font-bold text-slate-800">₹{currentFloor}</span>
+              </div>
+              <div className="flex justify-between items-center border-t border-amber-200 pt-1.5 mt-1">
+                <span className="text-slate-500">Price Increase</span>
+                <span className="font-bold text-red-700">
+                  +{actualPct.toFixed(1)}% (₹{(currentFloor - lastPrice).toFixed(2)})
+                </span>
+              </div>
+            </div>
+
+            <div className="space-y-2.5">
+              {/* Option 1: Remove */}
+              <button
+                onClick={() => {
+                  setShowLastPriceWarning(false)
+                  setSelectedRecommendedPrice(null)
+                  onRemoveProduct?.()
+                }}
+                className="w-full rounded-2xl border-2 border-slate-200 py-3 text-sm font-bold text-slate-700 active:bg-slate-50"
+              >
+                Remove Product &amp; Continue
+              </button>
+
+              {/* Option 2: Use Recommended Price */}
+              <div className="rounded-2xl border-2 border-green-200 bg-green-50 p-3">
+                <p className="text-xs font-bold text-green-800 mb-2 text-center">Use Recommended Price — No Approval Needed</p>
+                <div className="flex gap-2 justify-center flex-wrap mb-2.5">
+                  {uniqueChips.map((chip) => {
+                    const isSelected = selectedRecommendedPrice != null &&
+                      Math.abs(selectedRecommendedPrice - chip.price) < 0.01
+                    return (
+                      <button
+                        key={chip.label}
+                        type="button"
+                        onClick={() => setSelectedRecommendedPrice(chip.price)}
+                        className={`flex-1 min-w-[80px] rounded-xl py-2 px-1.5 text-center border-2 transition-all ${
+                          isSelected
+                            ? 'border-green-500 bg-green-500 text-white'
+                            : chip.isActual
+                            ? 'border-green-400 bg-white text-green-700'
+                            : 'border-slate-200 bg-white text-slate-700'
+                        }`}
+                      >
+                        <div className="text-[11px] font-bold">₹{chip.price}</div>
+                        <div className="text-[9px] opacity-80 mt-0.5">{chip.label}</div>
+                      </button>
+                    )
+                  })}
+                </div>
+                <button
+                  disabled={selectedRecommendedPrice == null}
+                  onClick={() => {
+                    if (selectedRecommendedPrice == null) return
+                    setShowLastPriceWarning(false)
+                    setSelectedRecommendedPrice(null)
+                    onOverride(product.id, { priceType: 'CUSTOM', finalRate: selectedRecommendedPrice })
+                  }}
+                  className={`w-full rounded-xl py-2.5 text-sm font-bold transition-all ${
+                    selectedRecommendedPrice != null
+                      ? 'bg-green-600 text-white active:bg-green-700'
+                      : 'bg-slate-200 text-slate-400 cursor-not-allowed'
+                  }`}
+                >
+                  {selectedRecommendedPrice != null
+                    ? `Confirm ₹${selectedRecommendedPrice}`
+                    : 'Select a Price Above'}
+                </button>
+              </div>
+
+              {/* Option 3: Request Admin Approval (keep last price) */}
+              <button
+                onClick={() => {
+                  setShowLastPriceWarning(false)
+                  setSelectedRecommendedPrice(null)
+                  // Apply LAST price — evaluatePriceApproval at saveCloudOrder
+                  // time will detect it's below floor and mark bill pending_approval.
+                  const opt = options.find((o) => o.type === 'LAST')
+                  onOverride(product.id, { priceType: 'LAST', finalRate: opt?.value ?? lastPrice })
+                }}
+                className="w-full rounded-2xl bg-amber-500 text-white py-3 text-sm font-bold active:bg-amber-600"
+              >
+                Request Admin Approval
+              </button>
+
+              <button
+                onClick={() => {
+                  setShowLastPriceWarning(false)
+                  setSelectedRecommendedPrice(null)
+                }}
+                className="w-full text-sm text-slate-400 py-1.5 hover:text-slate-600"
+              >
+                Cancel — Go Back to Edit
+              </button>
+            </div>
           </div>
         </div>
-      </div>
-    )}
+      )
+    })()}
     </>
   )
 }

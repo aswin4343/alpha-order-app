@@ -417,13 +417,40 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
   // Notify Admin if any items require price approval AND flip all orders for
   // this shop on this date to pending_approval so Billing Team cannot see them
   // until Admin decides — including the parent order already in Billing queue.
-  if (_runtimeApprovalEnabled !== false && PRICE_APPROVAL_ENABLED) {
-    const specialItems = items.filter((i) => {
-      const effectivePrice = i.finalSellingPrice ?? null
-      return i.normalPrice != null && effectivePrice != null && effectivePrice !== i.normalPrice
+  //
+  // IMPORTANT: use the same evaluatePriceApproval-based check as billNeedsApproval
+  // above. Do NOT use a naive "effectivePrice !== normalPrice" check — that
+  // incorrectly flags every wholesale-priced order (wholesale ≠ retail), which
+  // would hide ALL orders from Billing regardless of whether Admin approval is
+  // actually needed.
+  if ((_runtimeApprovalEnabled !== false && PRICE_APPROVAL_ENABLED) && billNeedsApproval) {
+    // Collect the items that genuinely need approval for the Admin notification
+    const approvalNeededItems = items.filter((i) => {
+      const ep = i.finalSellingPrice ?? null
+      if (ep == null || i.normalPrice == null) return false
+      if (!i.priceVersion && !i.wholesaleThreshold) {
+        // Fallback: item-level approval_status was set to 'pending' at insert time
+        return i.isSpecial === true
+      }
+      const { approvalRequired } = evaluatePriceApproval({
+        product: {
+          retail: i.normalPrice,
+          wholesale: i.wholesaleAtOrderTime,
+          wholesale_threshold: i.wholesaleThreshold ?? null,
+          price_version: i.priceVersion ?? 1,
+          last_approved_price: i.lastApprovedPrice ?? null,
+          last_approved_version: i.lastApprovedVersion ?? null,
+          price_increased: i.priceIncreased ?? false
+        },
+        qty: i.qty,
+        selectedPrice: ep,
+        priceType: i.priceType,
+        isBoxUnit: i.isBoxUnit
+      })
+      return approvalRequired
     })
-    if (specialItems.length > 0) {
-      notifyAdminPriceApprovalRequired(specialItems, customer?.name || '', items[0]?.repName || '').catch(() => {})
+    if (approvalNeededItems.length > 0) {
+      notifyAdminPriceApprovalRequired(approvalNeededItems, customer?.name || '', items[0]?.repName || '').catch(() => {})
       // Block ALL orders for this shop on this business date from Billing.
       // This covers the add-on scenario: parent order was already 'pending'
       // in Billing — now it must also be hidden until Admin approves.
