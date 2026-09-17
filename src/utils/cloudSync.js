@@ -559,60 +559,84 @@ export async function loadCustomerLastPrices(shopName, customerId = null) {
   //
   // Route is intentionally NOT filtered — it's irrelevant to "what did we
   // last sell this product for to this customer".
-  if (!shopName && !customerId) return {}
-  let q = supabase
-    .from('orders')
-    .select('created_at, billing_verified_at, order_items(product_name, unit_price, approved_price, removed)')
-    .eq('hidden', false)
-    .eq('billing_status', 'verified')
-    .order('billing_verified_at', { ascending: false, nullsFirst: false })
+  const DEBUG = true // set to false after Last Price is confirmed working
+  const dbg = (...a) => DEBUG && console.log('[LastPrice]', ...a)
+  dbg('loading for', { shopName, customerId })
 
-  // Try customer_id first (stable UUID); if it yields nothing — which happens
-  // for historical orders saved before customer_id was populated — fall back
-  // to shop_name so pre-existing verified prices are still surfaced.
-  let data, error
-  if (customerId) {
-    ;({ data, error } = await q.eq('customer_id', customerId))
-    if (error) { console.error('load customer last prices (by id) failed', error); return {} }
-    // Fall back to shop_name when the customer_id query returns nothing
-    if ((!data || data.length === 0) && shopName) {
-      let q2 = supabase
-        .from('orders')
-        .select('created_at, billing_verified_at, order_items(product_name, unit_price, approved_price, removed)')
-        .eq('hidden', false)
-        .eq('billing_status', 'verified')
-        .eq('shop_name', shopName)
-        .order('billing_verified_at', { ascending: false, nullsFirst: false })
-      ;({ data, error } = await q2)
-      if (error) { console.error('load customer last prices (by name) failed', error); return {} }
-    }
-  } else {
-    ;({ data, error } = await q.eq('shop_name', shopName))
-    if (error) { console.error('load customer last prices failed', error); return {} }
+  if (!shopName && !customerId) return {}
+
+  // ── Helper: run one query and return { data, error } ──────────────────────
+  const runQuery = async (filter) => {
+    let q = supabase
+      .from('orders')
+      .select('id, shop_name, customer_id, billing_status, order_date, created_at, billing_verified_at, order_items(product_name, unit_price, approved_price, removed)')
+      .eq('hidden', false)
+      .eq('billing_status', 'verified')
+      .order('billing_verified_at', { ascending: false, nullsFirst: false })
+      .order('created_at', { ascending: false })
+    return filter(q)
   }
-  // Sort by the true sale time (billing_verified_at preferred, fallback to
-  // created_at), newest first, so the most recent verified sale of each
-  // product wins regardless of insert order.
+
+  // ── Step 1: try customer_id ────────────────────────────────────────────────
+  let data = [], error = null
+  if (customerId) {
+    ;({ data, error } = await runQuery((q) => q.eq('customer_id', customerId)))
+    if (error) { console.error('[LastPrice] by customer_id failed', error); return {} }
+    dbg(`customer_id query → ${(data||[]).length} verified orders`)
+  }
+
+  // ── Step 2: fall back to shop_name if customer_id found nothing ────────────
+  if ((!data || data.length === 0) && shopName) {
+    ;({ data, error } = await runQuery((q) => q.eq('shop_name', shopName)))
+    if (error) { console.error('[LastPrice] by shop_name failed', error); return {} }
+    dbg(`shop_name fallback → ${(data||[]).length} verified orders`)
+  }
+
+  // ── Step 3: if still empty, do a diagnostic query (no status filter) ───────
+  if (!data || data.length === 0) {
+    dbg('⚠ NO VERIFIED ORDERS FOUND — running diagnostic (all statuses)...')
+    const filter = customerId
+      ? (q) => q.eq('customer_id', customerId)
+      : (q) => q.eq('shop_name', shopName)
+    const { data: allOrders } = await filter(
+      supabase
+        .from('orders')
+        .select('id, shop_name, customer_id, billing_status, order_date, created_at')
+        .eq('hidden', false)
+        .order('created_at', { ascending: false })
+        .limit(10)
+    )
+    dbg('All orders (any status, last 10):', (allOrders || []).map((o) =>
+      `id=${o.id.slice(-6)} status=${o.billing_status} date=${o.order_date}`
+    ))
+    dbg('→ Root cause: no orders have billing_status="verified" for this customer yet.')
+    dbg('  Orders must be verified by the Billing team before LAST price appears.')
+    return {}
+  }
+
+  // ── Step 4: sort by verified time and extract last price per product ────────
   const orders = (data || []).slice().sort((a, b) => {
-    const ta = new Date(a.billing_verified_at || a.created_at).getTime()
-    const tb = new Date(b.billing_verified_at || b.created_at).getTime()
+    const ta = new Date(a.billing_verified_at || a.order_date || a.created_at).getTime()
+    const tb = new Date(b.billing_verified_at || b.order_date || b.created_at).getTime()
     return tb - ta
   })
+  dbg(`Processing ${orders.length} verified orders...`)
   const out = {}
   for (const o of orders) {
     for (const it of o.order_items || []) {
       const key = (it.product_name || '').trim().toUpperCase()
       if (!key) continue
       if (out[key] != null) continue      // already have a newer price for this product
-      if (it.removed) continue            // removed/stock-out lines were never sold
-      // Use approved_price when Admin set one (custom-price approval flow);
-      // otherwise use unit_price (the rep's entered selling price).
-      // Never fall back to retail/wholesale — if neither is present, skip.
+      if (it.removed) continue            // removed/stock-out lines never count
+      // approved_price = Admin overrode the price (custom approval flow)
+      // unit_price     = what the rep entered / billing accepted as-is
       const price = it.approved_price ?? it.unit_price
       if (price == null) continue
-      out[key] = price                    // the actual billing-approved selling price
+      out[key] = price
+      dbg(`  ${key} → ₹${price} (order ${o.id.slice(-6)}, date ${o.order_date}, verified_at ${o.billing_verified_at || 'null'})`)
     }
   }
+  dbg(`Result: ${Object.keys(out).length} products with last price`)
   return out
 }
 
