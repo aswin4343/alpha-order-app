@@ -561,12 +561,18 @@ export async function loadCustomerLastPrices(shopName, customerId = null) {
   // last sell this product for to this customer".
   const DEBUG = true // set to false after Last Price is confirmed working
   const dbg = (...a) => DEBUG && console.log('[LastPrice]', ...a)
-  dbg('loading for', { shopName, customerId })
 
-  if (!shopName && !customerId) return {}
+  // Only use customerId if it's a real Supabase UUID (8-4-4-4-12 hex).
+  // Local IndexedDB IDs start with "cLoud_" and are NOT valid UUIDs — passing
+  // them to Postgres causes a 400 "invalid input syntax for type uuid" error.
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  const realCustomerId = (customerId && UUID_RE.test(String(customerId))) ? customerId : null
+
+  dbg('loading for', { shopName, customerId, realCustomerId })
+
+  if (!shopName && !realCustomerId) return {}
 
   // ── Helper: run one query and return { data, error } ──────────────────────
-  // Single .order() only — Supabase 400s on multiple .order() for the same table
   const runQuery = async (filter) => {
     const q = supabase
       .from('orders')
@@ -577,10 +583,10 @@ export async function loadCustomerLastPrices(shopName, customerId = null) {
     return filter(q)
   }
 
-  // ── Step 1: try customer_id ────────────────────────────────────────────────
+  // ── Step 1: try real Supabase customer_id ─────────────────────────────────
   let data = [], error = null
-  if (customerId) {
-    ;({ data, error } = await runQuery((q) => q.eq('customer_id', customerId)))
+  if (realCustomerId) {
+    ;({ data, error } = await runQuery((q) => q.eq('customer_id', realCustomerId)))
     if (error) { console.error('[LastPrice] by customer_id failed', error); return {} }
     dbg(`customer_id query → ${(data||[]).length} verified orders`)
   }
