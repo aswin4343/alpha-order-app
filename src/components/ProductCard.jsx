@@ -299,25 +299,15 @@ function PriceSelector({ product, override, onOverride, lastPrice, defaultPriceT
       </button>
     </div>
 
-    {/* ── Last Price Warning Modal (spec §17-24) ──────────────────────────
+    {/* ── Last Price Warning Modal ─────────────────────────────────────────
         Fires when rep taps LAST chip and the official price has increased.
-        Three options:
+        Two actions:
           1. Remove Product & Continue
-          2. Use Recommended Price (chips at +5% / +actual% / +10%)  ← NEW
-          3. Request Admin Approval (keep last price, send for approval)   */}
+          2. Request Admin Approval (keep rep's selected price, send for approval)
+          3. Cancel — Go Back to Edit (rep adjusts price themselves)          */}
     {showLastPriceWarning && (() => {
       const currentFloor = product.retail ?? product.wholesale ?? 0
       const actualPct = lastPrice > 0 ? ((currentFloor - lastPrice) / lastPrice) * 100 : 0
-      const roundPrice = (p) => Math.round(p * 100) / 100
-      const recommendedChips = [
-        { label: '+5%',                  price: roundPrice(lastPrice * 1.05), isActual: false },
-        { label: `+${actualPct.toFixed(1)}% (current)`, price: roundPrice(currentFloor), isActual: true },
-        { label: '+10%',                 price: roundPrice(lastPrice * 1.10), isActual: false }
-      ]
-      // Deduplicate chips that land on the same price
-      const uniqueChips = recommendedChips.filter((c, i, arr) =>
-        arr.findIndex(x => Math.abs(x.price - c.price) < 0.01) === i
-      )
       return (
         <div className="fixed inset-0 z-[100] bg-black/50 flex items-end sm:items-center justify-center px-0 sm:px-4">
           <div className="bg-white w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl p-5 shadow-2xl max-h-[92vh] overflow-y-auto">
@@ -358,53 +348,7 @@ function PriceSelector({ product, override, onOverride, lastPrice, defaultPriceT
                 Remove Product &amp; Continue
               </button>
 
-              {/* Option 2: Use Recommended Price */}
-              <div className="rounded-2xl border-2 border-green-200 bg-green-50 p-3">
-                <p className="text-xs font-bold text-green-800 mb-2 text-center">Use Recommended Price — No Approval Needed</p>
-                <div className="flex gap-2 justify-center flex-wrap mb-2.5">
-                  {uniqueChips.map((chip) => {
-                    const isSelected = selectedRecommendedPrice != null &&
-                      Math.abs(selectedRecommendedPrice - chip.price) < 0.01
-                    return (
-                      <button
-                        key={chip.label}
-                        type="button"
-                        onClick={() => setSelectedRecommendedPrice(chip.price)}
-                        className={`flex-1 min-w-[80px] rounded-xl py-2 px-1.5 text-center border-2 transition-all ${
-                          isSelected
-                            ? 'border-green-500 bg-green-500 text-white'
-                            : chip.isActual
-                            ? 'border-green-400 bg-white text-green-700'
-                            : 'border-slate-200 bg-white text-slate-700'
-                        }`}
-                      >
-                        <div className="text-[11px] font-bold">₹{chip.price}</div>
-                        <div className="text-[9px] opacity-80 mt-0.5">{chip.label}</div>
-                      </button>
-                    )
-                  })}
-                </div>
-                <button
-                  disabled={selectedRecommendedPrice == null}
-                  onClick={() => {
-                    if (selectedRecommendedPrice == null) return
-                    setShowLastPriceWarning(false)
-                    setSelectedRecommendedPrice(null)
-                    onOverride(product.id, { priceType: 'CUSTOM', finalRate: selectedRecommendedPrice })
-                  }}
-                  className={`w-full rounded-xl py-2.5 text-sm font-bold transition-all ${
-                    selectedRecommendedPrice != null
-                      ? 'bg-green-600 text-white active:bg-green-700'
-                      : 'bg-slate-200 text-slate-400 cursor-not-allowed'
-                  }`}
-                >
-                  {selectedRecommendedPrice != null
-                    ? `Confirm ₹${selectedRecommendedPrice}`
-                    : 'Select a Price Above'}
-                </button>
-              </div>
-
-              {/* Option 3: Request Admin Approval (keep last price) */}
+              {/* Option 2: Request Admin Approval — keep rep's selected price as-is */}
               <button
                 onClick={() => {
                   setShowLastPriceWarning(false)

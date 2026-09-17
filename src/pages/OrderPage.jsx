@@ -1007,8 +1007,6 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   // show a modal with two choices: remove violating items or send for approval.
   const [priceWarningModal, setPriceWarningModal] = useState(null)
   // { violations: [{id, name, selectedPrice, currentPrice, diff}], viaCopy }
-  // Per-product recommended price selection in the warning modal: { [productId]: price }
-  const [recommendedSelections, setRecommendedSelections] = useState({})
 
   const handleCopy = () => {
     if (!items.length) { dispatchOrder(true); return }
@@ -1353,34 +1351,19 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
         </div>
       )}
 
-      {/* ── Pre-submit Price Warning Modal (spec §17-25) ─────────────────
+      {/* ── Pre-submit Price Warning Modal ────────────────────────────────
           Fires at COPY ORDER if any item has selectedPrice < currentFloor.
           Shows ALL violations (not just first). Three actions:
           1. Remove violating products & continue
-          2. Use Recommended Price — pick a price chip per product (NEW)
-          3. Request Admin Approval — keep old prices, send for approval   */}
+          2. Request Admin Approval — keep rep's actual prices, send for approval
+          3. Cancel — Go Back to Edit (rep adjusts price themselves)          */}
       {priceWarningModal && (() => {
-        const roundPrice = (p) => Math.round(p * 100) / 100
-        // Build recommended chips for each violation
-        const violationsWithChips = priceWarningModal.violations.map((v) => {
+        const violationsWithPct = priceWarningModal.violations.map((v) => {
           const actualPct = v.selectedPrice > 0
             ? ((v.currentPrice - v.selectedPrice) / v.selectedPrice) * 100
             : 0
-          const chips = [
-            { label: '+5%', price: roundPrice(v.selectedPrice * 1.05), isActual: false },
-            { label: `+${actualPct.toFixed(1)}% (current)`, price: roundPrice(v.currentPrice), isActual: true },
-            { label: '+10%', price: roundPrice(v.selectedPrice * 1.10), isActual: false }
-          ].filter((c, i, arr) =>
-            arr.findIndex(x => Math.abs(x.price - c.price) < 0.01) === i
-          )
-          return { ...v, chips, actualPct }
+          return { ...v, actualPct }
         })
-
-        // All violations must have a recommended price selected for the
-        // "Use Recommended Price" confirm button to be enabled
-        const allSelected = violationsWithChips.every(v =>
-          recommendedSelections[v.id] != null
-        )
 
         return (
           <div className="fixed inset-0 z-[100] bg-black/50 flex items-end sm:items-center justify-center">
@@ -1388,22 +1371,22 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
               <div className="text-center mb-4">
                 <div className="text-3xl mb-2">⚠️</div>
                 <p className="font-bold text-slate-800 text-base">
-                  {violationsWithChips.length === 1
+                  {violationsWithPct.length === 1
                     ? '1 Product — Price Increased'
-                    : `${violationsWithChips.length} Products — Price Increased`}
+                    : `${violationsWithPct.length} Products — Price Increased`}
                 </p>
                 <p className="text-sm text-slate-500 mt-0.5">
                   Choose how to handle each product below.
                 </p>
               </div>
 
-              {/* Per-product price info + recommended chips */}
+              {/* Per-product price info */}
               <div className="space-y-3 mb-5">
-                {violationsWithChips.map((v) => (
+                {violationsWithPct.map((v) => (
                   <div key={v.id} className="rounded-xl border border-amber-200 bg-amber-50 p-3">
                     <p className="font-semibold text-slate-800 text-sm mb-2 leading-snug truncate">{v.name}</p>
                     {/* Price comparison row */}
-                    <div className="grid grid-cols-3 gap-1 text-center text-[10px] mb-2.5">
+                    <div className="grid grid-cols-3 gap-1 text-center text-[10px]">
                       <div className="rounded-lg bg-white border border-slate-200 p-1.5">
                         <div className="font-bold text-purple-700">₹{v.selectedPrice}</div>
                         <div className="text-slate-400">Last Price</div>
@@ -1416,31 +1399,6 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
                         <div className="font-bold text-red-700">+{v.actualPct.toFixed(1)}%</div>
                         <div className="text-slate-400">Increase</div>
                       </div>
-                    </div>
-                    {/* Recommended price chips */}
-                    <p className="text-[10px] text-green-700 font-semibold mb-1.5">Recommended Price:</p>
-                    <div className="flex gap-1.5 flex-wrap">
-                      {v.chips.map((chip) => {
-                        const isSelected = recommendedSelections[v.id] != null &&
-                          Math.abs(recommendedSelections[v.id] - chip.price) < 0.01
-                        return (
-                          <button
-                            key={chip.label}
-                            type="button"
-                            onClick={() => setRecommendedSelections(prev => ({ ...prev, [v.id]: chip.price }))}
-                            className={`flex-1 min-w-[70px] rounded-xl py-1.5 px-1 text-center border-2 transition-all ${
-                              isSelected
-                                ? 'border-green-500 bg-green-500 text-white'
-                                : chip.isActual
-                                ? 'border-green-300 bg-white text-green-700'
-                                : 'border-slate-200 bg-white text-slate-600'
-                            }`}
-                          >
-                            <div className="text-[11px] font-bold">₹{chip.price}</div>
-                            <div className="text-[9px] opacity-80 mt-0.5">{chip.label}</div>
-                          </button>
-                        )
-                      })}
                     </div>
                   </div>
                 ))}
@@ -1461,7 +1419,6 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
                       violatingIds.forEach(id => delete next[id])
                       return next
                     })
-                    setRecommendedSelections({})
                     setPriceWarningModal(null)
                     const remainingQty = Object.keys(quantities).filter(id => !violatingIds.has(id))
                     if (remainingQty.length > 0) {
@@ -1470,41 +1427,12 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
                   }}
                   className="w-full rounded-2xl border-2 border-slate-200 py-3 text-sm font-bold text-slate-700 active:bg-slate-50"
                 >
-                  Remove {violationsWithChips.length === 1 ? 'Product' : `${violationsWithChips.length} Products`} &amp; Continue
+                  Remove {violationsWithPct.length === 1 ? 'Product' : `${violationsWithPct.length} Products`} &amp; Continue
                 </button>
 
-                {/* Option 2: Use Recommended Price — apply selected chips, no approval */}
-                <button
-                  disabled={!allSelected}
-                  onClick={() => {
-                    if (!allSelected) return
-                    // Apply each selected recommended price as a CUSTOM override
-                    setPriceOverrides(prev => {
-                      const next = { ...prev }
-                      violationsWithChips.forEach(v => {
-                        next[v.id] = { priceType: 'CUSTOM', finalRate: recommendedSelections[v.id] }
-                      })
-                      return next
-                    })
-                    setRecommendedSelections({})
-                    setPriceWarningModal(null)
-                    setTimeout(() => dispatchOrder(true), 100)
-                  }}
-                  className={`w-full rounded-2xl py-3 text-sm font-bold transition-all ${
-                    allSelected
-                      ? 'bg-green-600 text-white active:bg-green-700'
-                      : 'bg-slate-200 text-slate-400 cursor-not-allowed'
-                  }`}
-                >
-                  {allSelected
-                    ? 'Use Recommended Prices & Continue'
-                    : `Select Price for ${violationsWithChips.filter(v => recommendedSelections[v.id] == null).length} Remaining Product${violationsWithChips.filter(v => recommendedSelections[v.id] == null).length === 1 ? '' : 's'}`}
-                </button>
-
-                {/* Option 3: Request Admin Approval — keep old prices, send to admin */}
+                {/* Option 2: Request Admin Approval — keep rep's actual selected prices */}
                 <button
                   onClick={() => {
-                    setRecommendedSelections({})
                     setPriceWarningModal(null)
                     dispatchOrder(true)
                   }}
@@ -1515,7 +1443,6 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
 
                 <button
                   onClick={() => {
-                    setRecommendedSelections({})
                     setPriceWarningModal(null)
                   }}
                   className="w-full text-sm text-slate-500 py-2 hover:text-slate-700"
