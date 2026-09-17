@@ -780,11 +780,14 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   useEffect(() => {
     let cancelled = false
     if (!customer?.name) { setLastPrices({}); return }
-    loadCustomerLastPrices(customer.name)
+    // Pass customer.id (stable UUID) when available so the query matches by
+    // customer_id rather than shop_name — immune to name changes and correctly
+    // scoped per customer. Falls back to shop_name for older rows.
+    loadCustomerLastPrices(customer.name, customer?.id ?? null)
       .then((map) => { if (!cancelled) setLastPrices(map || {}) })
       .catch((e) => { console.error('last prices load failed', e); if (!cancelled) setLastPrices({}) })
     return () => { cancelled = true }
-  }, [customer?.name, customer?.route])
+  }, [customer?.name, customer?.id, customer?.route])
 
   const handleCopyVisit = async () => {
     if (!customer || !visitReady) return

@@ -50,7 +50,9 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
 
   useEffect(() => {
     let cancelled = false
-    loadCustomerLastPrices(order.shop_name, order.route).then((p) => { if (!cancelled) setLastPrices(p) }).catch(() => {})
+    // Pass order.customer_id when available (correct per-customer scoping);
+    // falls back to shop_name for older rows without a customer_id.
+    loadCustomerLastPrices(order.shop_name, order.customer_id ?? null).then((p) => { if (!cancelled) setLastPrices(p) }).catch(() => {})
     loadCustomerLedgerCategory(order.shop_name, order.route)
       .then((cat) => {
         if (cancelled) return

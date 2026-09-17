@@ -541,27 +541,39 @@ export async function loadPreviousOrders(shopName, route) {
  * newest-first and de-duplicated per product (first/newest price per product
  * wins). No arbitrary row cap, so a product last sold long ago is still found.
  */
-export async function loadCustomerLastPrices(shopName) {
-  // Last Price = the actual unit_price from the most recent VERIFIED order
-  // for this customer × product combination, regardless of route.
+export async function loadCustomerLastPrices(shopName, customerId = null) {
+  // Last Price = the most recent BILLING-VERIFIED selling price for this
+  // customer × product combination.
   //
-  // The previous version filtered by route, which caused two bugs:
-  //   1. If the customer was ordered on a different route last time (e.g.
-  //      STORE-COUNTER vs their default route), the last price was missed.
-  //   2. If the rep overrode the route for this order, customer.route and
-  //      the stored order.route differed, so the query returned nothing.
+  // SOURCE OF TRUTH: only orders with billing_status='verified' qualify.
+  // Pending, rejected, or deleted orders never update the Last Price.
   //
-  // Route is irrelevant to "what did we last sell this product for to this
-  // customer". Removing the route filter fixes both cases without affecting
-  // how orders are queried, billed, or verified.
-  if (!shopName) return {}
-  const { data, error } = await supabase
+  // PRICE VALUE: approved_price (set by Admin when a custom price was
+  // approved) takes priority over unit_price (the rep's entered price).
+  // This ensures the GST-inclusive customer-facing price is always used,
+  // not any internally-derived tax-exclusive amount.
+  //
+  // CUSTOMER MATCHING: prefer customer_id when available (stable UUID, immune
+  // to shop name typos/changes). Falls back to shop_name for older rows that
+  // pre-date the customer_id column.
+  //
+  // Route is intentionally NOT filtered — it's irrelevant to "what did we
+  // last sell this product for to this customer".
+  if (!shopName && !customerId) return {}
+  let q = supabase
     .from('orders')
-    .select('created_at, billing_verified_at, order_items(product_name, unit_price, removed)')
-    .eq('shop_name', shopName)
+    .select('created_at, billing_verified_at, order_items(product_name, unit_price, approved_price, removed)')
     .eq('hidden', false)
     .eq('billing_status', 'verified')
     .order('billing_verified_at', { ascending: false, nullsFirst: false })
+
+  if (customerId) {
+    q = q.eq('customer_id', customerId)
+  } else {
+    q = q.eq('shop_name', shopName)
+  }
+
+  const { data, error } = await q
   if (error) {
     console.error('load customer last prices failed', error)
     return {}
@@ -580,9 +592,13 @@ export async function loadCustomerLastPrices(shopName) {
       const key = (it.product_name || '').trim().toUpperCase()
       if (!key) continue
       if (out[key] != null) continue      // already have a newer price for this product
-      if (it.removed) continue            // removed/stock-out line was never sold
-      if (it.unit_price == null) continue
-      out[key] = it.unit_price            // the actual rate charged: RETAIL/WHOLESALE/CUSTOM/LAST
+      if (it.removed) continue            // removed/stock-out lines were never sold
+      // Use approved_price when Admin set one (custom-price approval flow);
+      // otherwise use unit_price (the rep's entered selling price).
+      // Never fall back to retail/wholesale — if neither is present, skip.
+      const price = it.approved_price ?? it.unit_price
+      if (price == null) continue
+      out[key] = price                    // the actual billing-approved selling price
     }
   }
   return out
@@ -2340,7 +2356,7 @@ export async function loadBillingOrders(repId, deliveryType, status = 'pending',
   // reverse). Filtering happens after grouping, based on the tab selected.
   const data = await fetchAllPaged(
     'orders',
-    'id, shop_name, route, total_quantity, total_value, created_at, order_date, sales_rep_id, billing_status, billing_verified_at, is_new_customer, intro_phone, intro_gstn, intro_credit_days, intro_email, brand',
+    'id, shop_name, route, customer_id, total_quantity, total_value, created_at, order_date, sales_rep_id, billing_status, billing_verified_at, is_new_customer, intro_phone, intro_gstn, intro_credit_days, intro_email, brand',
     (q) => {
       q = q.eq('sales_rep_id', repId).eq('hidden', false)
         // Bills requiring Admin approval use billing_status='pending_approval'
