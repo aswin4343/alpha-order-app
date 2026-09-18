@@ -204,7 +204,7 @@ CREATE TRIGGER po_schedules_updated_at
 CREATE OR REPLACE FUNCTION generate_po_schedules(
   lookahead_days integer DEFAULT 60
 )
-RETURNS TABLE (vendor_name text, scheduled_date date, action text)
+RETURNS TABLE (vendor_name text, sched_date date, action text)
 LANGUAGE plpgsql SECURITY DEFINER AS $$
 DECLARE
   v       vendors%ROWTYPE;
