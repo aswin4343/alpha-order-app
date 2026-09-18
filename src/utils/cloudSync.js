@@ -297,43 +297,32 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
   }, 0)
 
   // Determine if any item requires bill-level approval.
-  // Only active when SQL migration 63_price_versioning.sql has been run
-  // (checked via the items having priceVersion data from the products).
-  // Falls back to normal 'pending' billing_status if not yet migrated.
+  //
+  // CRITICAL FIX (v189): billNeedsApproval MUST use the IDENTICAL isSpecial
+  // formula as the order_items insert below (~line 424). Previously it used
+  // evaluatePriceApproval() for SQL-63 products, which has STRICTER criteria —
+  // it allows wholesale-price sales below retail without triggering approval.
+  // That caused a fatal divergence:
+  //   order_items.approval_status  = 'pending'   (isSpecial fired — ep !== normalPrice)
+  //   orders.billing_status        = 'pending'   (billNeedsApproval=false — evaluatePriceApproval said OK)
+  //   orders.bill_approval_required = false
+  //   → Admin notification NEVER sent; order flowed straight to Billing
+  //   → pending approval items sat in DB invisible to Admin forever
+  //
+  // Fix: use isSpecial logic here as the single source of truth. If any item
+  // WILL get approval_status='pending', the bill MUST be flagged too.
   let billNeedsApproval = false
   try {
-    const approvalOn = await isApprovalEnabled()
-    if (approvalOn) {
+    const approvalEnabled = await isApprovalEnabled()
+    if (approvalEnabled) {
       billNeedsApproval = items.some((i) => {
         const ep = i.finalSellingPrice != null ? i.finalSellingPrice : null
         if (ep == null || i.normalPrice == null) return false
-        // Fallback for products without SQL 63 governance fields: use the same
-        // isSpecial logic as the order_items insert (effectivePrice !== normalPrice,
-        // with box-unit and wholesale-customer exemptions).
-        if (!i.priceVersion && !i.wholesaleThreshold) {
-          const epN = ep, npN = i.normalPrice
-          if (epN === npN) return false
-          if (i.isBoxUnit && epN >= (i.wholesaleAtOrderTime ?? epN)) return false
-          if (isWholesaleCustomer && i.wholesaleAtOrderTime != null && Math.abs(epN - i.wholesaleAtOrderTime) < 0.001) return false
-          return epN !== npN
-        }
-        const { approvalRequired } = evaluatePriceApproval({
-          product: {
-            retail: i.normalPrice,
-            wholesale: i.wholesaleAtOrderTime,
-            wholesale_threshold: i.wholesaleThreshold ?? null,
-            price_version: i.priceVersion ?? 1,
-            last_approved_price: i.lastApprovedPrice ?? null,
-            last_approved_version: i.lastApprovedVersion ?? null,
-            price_increased: i.priceIncreased ?? false
-          },
-          qty: i.qty,
-          selectedPrice: ep,
-          priceType: i.priceType,
-          isBoxUnit: i.isBoxUnit,
-          isWholesaleCustomer: !!isWholesaleCustomer
-        })
-        return approvalRequired
+        // Exact isSpecial formula — same as order_items insert (~line 424):
+        if (ep === i.normalPrice) return false
+        if (i.isBoxUnit && ep >= (i.wholesaleAtOrderTime ?? ep)) return false
+        if (isWholesaleCustomer && i.wholesaleAtOrderTime != null && Math.abs(ep - i.wholesaleAtOrderTime) < 0.001) return false
+        return true  // ep !== normalPrice with no valid exemption → needs approval
       })
     }
   } catch (e) {
@@ -535,38 +524,17 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
   // actually needed.
   if ((_runtimeApprovalEnabled !== false && PRICE_APPROVAL_ENABLED) && billNeedsApproval) {
     // Collect the items that genuinely need approval for the Admin notification
+    // CRITICAL: use the exact isSpecial formula (same as order_items insert and
+    // billNeedsApproval above) so this filter is ALWAYS in sync with which items
+    // actually received approval_status='pending'. Previously this used
+    // evaluatePriceApproval() for SQL-63 products, which could diverge.
     const approvalNeededItems = items.filter((i) => {
       const ep = i.finalSellingPrice ?? null
       if (ep == null || i.normalPrice == null) return false
-      if (!i.priceVersion && !i.wholesaleThreshold) {
-        // Fallback for products without SQL 63 governance fields: replicate the
-        // same isSpecial logic used at order_items insert time (line ~427).
-        // NOTE: i.isSpecial does NOT exist on item objects — this was the original
-        // bug that made approvalNeededItems always return false for these products,
-        // so the order status was never flipped to pending_approval and Admin was
-        // never notified.
-        if (ep === i.normalPrice) return false
-        if (i.isBoxUnit && ep >= (i.wholesaleAtOrderTime ?? ep)) return false
-        if (isWholesaleCustomer && i.wholesaleAtOrderTime != null && Math.abs(ep - i.wholesaleAtOrderTime) < 0.001) return false
-        return true
-      }
-      const { approvalRequired } = evaluatePriceApproval({
-        product: {
-          retail: i.normalPrice,
-          wholesale: i.wholesaleAtOrderTime,
-          wholesale_threshold: i.wholesaleThreshold ?? null,
-          price_version: i.priceVersion ?? 1,
-          last_approved_price: i.lastApprovedPrice ?? null,
-          last_approved_version: i.lastApprovedVersion ?? null,
-          price_increased: i.priceIncreased ?? false
-        },
-        qty: i.qty,
-        selectedPrice: ep,
-        priceType: i.priceType,
-        isBoxUnit: i.isBoxUnit,
-        isWholesaleCustomer: !!isWholesaleCustomer  // was missing — wholesale customer WP exemption
-      })
-      return approvalRequired
+      if (ep === i.normalPrice) return false
+      if (i.isBoxUnit && ep >= (i.wholesaleAtOrderTime ?? ep)) return false
+      if (isWholesaleCustomer && i.wholesaleAtOrderTime != null && Math.abs(ep - i.wholesaleAtOrderTime) < 0.001) return false
+      return true  // isSpecial — same as order_items insert
     })
     if (approvalNeededItems.length > 0) {
       notifyAdminPriceApprovalRequired(approvalNeededItems, customer?.name || '', items[0]?.repName || '').catch(() => {})
