@@ -10,123 +10,93 @@ const APPROVE_REASONS = [
 ]
 
 const rupee = (n) => n != null ? `₹${Number(n).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : '—'
+function fmtDate(iso) {
+  if (!iso) return '—'
+  return new Date(iso + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+}
 
+/**
+ * Admin Bill Approvals — ORDER-LEVEL workflow (v190).
+ *
+ * Admin sees the FULL ORDER (all products, all prices).
+ * Admin either APPROVES the entire order or REJECTS the entire order.
+ *
+ * APPROVE → all pending items approved at requested prices → released to Billing.
+ * REJECT  → all pending items rejected (NOT removed) → rep notified → rep can resubmit.
+ *
+ * This replaces the per-item decision UI. The approval unit is the full order.
+ */
 export default function AdminBillApprovalsPage() {
   const { profile } = useAuth()
   const [bills, setBills] = useState(null)
-  // Per-item decision state: { [itemId]: { action: 'approve'|'reject', approvedPrice, rejectReason } }
-  const [itemDecisions, setItemDecisions] = useState({})
-  const [reviewing, setReviewing] = useState(null)
+  const [reviewing, setReviewing] = useState(null)  // bill being APPROVED
   const [reasonType, setReasonType] = useState('')
   const [competitorName, setCompetitorName] = useState('')
   const [otherReason, setOtherReason] = useState('')
+  const [rejecting, setRejecting] = useState(null)  // bill being REJECTED
   const [rejectReason, setRejectReason] = useState('')
-  const [rejecting, setRejecting] = useState(null)
   const [busy, setBusy] = useState(false)
   const [toast, setToast] = useState('')
 
-  const flash = (m) => { setToast(m); setTimeout(() => setToast(''), 3500) }
+  const flash = (m) => { setToast(m); setTimeout(() => setToast(''), 4000) }
   const refresh = () => { setBills(null); loadPendingApprovalBills().then(setBills).catch(() => setBills([])) }
   useEffect(() => { refresh() }, [])
 
-  const openReview = (bill) => {
+  // ── Approve entire order ──────────────────────────────────────────────────
+  const openApprove = (bill) => {
     setReviewing(bill)
-    setReasonType(''); setCompetitorName(''); setOtherReason('')
-    // Pre-fill: all pending items default to "approve at requested price"
-    const decisions = {}
-    for (const item of bill.order_items || []) {
-      if (item.approval_status === 'pending') {
-        decisions[item.id] = { action: 'approve', approvedPrice: item.unit_price, rejectReason: '' }
-      }
-    }
-    setItemDecisions(decisions)
+    setReasonType('')
+    setCompetitorName('')
+    setOtherReason('')
   }
 
-  const setItemAction = (itemId, action) => {
-    setItemDecisions(prev => ({ ...prev, [itemId]: { ...prev[itemId], action } }))
-  }
-  const setItemPrice = (itemId, price) => {
-    setItemDecisions(prev => ({ ...prev, [itemId]: { ...prev[itemId], approvedPrice: price } }))
-  }
-  const setItemRejectReason = (itemId, reason) => {
-    setItemDecisions(prev => ({ ...prev, [itemId]: { ...prev[itemId], rejectReason: reason } }))
-  }
-
-  const handleFinalize = async () => {
+  const handleApprove = async () => {
     if (!reasonType) { alert('Please select an approval reason.'); return }
     const r = APPROVE_REASONS.find(x => x.value === reasonType)
     if (r?.needsName && !competitorName.trim()) { alert('Competitor Name required.'); return }
     if (r?.needsOther && !otherReason.trim()) { alert('Reason required.'); return }
-
-    // Validate all items have a decision
-    const pendingItems = (reviewing.order_items || []).filter(i => i.approval_status === 'pending')
-    for (const item of pendingItems) {
-      const d = itemDecisions[item.id]
-      if (!d) { alert(`Please make a decision for ${item.product_name}`); return }
-      if (d.action === 'reject' && !d.rejectReason?.trim()) {
-        alert(`Please enter a rejection reason for ${item.product_name}`); return
-      }
-    }
-
     setBusy(true)
     try {
-      const approvedItems = pendingItems
-        .filter(i => itemDecisions[i.id]?.action === 'approve')
-        .map(i => ({
-          itemId: i.id,
-          approvedPrice: Number(itemDecisions[i.id].approvedPrice ?? i.unit_price),
-          productId: i.product_id ?? null
-        }))
-
-      const rejectedItems = pendingItems
-        .filter(i => itemDecisions[i.id]?.action === 'reject')
-        .map(i => ({
-          itemId: i.id,
-          rejectReason: itemDecisions[i.id].rejectReason
-        }))
-
-      // Pass both approved and rejected items to approveBill for atomic processing
-      await approveBill(reviewing.id, approvedItems, profile, {
-        reasonType, competitorName: competitorName.trim() || undefined,
-        otherReason: otherReason.trim() || undefined,
-        rejectedItems  // approveBill will mark these as removed+rejected
+      // ORDER-LEVEL: pass empty itemOverrides — approveBill approves all pending
+      // items at their requested price automatically
+      await approveBill(reviewing.id, [], profile, {
+        reasonType,
+        competitorName: competitorName.trim() || undefined,
+        otherReason: otherReason.trim() || undefined
       })
-
       setBills(prev => (prev || []).filter(b => b.id !== reviewing.id))
       setReviewing(null)
-      const aCount = approvedItems.length, rCount = rejectedItems.length
-      flash(`Done: ${aCount} approved, ${rCount} rejected. Bill sent to Billing.`)
-
-      // Notify the sales rep about each rejected item — fire-and-forget.
-      // The bill is already committed; notification failure must not roll it back.
-      if (rejectedItems.length > 0) {
-        for (const ri of rejectedItems) {
-          // Find the original item data for context (product name, prices)
-          const origItem = (reviewing.order_items || []).find((i) => i.id === ri.itemId)
-          if (!origItem) continue
-          notifyRepOfPriceRejection({
-            orderId: reviewing.id,
-            productName: origItem.product_name,
-            reason: ri.rejectReason || 'Rejected by Admin',
-            adminName: profile?.full_name,
-            requestedPrice: origItem.unit_price,
-            normalPrice: origItem.normal_price
-          }).catch((e) => console.error('[notifyRep] bill-rejection notification failed (non-fatal)', e))
-        }
-      }
+      flash(`✅ Order approved — sent to Billing Team.`)
     } catch (e) { console.error(e); alert('Failed: ' + (e?.message || 'unknown')) }
     finally { setBusy(false) }
   }
 
-  const handleRejectBill = async () => {
+  // ── Reject entire order ───────────────────────────────────────────────────
+  const openReject = (bill) => { setRejecting(bill); setRejectReason('') }
+
+  const handleReject = async () => {
     if (!rejectReason.trim()) { alert('Please enter a rejection reason.'); return }
     setBusy(true)
     try {
       await rejectBill(rejecting.id, profile, rejectReason)
       setBills(prev => (prev || []).filter(b => b.id !== rejecting.id))
+
+      // Notify the sales rep — fire-and-forget
+      const pendingItems = (rejecting.order_items || []).filter(i => i.approval_status === 'pending')
+      for (const item of pendingItems) {
+        notifyRepOfPriceRejection({
+          orderId: rejecting.id,
+          productName: item.product_name,
+          reason: rejectReason,
+          adminName: profile?.full_name,
+          requestedPrice: item.unit_price,
+          normalPrice: item.normal_price
+        }).catch((e) => console.error('[notifyRep] rejection notification failed (non-fatal)', e))
+      }
+
       setRejecting(null)
-      flash('Bill rejected.')
-    } catch (e) { alert('Rejection failed.') }
+      flash('❌ Order rejected. Rep has been notified and can resubmit.')
+    } catch (e) { console.error(e); alert('Rejection failed: ' + (e?.message || 'unknown')) }
     finally { setBusy(false) }
   }
 
@@ -134,251 +104,243 @@ export default function AdminBillApprovalsPage() {
     <div className="px-3 sm:px-6 pt-4 pb-10 max-w-3xl">
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h1 className="text-lg font-bold text-slate-800">Bill Approvals</h1>
-          <p className="text-[12px] text-slate-400">Bills awaiting Admin approval — decide each product individually.</p>
+          <h1 className="text-lg font-bold text-slate-800">Order Approvals</h1>
+          <p className="text-[12px] text-slate-400">Review the full order, then approve or reject it. Rep can resubmit rejected orders.</p>
         </div>
-        <button onClick={refresh} className="text-sm font-semibold text-brand-700 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50">Refresh</button>
+        <button onClick={refresh} className="text-sm font-semibold text-brand-700 px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50">
+          Refresh
+        </button>
       </div>
 
       {bills === null ? (
         <div className="py-16 flex justify-center"><div className="h-6 w-6 rounded-full border-4 border-slate-200 border-t-slate-800 animate-spin"/></div>
       ) : bills.length === 0 ? (
         <div className="py-16 text-center">
-          <p className="font-semibold text-slate-600">No bills awaiting approval</p>
-          <p className="text-sm text-slate-400 mt-1">All bills are either approved or no approval requests exist.</p>
+          <p className="font-semibold text-slate-600">No orders awaiting approval</p>
+          <p className="text-sm text-slate-400 mt-1">All orders are either approved, rejected, or no approval requests exist.</p>
         </div>
       ) : (
         <div className="space-y-3">
           {bills.map(bill => {
-            const specialItems = (bill.order_items || []).filter(i => i.approval_status === 'pending')
+            const allItems     = (bill.order_items || [])
+            const specialItems = allItems.filter(i => i.approval_status === 'pending')
+            const version      = bill.approval_version || 1
             return (
               <div key={bill.id} className="rounded-2xl bg-white border border-amber-200 p-4">
                 <div className="flex items-start justify-between gap-3 flex-wrap">
-                  <div className="min-w-0">
-                    <p className="font-bold text-slate-800 truncate">{bill.shop_name}</p>
-                    <p className="text-[11px] text-slate-400">{bill.profiles?.full_name} · {bill.order_date} · {bill.total_products} products</p>
-                    <p className="text-sm font-semibold text-amber-700 mt-0.5">
-                      ⚠ {specialItems.length} item{specialItems.length !== 1 ? 's' : ''} need price approval
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <p className="font-bold text-slate-800 truncate">{bill.shop_name}</p>
+                      {version > 1 && (
+                        <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-1.5 py-0.5 rounded-full">v{version}</span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-slate-400">
+                      {bill.profiles?.full_name} · {fmtDate(bill.order_date)} · {allItems.length} products
                     </p>
-                    {/* List the products needing approval at-a-glance */}
+                    <p className="text-sm font-semibold text-amber-700 mt-0.5">
+                      ⚠ {specialItems.length} product{specialItems.length !== 1 ? 's' : ''} with custom price{specialItems.length !== 1 ? 's' : ''}
+                    </p>
+                    {/* Show special-price items at a glance */}
                     <div className="mt-1.5 space-y-0.5">
                       {specialItems.map(item => (
                         <p key={item.id} className="text-[11px] text-slate-600">
-                          · {item.product_name} — requested {rupee(item.unit_price)}, current {rupee(item.normal_price)}
+                          · {item.product_name} — requested {rupee(item.unit_price)}, normal {rupee(item.normal_price)}
                         </p>
                       ))}
                     </div>
                   </div>
-                  <div className="flex gap-2 shrink-0">
-                    <button onClick={() => { setRejecting(bill); setRejectReason('') }}
-                      className="text-xs font-bold text-red-600 border border-red-200 rounded-lg px-3 py-1.5">
-                      Reject All
+                  <div className="flex flex-col gap-2 shrink-0">
+                    <button
+                      onClick={() => openApprove(bill)}
+                      className="text-xs font-bold text-white bg-emerald-600 rounded-lg px-3 py-1.5"
+                    >
+                      ✓ Approve Order
                     </button>
-                    <button onClick={() => openReview(bill)}
-                      className="text-xs font-bold text-white bg-emerald-600 rounded-lg px-3 py-1.5">
-                      Review Items
+                    <button
+                      onClick={() => openReject(bill)}
+                      className="text-xs font-bold text-red-600 border border-red-200 rounded-lg px-3 py-1.5"
+                    >
+                      ✕ Reject Order
                     </button>
                   </div>
                 </div>
+
+                {/* All products (collapsed by default) — button to expand */}
+                <ExpandableProductList items={allItems} />
               </div>
             )
           })}
         </div>
       )}
 
-      {/* Per-item review modal */}
+      {/* Approve order modal */}
       {reviewing && (
         <div className="fixed inset-0 z-[200] bg-black/40 flex items-end sm:items-center justify-center px-0 sm:px-4">
           <div className="bg-white w-full sm:max-w-xl rounded-t-3xl sm:rounded-3xl max-h-[95vh] flex flex-col">
             <div className="flex items-center justify-between px-4 py-3 border-b shrink-0">
               <div>
-                <h2 className="font-bold text-slate-800">Review Bill — {reviewing.shop_name}</h2>
-                <p className="text-xs text-slate-400">{reviewing.order_date} · Decide each product individually</p>
+                <h2 className="font-bold text-slate-800">Approve Full Order</h2>
+                <p className="text-xs text-slate-400">{reviewing.shop_name} · {fmtDate(reviewing.order_date)}</p>
               </div>
               <button onClick={() => setReviewing(null)} className="text-slate-400 text-xl px-2">✕</button>
             </div>
 
-            <div className="overflow-y-auto flex-1 px-4 py-3 space-y-3">
-              {(reviewing.order_items || []).map(item => {
-                const needsApproval = item.approval_status === 'pending'
-                const decision = itemDecisions[item.id]
-                const diff = needsApproval && item.normal_price != null
-                  ? (item.unit_price - item.normal_price) : null
-
-                return (
-                  <div key={item.id} className={`rounded-xl border p-3 ${
-                    !needsApproval ? 'border-slate-100 bg-slate-50/50 opacity-60' :
-                    decision?.action === 'reject' ? 'border-red-200 bg-red-50' :
-                    'border-amber-200 bg-amber-50'
-                  }`}>
-                    <div className="flex items-start justify-between gap-2 flex-wrap">
-                      <div className="min-w-0">
-                        <span className="text-sm font-semibold text-slate-800">{item.product_name}</span>
-                        <p className="text-[11px] text-slate-400 mt-0.5">Qty {item.qty} {item.unit}</p>
+            <div className="overflow-y-auto flex-1 px-4 py-3">
+              {/* ALL products summary for Admin to see full order */}
+              <p className="text-xs font-semibold text-slate-700 mb-2">Full Order ({(reviewing.order_items || []).length} products)</p>
+              <div className="space-y-2 mb-4">
+                {(reviewing.order_items || []).map(item => {
+                  const needsApproval = item.approval_status === 'pending'
+                  const diff = needsApproval && item.normal_price != null
+                    ? (item.unit_price - item.normal_price) : null
+                  return (
+                    <div key={item.id} className={`rounded-xl border p-3 ${
+                      needsApproval ? 'border-amber-200 bg-amber-50' : 'border-slate-100 bg-slate-50'
+                    }`}>
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <span className="text-sm font-semibold text-slate-800">{item.product_name}</span>
+                          <p className="text-[11px] text-slate-400 mt-0.5">Qty {item.qty} {item.unit}</p>
+                        </div>
+                        {needsApproval ? (
+                          <span className="shrink-0 text-[9px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded">CUSTOM</span>
+                        ) : (
+                          <span className="shrink-0 text-[9px] font-bold text-emerald-700 bg-emerald-100 px-1.5 py-0.5 rounded">OK</span>
+                        )}
                       </div>
-                      {needsApproval ? (
-                        <span className="shrink-0 text-[10px] font-bold text-amber-700 bg-amber-100 px-2 py-0.5 rounded">⚠ NEEDS DECISION</span>
-                      ) : (
-                        <span className="shrink-0 text-[10px] font-bold text-emerald-700 bg-emerald-100 px-2 py-0.5 rounded">✓ OK</span>
-                      )}
-                    </div>
-
-                    {needsApproval && (
-                      <div className="mt-2.5 space-y-2.5">
-                        {/* Price comparison */}
-                        <div className="grid grid-cols-3 gap-2 text-center text-[11px]">
-                          <div className="rounded-lg border border-slate-200 bg-white p-1.5">
+                      {needsApproval && (
+                        <div className="mt-2 grid grid-cols-3 gap-1.5 text-center text-[11px]">
+                          <div className="rounded border border-slate-200 bg-white p-1.5">
                             <div className="font-bold text-slate-700">{rupee(item.normal_price)}</div>
-                            <div className="text-slate-400">Current</div>
+                            <div className="text-slate-400">Normal</div>
                           </div>
-                          <div className="rounded-lg border border-purple-200 bg-purple-50 p-1.5">
+                          <div className="rounded border border-purple-200 bg-purple-50 p-1.5">
                             <div className="font-bold text-purple-700">{rupee(item.unit_price)}</div>
                             <div className="text-purple-500">Requested</div>
                           </div>
-                          <div className={`rounded-lg border p-1.5 ${diff != null && diff < 0 ? 'border-red-200 bg-red-50' : 'border-slate-100'}`}>
+                          <div className={`rounded border p-1.5 ${diff != null && diff < 0 ? 'border-red-200 bg-red-50' : 'border-slate-100'}`}>
                             <div className={`font-bold ${diff != null && diff < 0 ? 'text-red-700' : 'text-slate-600'}`}>
                               {diff != null ? `${diff > 0 ? '+' : ''}₹${Math.abs(diff).toFixed(2)}` : '—'}
                             </div>
                             <div className="text-slate-400">Diff</div>
                           </div>
                         </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
 
-                        {/* Decision buttons */}
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => setItemAction(item.id, 'approve')}
-                            className={`flex-1 rounded-lg py-2 text-[11px] font-bold border transition ${
-                              decision?.action === 'approve'
-                                ? 'bg-emerald-600 text-white border-emerald-600'
-                                : 'bg-white text-emerald-700 border-emerald-300'
-                            }`}
-                          >✓ Approve</button>
-                          <button
-                            onClick={() => setItemAction(item.id, 'reject')}
-                            className={`flex-1 rounded-lg py-2 text-[11px] font-bold border transition ${
-                              decision?.action === 'reject'
-                                ? 'bg-red-600 text-white border-red-600'
-                                : 'bg-white text-red-600 border-red-300'
-                            }`}
-                          >✕ Reject</button>
-                        </div>
-
-                        {/* Approved price input */}
-                        {decision?.action === 'approve' && (
-                          <div>
-                            <label className="text-[10px] font-semibold text-slate-500 uppercase">Admin Approved Price (₹)</label>
-                            <input
-                              type="number"
-                              value={decision.approvedPrice ?? ''}
-                              onChange={e => setItemPrice(item.id, e.target.value)}
-                              className="w-full mt-1 rounded-lg border border-slate-200 px-2 py-1.5 text-sm outline-none focus:border-brand-500"
-                            />
-                            {decision.approvedPrice != null &&
-                             Number(decision.approvedPrice) !== item.unit_price && (
-                              <p className="text-[10px] text-amber-700 mt-0.5">
-                                Modified from ₹{item.unit_price} — Billing will receive ₹{decision.approvedPrice}
-                              </p>
-                            )}
-                          </div>
-                        )}
-
-                        {/* Rejection reason */}
-                        {decision?.action === 'reject' && (
-                          <div>
-                            <label className="text-[10px] font-semibold text-slate-500 uppercase">Rejection Reason *</label>
-                            <input
-                              type="text"
-                              value={decision.rejectReason ?? ''}
-                              onChange={e => setItemRejectReason(item.id, e.target.value)}
-                              placeholder="Why is this price not approved?"
-                              className="w-full mt-1 rounded-lg border border-red-200 px-2 py-1.5 text-sm outline-none focus:border-red-400"
-                            />
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-
-              {/* Overall reason */}
+              {/* Approval reason */}
               <div>
-                <p className="text-xs font-semibold text-slate-700 mb-1">Overall Approval Reason *</p>
-                <select value={reasonType} onChange={e => { setReasonType(e.target.value); setCompetitorName(''); setOtherReason('') }}
-                  className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm outline-none bg-white">
+                <p className="text-xs font-semibold text-slate-700 mb-1">Approval Reason *</p>
+                <select
+                  value={reasonType}
+                  onChange={e => { setReasonType(e.target.value); setCompetitorName(''); setOtherReason('') }}
+                  className="w-full rounded-lg border border-slate-200 px-2 py-1.5 text-sm outline-none bg-white"
+                >
                   <option value="">Select reason…</option>
                   {APPROVE_REASONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
                 </select>
                 {reasonType === 'competitor' && (
-                  <input value={competitorName} onChange={e => setCompetitorName(e.target.value)} placeholder="Competitor Name *"
+                  <input value={competitorName} onChange={e => setCompetitorName(e.target.value)}
+                    placeholder="Competitor Name *"
                     className="w-full mt-2 rounded-lg border border-slate-200 px-2 py-1.5 text-sm outline-none"/>
                 )}
                 {reasonType === 'others' && (
-                  <input value={otherReason} onChange={e => setOtherReason(e.target.value)} placeholder="Reason *"
+                  <input value={otherReason} onChange={e => setOtherReason(e.target.value)}
+                    placeholder="Reason *"
                     className="w-full mt-2 rounded-lg border border-slate-200 px-2 py-1.5 text-sm outline-none"/>
                 )}
               </div>
 
-              {/* Summary of decisions */}
-              {Object.keys(itemDecisions).length > 0 && (
-                <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 text-[11px]">
-                  <p className="font-semibold text-slate-700 mb-1">Decision Summary</p>
-                  {Object.entries(itemDecisions).map(([id, d]) => {
-                    const item = (reviewing.order_items || []).find(i => i.id === id)
-                    if (!item) return null
-                    return (
-                      <p key={id} className={d.action === 'reject' ? 'text-red-600' : 'text-emerald-700'}>
-                        {d.action === 'approve' ? '✓' : '✕'} {item.product_name}
-                        {d.action === 'approve' && d.approvedPrice !== item.unit_price
-                          ? ` → ₹${d.approvedPrice} (modified)` : ''}
-                      </p>
-                    )
-                  })}
-                  {(() => {
-                    const rejected = Object.values(itemDecisions).filter(d => d.action === 'reject').length
-                    const total = reviewing.order_items?.length ?? 0
-                    const remaining = total - rejected
-                    if (rejected > 0) return (
-                      <p className="text-slate-500 mt-1 border-t border-slate-200 pt-1">
-                        {rejected} product{rejected > 1 ? 's' : ''} will be REMOVED · {remaining} product{remaining !== 1 ? 's' : ''} will reach Billing
-                      </p>
-                    )
-                  })()}
-                </div>
-              )}
+              <div className="mt-3 rounded-xl bg-emerald-50 border border-emerald-200 px-3 py-2.5 text-[11px] text-emerald-800">
+                Approving will accept all {(reviewing.order_items || []).filter(i => i.approval_status === 'pending').length} custom-priced
+                product{(reviewing.order_items || []).filter(i => i.approval_status === 'pending').length !== 1 ? 's' : ''} at
+                their requested prices and release the full order to Billing.
+              </div>
             </div>
 
             <div className="px-4 py-3 border-t flex gap-2 shrink-0">
               <button onClick={() => setReviewing(null)} className="flex-1 rounded-xl border border-slate-200 py-3 text-sm font-semibold text-slate-600">Cancel</button>
-              <button onClick={handleFinalize} disabled={busy}
+              <button onClick={handleApprove} disabled={busy}
                 className="flex-2 rounded-xl bg-emerald-600 text-white px-6 py-3 text-sm font-bold disabled:bg-slate-300">
-                {busy ? 'Processing…' : 'Finalize & Release to Billing'}
+                {busy ? 'Approving…' : '✓ Approve Full Order → Billing'}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Reject whole bill modal */}
+      {/* Reject order modal */}
       {rejecting && (
         <div className="fixed inset-0 z-[200] bg-black/40 flex items-center justify-center px-4">
           <div className="bg-white w-full max-w-sm rounded-2xl p-5">
-            <p className="font-bold text-slate-800 mb-1">Reject Entire Bill?</p>
-            <p className="text-sm text-slate-500 mb-3">{rejecting.shop_name} — all products will be removed and the bill will not reach Billing.</p>
-            <textarea value={rejectReason} onChange={e => setRejectReason(e.target.value)} rows={3}
-              placeholder="Reason for rejection (required)"
-              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-red-400 resize-none mb-3"/>
+            <p className="font-bold text-slate-800 mb-1">Reject Full Order?</p>
+            <p className="text-sm text-slate-500 mb-3">
+              {rejecting.shop_name} · {fmtDate(rejecting.order_date)}<br />
+              The Sales Rep will be notified and can resubmit the full order with revised prices.
+            </p>
+            <textarea
+              value={rejectReason}
+              onChange={e => setRejectReason(e.target.value)}
+              rows={3}
+              placeholder="Reason for rejection (required — rep will see this)"
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-red-400 resize-none mb-3"
+            />
             <div className="flex gap-2">
               <button onClick={() => setRejecting(null)} disabled={busy} className="flex-1 rounded-xl border border-slate-200 py-2.5 text-sm font-semibold text-slate-600">Cancel</button>
-              <button onClick={handleRejectBill} disabled={busy} className="flex-1 rounded-xl bg-red-600 text-white py-2.5 text-sm font-bold disabled:bg-slate-300">
-                {busy ? '…' : 'Reject All'}
+              <button onClick={handleReject} disabled={busy} className="flex-1 rounded-xl bg-red-600 text-white py-2.5 text-sm font-bold disabled:bg-slate-300">
+                {busy ? '…' : '✕ Reject Order'}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {toast && <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white text-sm font-semibold px-4 py-2.5 rounded-xl shadow-lg">{toast}</div>}
+      {toast && (
+        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-slate-900 text-white text-sm font-semibold px-4 py-2.5 rounded-xl shadow-lg">
+          {toast}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ── Expandable full product list ──────────────────────────────────────────────
+function ExpandableProductList({ items }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div className="mt-3">
+      <button
+        onClick={() => setOpen(v => !v)}
+        className="text-[11px] text-brand-700 font-semibold underline"
+      >
+        {open ? 'Hide full order' : `View full order (${items.length} products)`}
+      </button>
+      {open && (
+        <div className="mt-2 space-y-1.5">
+          {items.map(item => (
+            <div key={item.id} className={`rounded-lg px-3 py-2 text-[11px] flex items-start justify-between gap-2 ${
+              item.approval_status === 'pending' ? 'bg-amber-50 border border-amber-100' : 'bg-slate-50'
+            }`}>
+              <div>
+                <span className="font-semibold text-slate-700">{item.product_name}</span>
+                <span className="text-slate-400 ml-2">Qty {item.qty} {item.unit}</span>
+              </div>
+              <div className="text-right shrink-0">
+                <span className={item.approval_status === 'pending' ? 'font-bold text-amber-700' : 'text-slate-600'}>
+                  {rupee(item.unit_price)}
+                </span>
+                {item.approval_status === 'pending' && item.normal_price != null && (
+                  <div className="text-slate-400">normal {rupee(item.normal_price)}</div>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
