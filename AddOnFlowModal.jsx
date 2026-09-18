@@ -272,7 +272,7 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
           <button onClick={onClose} className="w-full rounded-xl bg-brand-600 text-white py-3 font-bold active:bg-brand-700">
             Done
           </button>
-          <p className="text-[10px] text-slate-300 mt-3">build v192</p>
+          <p className="text-[10px] text-slate-300 mt-3">build v193</p>
         </div>
       </div>
     )
@@ -287,7 +287,7 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
             <p className="text-xs text-slate-400 truncate">{order.shop_name} — original order stays as-is</p>
             {/* Deploy check: if this doesn't say v78, the device is running an
                 older cached build and none of the fixes below it are live yet. */}
-            <p className="text-[10px] text-emerald-600 font-semibold mt-0.5">build v192</p>
+            <p className="text-[10px] text-emerald-600 font-semibold mt-0.5">build v193</p>
           </div>
           <button onClick={onClose} className="p-2 text-slate-400" aria-label="Close">
             <CloseIcon className="h-5 w-5" />
@@ -316,7 +316,8 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
                 onUnit={onUnit}
                 override={priceOverrides[p.id]}
                 onOverride={onOverride}
-                lastPrice={lastPrices[(p.name || '').trim().toUpperCase()]}
+                lastPrice={lastPrices[(p.name || '').trim().toUpperCase()]?.price ?? lastPrices[(p.name || '').trim().toUpperCase()] ?? undefined}
+                lastPriceVersion={lastPrices[(p.name || '').trim().toUpperCase()]?.priceVersion ?? null}
                 defaultPriceType={defaultPriceType}
               />
             </div>
