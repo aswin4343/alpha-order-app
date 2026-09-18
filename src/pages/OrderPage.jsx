@@ -861,8 +861,17 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
         let savedOrderId
 
         if (editingOrderId) {
-          // EDIT MODE: update the existing order in-place, no new order created
-          savedOrderId = await updateCloudOrder(editingOrderId, { items, userId: uid })
+          // EDIT MODE: update the existing order in-place, no new order created.
+          // isApprovalRequest must be forwarded here — otherwise a rep who edits
+          // an existing order and taps "Request Admin Approval" would call
+          // updateCloudOrder without the flag, and the approval items/status would
+          // never be set, leaving Admin's dashboard empty for that request.
+          savedOrderId = await updateCloudOrder(editingOrderId, {
+            items,
+            userId: uid,
+            isApprovalRequest,
+            isWholesaleCustomer: defaultPriceType === 'WHOLESALE'
+          })
           setEditingOrderId(null)
           try { localStorage.removeItem('atl_edit_intent') } catch {}
         } else {
@@ -1007,17 +1016,14 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
     }
   }
 
-  const handleSend = () => dispatchOrder(false)
-
   // Pre-submit price validation (spec §10–12):
   // Before dispatching, check all items for price violations. If any exist,
   // show a modal with two choices: remove violating items or send for approval.
+  // Shared between handleSend and handleCopy so BOTH buttons intercept violations.
   const [priceWarningModal, setPriceWarningModal] = useState(null)
   // { violations: [{id, name, selectedPrice, currentPrice, diff}], viaCopy }
 
-  const handleCopy = () => {
-    if (!items.length) { dispatchOrder(true); return }
-
+  const checkViolations = () => {
     const violations = []
     for (const i of items) {
       const ep = i.finalSellingPrice != null ? i.finalSellingPrice : null
@@ -1066,10 +1072,30 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
         })
       }
     }
+    return violations
+  }
 
+  // Send Order: also checks price violations before dispatching — previously
+  // bypassed the check entirely, letting custom prices go through without
+  // Admin sign-off. Now identical to Copy Order's pre-submit check.
+  const handleSend = () => {
+    if (!items.length) { dispatchOrder(false); return }
+    const violations = checkViolations()
+    if (violations.length === 0) {
+      dispatchOrder(false)
+    } else {
+      console.log('[PRICE APPROVAL] handleSend blocked — violations found:', violations.map(v => `${v.name}: ₹${v.selectedPrice} vs ₹${v.currentPrice}`))
+      setPriceWarningModal({ violations, viaCopy: false })
+    }
+  }
+
+  const handleCopy = () => {
+    if (!items.length) { dispatchOrder(true); return }
+    const violations = checkViolations()
     if (violations.length === 0) {
       dispatchOrder(true)
     } else {
+      console.log('[PRICE APPROVAL] handleCopy blocked — violations found:', violations.map(v => `${v.name}: ₹${v.selectedPrice} vs ₹${v.currentPrice}`))
       setPriceWarningModal({ violations, viaCopy: true })
     }
   }
@@ -1415,6 +1441,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
                 {/* Option 1: Remove all violating products */}
                 <button
                   onClick={() => {
+                    const viaCopy = priceWarningModal.viaCopy
                     const violatingIds = new Set(priceWarningModal.violations.map(v => v.id))
                     setQuantities(prev => {
                       const next = { ...prev }
@@ -1429,7 +1456,8 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
                     setPriceWarningModal(null)
                     const remainingQty = Object.keys(quantities).filter(id => !violatingIds.has(id))
                     if (remainingQty.length > 0) {
-                      setTimeout(() => dispatchOrder(true), 100)
+                      // Respect original button (Send or Copy) — don't always default to Copy.
+                      setTimeout(() => dispatchOrder(viaCopy), 100)
                     }
                   }}
                   className="w-full rounded-2xl border-2 border-slate-200 py-3 text-sm font-bold text-slate-700 active:bg-slate-50"
@@ -1437,9 +1465,14 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
                   Remove {violationsWithPct.length === 1 ? 'Product' : `${violationsWithPct.length} Products`} &amp; Continue
                 </button>
 
-                {/* Option 2: Request Admin Approval — keep rep's actual selected prices */}
+                {/* Option 2: Request Admin Approval — keep rep's actual selected prices.
+                    Always uses viaCopy=true so the whatsapp message is copied alongside
+                    the save (same as pressing Copy Order normally). isApprovalRequest=true
+                    ensures saveCloudOrder promotes items to approval_status='pending' even
+                    if this is a re-submit over a duplicate. */}
                 <button
                   onClick={() => {
+                    console.log('[PRICE APPROVAL] Rep tapped Request Admin Approval — dispatching with isApprovalRequest=true')
                     setPriceWarningModal(null)
                     dispatchOrder(true, true)  // viaCopy=true, isApprovalRequest=true
                   }}

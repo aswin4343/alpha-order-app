@@ -3809,27 +3809,167 @@ export async function markDeliveryAdminNotificationRead(id) {
  * Update an existing order's product line items in-place.
  * Reconciles: updated qty/price, removed products, newly added products.
  * Order totals are recalculated. Order ID/customer/route/date preserved.
+ *
+ * isApprovalRequest — when true (rep tapped "Request Admin Approval" after
+ *   editing prices), this function also:
+ *   1. Detects special-priced items using the SAME isSpecial formula as
+ *      saveCloudOrder (ep !== normalPrice with box-unit and wholesale exemptions).
+ *   2. Sets approval_status='pending' on those order_items rows.
+ *   3. Promotes the order to billing_status='pending_approval',
+ *      bill_approval_required=true, bill_approval_status='pending' so it
+ *      appears in Admin's dashboard.
+ *   4. Sends the Admin notification (same path as new orders).
+ *
+ * Without this, the approval flag was silently dropped for edited orders:
+ * dispatchOrder passed isApprovalRequest=true only to saveCloudOrder (new
+ * orders) but never forwarded it to updateCloudOrder (edit mode) — so Admin
+ * never saw the request and the order flowed directly to Billing.
  */
-export async function updateCloudOrder(orderId, { items }) {
+export async function updateCloudOrder(orderId, { items, userId, isApprovalRequest = false, isWholesaleCustomer = false }) {
   if (!orderId || !items) throw new Error("orderId and items required")
+
+  console.log('[APPROVAL] updateCloudOrder called — orderId:', orderId, '| isApprovalRequest:', isApprovalRequest, '| items:', items.length)
+
   const { data: existing, error: fetchErr } = await supabase.from("order_items").select("id, product_name, qty, unit_price, unit").eq("order_id", orderId).eq("removed", false)
   if (fetchErr) throw fetchErr
   const exMap = new Map((existing || []).map(e => [e.product_name.trim().toUpperCase(), e]))
   const newMap = new Map(items.map(i => [(i.name || "").trim().toUpperCase(), i]))
+
+  // Remove products the rep deleted
   for (const e of [...exMap.values()]) {
     if (!newMap.has(e.product_name.trim().toUpperCase())) {
       // Mark removed instead of hard delete — preserves audit trail and history
       await supabase.from('order_items').update({ removed: true }).eq('id', e.id)
     }
   }
+
+  // Upsert each item in the new set
   for (const [key, i] of newMap.entries()) {
     const ep = i.finalSellingPrice != null ? i.finalSellingPrice : null
+
+    // isSpecial: same formula as saveCloudOrder — ep genuinely differs from
+    // normalPrice, excluding box-unit wholesale sales and wholesale-customer WP sales.
+    const isSpecial = i.normalPrice != null && ep != null && ep !== i.normalPrice
+      && !(i.isBoxUnit && ep >= (i.wholesaleAtOrderTime ?? ep))
+      && !(isWholesaleCustomer && i.wholesaleAtOrderTime != null && Math.abs(ep - i.wholesaleAtOrderTime) < 0.001)
+
+    const approvalEnabled = _runtimeApprovalEnabled !== false && PRICE_APPROVAL_ENABLED
+
+    // Approval status for this item:
+    // - If rep requested approval AND this item is special → 'pending'
+    // - If the item is NOT special → null (normal item, no approval needed)
+    // - If rep did NOT request approval → preserve whatever was already set (don't regress)
+    const approvalStatusForItem = (approvalEnabled && isApprovalRequest && isSpecial) ? 'pending' : null
+
     const ex = exMap.get(key)
-    if (ex) { await supabase.from("order_items").update({ qty: i.qty, unit: i.unit || ex.unit || "Piece", unit_price: ep != null ? ep : ex.unit_price, price_type: i.priceType || null, normal_price: i.normalPrice ?? null }).eq("id", ex.id) }
-    else { await supabase.from("order_items").insert({ order_id: orderId, product_name: i.name, qty: i.qty, unit: i.unit || "Piece", is_addon: false, unit_price: ep, price_type: i.priceType || null, normal_price: i.normalPrice ?? null, mrp: i.mrp ?? null, gst_percent: i.gst ?? null, hsn: i.hsn ?? null, scheme_enabled: i.schemeEnabled !== false }) }
+    if (ex) {
+      const patch = {
+        qty: i.qty,
+        unit: i.unit || ex.unit || "Piece",
+        unit_price: ep != null ? ep : ex.unit_price,
+        price_type: i.priceType || null,
+        normal_price: i.normalPrice ?? null
+      }
+      if (isApprovalRequest) {
+        // Only set approval fields when rep is explicitly requesting approval —
+        // a plain edit (no approval modal) must not accidentally overwrite
+        // approval_status on items that are already approved/rejected.
+        patch.approval_status = approvalStatusForItem
+        // Clear previous admin decision fields so this is a fresh request
+        if (isSpecial) {
+          patch.approved_by = null
+          patch.approved_by_id = null
+          patch.approved_at = null
+          patch.approval_reason_type = null
+          patch.approval_competitor_name = null
+          patch.approval_other_reason = null
+          patch.approved_price = null
+          patch.rejection_reason = null
+        }
+      }
+      const { error: updErr } = await supabase.from("order_items").update(patch).eq("id", ex.id)
+      if (updErr) throw updErr
+    } else {
+      // New product added during edit
+      const insertRow = {
+        order_id: orderId,
+        product_name: i.name,
+        qty: i.qty,
+        unit: i.unit || "Piece",
+        is_addon: false,
+        unit_price: ep,
+        price_type: i.priceType || null,
+        normal_price: i.normalPrice ?? null,
+        mrp: i.mrp ?? null,
+        gst_percent: i.gst ?? null,
+        hsn: i.hsn ?? null,
+        scheme_enabled: i.schemeEnabled !== false,
+        approval_status: (approvalEnabled && isApprovalRequest && isSpecial) ? 'pending' : null
+      }
+      const { error: insErr } = await supabase.from("order_items").insert(insertRow)
+      if (insErr) throw insErr
+    }
   }
+
+  // Recalculate order totals
   const totalValue = items.reduce((s, i) => s + (i.finalSellingPrice || 0) * i.qty, 0)
-  await supabase.from("orders").update({ total_value: totalValue, total_products: items.length, total_quantity: items.reduce((s, i) => s + i.qty, 0) }).eq("id", orderId)
+  const orderPatch = {
+    total_value: totalValue,
+    total_products: items.length,
+    total_quantity: items.reduce((s, i) => s + i.qty, 0)
+  }
+
+  // ── Approval promotion ──────────────────────────────────────────────────────
+  // When the rep explicitly requests approval after editing, detect whether any
+  // item is special (same isSpecial formula used above). If yes, promote the
+  // order's billing/approval status so Admin can see and act on it.
+  if (isApprovalRequest && (_runtimeApprovalEnabled !== false && PRICE_APPROVAL_ENABLED)) {
+    const specialItems = items.filter((i) => {
+      const ep = i.finalSellingPrice ?? null
+      if (ep == null || i.normalPrice == null) return false
+      if (ep === i.normalPrice) return false
+      if (i.isBoxUnit && ep >= (i.wholesaleAtOrderTime ?? ep)) return false
+      if (isWholesaleCustomer && i.wholesaleAtOrderTime != null && Math.abs(ep - i.wholesaleAtOrderTime) < 0.001) return false
+      return true
+    })
+
+    console.log('[APPROVAL] updateCloudOrder — specialItems requiring approval:', specialItems.length, specialItems.map(i => `${i.name}: ₹${i.finalSellingPrice} vs normal ₹${i.normalPrice}`))
+
+    if (specialItems.length > 0) {
+      // Promote order to pending approval state — same fields saveCloudOrder sets
+      orderPatch.billing_status = 'pending_approval'
+      orderPatch.bill_approval_required = true
+      orderPatch.bill_approval_status = 'pending'
+      orderPatch.bill_rejection_reason = null
+
+      console.log('[APPROVAL] Promoting order', orderId, 'to pending_approval for Admin review')
+
+      // Fetch order details needed for the Admin notification (shop_name etc.)
+      try {
+        const { data: orderRow } = await supabase
+          .from('orders')
+          .select('shop_name, route, order_date, sales_rep_id')
+          .eq('id', orderId)
+          .maybeSingle()
+
+        if (orderRow) {
+          console.log('[APPROVAL] Sending Admin notification for edited order:', orderId, 'shop:', orderRow.shop_name)
+          notifyAdminPriceApprovalRequired(
+            specialItems,
+            orderRow.shop_name || '',
+            specialItems[0]?.repName || ''
+          ).catch((e) => console.warn('[APPROVAL] Admin notification failed (non-fatal):', e))
+        }
+      } catch (notifErr) {
+        console.warn('[APPROVAL] Could not fetch order for notification (non-fatal):', notifErr)
+      }
+    }
+  }
+
+  const { error: orderUpdErr } = await supabase.from("orders").update(orderPatch).eq("id", orderId)
+  if (orderUpdErr) throw orderUpdErr
+
+  console.log('[APPROVAL] updateCloudOrder complete — orderId:', orderId, '| orderPatch keys:', Object.keys(orderPatch))
   return orderId
 }
 
@@ -5789,18 +5929,25 @@ export async function loadMyApprovalSummary({ salesRepId, limitDays = 60 } = {})
   if (!salesRepId) return { pending: 0, approved: 0, rejected: 0 }
   const since = new Date(Date.now() - limitDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
-  // Query orders directly — same filters as loadMyApprovalItems.
-  // Count orders by bill_approval_status (order-level decision).
+  // Include order_items so we can apply the SAME existence filter that
+  // loadMyApprovalItems applies: only count orders that have at least one
+  // non-removed item. Without this, a pending order whose items are all
+  // removed=true would be counted here but never appear in the list — the
+  // exact "Pending: 2 / No orders waiting for approval" mismatch seen in the
+  // v190 screenshot bug.
   const { data, error } = await supabase
     .from('orders')
-    .select('id, bill_approval_status')
+    .select('id, bill_approval_status, order_items(id, removed)')
     .eq('bill_approval_required', true)
     .eq('hidden', false)
     .eq('sales_rep_id', salesRepId)
     .gte('order_date', since)
   if (error) { console.error('[loadMyApprovalSummary]', error); return { pending: 0, approved: 0, rejected: 0 } }
 
-  const orders = data || []
+  // Mirror loadMyApprovalItems: only count orders with at least one non-removed item.
+  const orders = (data || []).filter((o) =>
+    (o.order_items || []).some((it) => !it.removed)
+  )
   return {
     pending:  orders.filter((o) => o.bill_approval_status === 'pending').length,
     approved: orders.filter((o) => o.bill_approval_status === 'approved').length,
