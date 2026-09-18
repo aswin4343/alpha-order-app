@@ -115,7 +115,7 @@ export async function ensureCloudCustomer(customer, userId, repCreated = false) 
 }
 
 /** Save an order + its items. Returns the new order id (or null on failure). */
-export async function saveCloudOrder({ customer, brand, userId, items, location, orderDate, route, isNewCustomer, introDetails, isAddon, isWholesaleCustomer }) {
+export async function saveCloudOrder({ customer, brand, userId, items, location, orderDate, route, isNewCustomer, introDetails, isAddon, isWholesaleCustomer, isApprovalRequest }) {
   // Populate the runtime approval cache before writing order items — this is
   // what makes the toggle take effect on the NEXT order after admin changes it.
   await isApprovalEnabled()
@@ -200,8 +200,45 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
         .sort()
         .join('|')
     const mine = fingerprint(items)
-    const isDup = (sameDate || []).some((o) => fingerprint(o.order_items) === mine)
+    const matchingOrder = (sameDate || []).find((o) => fingerprint(o.order_items) === mine)
+    const isDup = !!matchingOrder
     if (isDup) {
+      // APPROVAL REQUEST SPECIAL CASE: when the rep is re-submitting ONLY to
+      // request Admin approval (they sent the order first via "Send", then
+      // triggered the price-increase modal via "Copy" and tapped "Request Admin
+      // Approval"), the duplicate guard would normally block the re-submit and
+      // leave the existing order_items with approval_status=null — invisible to
+      // Admin. Instead of blocking, find the existing order and promote its
+      // special-priced items to approval_status='pending' so Admin can act on them.
+      if (isApprovalRequest && matchingOrder) {
+        const approvalEnabled = _runtimeApprovalEnabled !== false && PRICE_APPROVAL_ENABLED
+        if (approvalEnabled) {
+          const specialProductNames = new Set(
+            items
+              .filter((i) => {
+                const ep = i.finalSellingPrice != null ? i.finalSellingPrice : null
+                if (ep == null || i.normalPrice == null) return false
+                return ep !== i.normalPrice
+                  && !(i.isBoxUnit && ep >= (i.wholesaleAtOrderTime ?? ep))
+                  && !(isWholesaleCustomer && i.wholesaleAtOrderTime != null && Math.abs(ep - i.wholesaleAtOrderTime) < 0.001)
+              })
+              .map((i) => (i.name || '').trim().toUpperCase())
+          )
+          if (specialProductNames.size > 0) {
+            await supabase
+              .from('order_items')
+              .update({ approval_status: 'pending' })
+              .eq('order_id', matchingOrder.id)
+              .in('product_name', [...specialProductNames].map((n) =>
+                // find the original-case product name for each upper-cased key
+                items.find((i) => (i.name || '').trim().toUpperCase() === n)?.name || n
+              ))
+              .is('approval_status', null)   // only promote undecided items
+            console.log('Approval request: promoted', specialProductNames.size, 'special-price item(s) to pending on order', matchingOrder.id)
+          }
+        }
+        return matchingOrder.id  // return the existing order id so the caller can proceed normally
+      }
       console.log('Duplicate order detected — skipping save.')
       return 'DUPLICATE'
     }
@@ -212,6 +249,34 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     if (!isSpecialChannel(orderRoute)) {
       const normalRouteOnSameDate = (sameDate || []).some((o) => !isSpecialChannel(o.route))
       if (normalRouteOnSameDate) {
+        // APPROVAL REQUEST: promote special-price items on ANY matching order for this
+        // shop today, then return without creating a new order (same as the exact-dup path).
+        if (isApprovalRequest) {
+          const approvalEnabled = _runtimeApprovalEnabled !== false && PRICE_APPROVAL_ENABLED
+          if (approvalEnabled) {
+            const existingNormal = (sameDate || []).find((o) => !isSpecialChannel(o.route))
+            if (existingNormal) {
+              const specialProductNames = items
+                .filter((i) => {
+                  const ep = i.finalSellingPrice != null ? i.finalSellingPrice : null
+                  if (ep == null || i.normalPrice == null) return false
+                  return ep !== i.normalPrice
+                    && !(i.isBoxUnit && ep >= (i.wholesaleAtOrderTime ?? ep))
+                    && !(isWholesaleCustomer && i.wholesaleAtOrderTime != null && Math.abs(ep - i.wholesaleAtOrderTime) < 0.001)
+                })
+                .map((i) => i.name)
+              if (specialProductNames.length > 0) {
+                await supabase
+                  .from('order_items')
+                  .update({ approval_status: 'pending' })
+                  .eq('order_id', existingNormal.id)
+                  .in('product_name', specialProductNames)
+                  .is('approval_status', null)
+              }
+              return existingNormal.id
+            }
+          }
+        }
         console.log('Normal-route order already exists for this shop on', newOrderDate, '— blocking.')
         return 'DUPLICATE'
       }
@@ -4938,7 +5003,7 @@ export async function rejectBill(orderId, adminUser, reason) {
     .eq('order_id', orderId).eq('approval_status', 'pending')
 }
 
-export async function loadPendingApprovals() {
+export async function loadPendingApprovals({ fromDate, toDate } = {}) {
   // If the admin has turned the approval workflow OFF, show nothing in the
   // pending list — even if old items have approval_status='pending'. The
   // admin explicitly chose to bypass approval; those items should not keep
@@ -4947,14 +5012,28 @@ export async function loadPendingApprovals() {
   const approvalEnabled = await loadPriceApprovalEnabled()
   if (!approvalEnabled) return []
 
-  const { data, error } = await supabase
+  // Date range filtering uses orders.order_date (YYYY-MM-DD string, already
+  // in IST — no timezone conversion needed, no UTC boundary bugs).
+  // When no range is given, defaults to last 3 IST calendar days so the
+  // active queue stays focused without deleting historical data.
+  const todayIST = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+  const defaultFrom = (() => {
+    const d = new Date(todayIST); d.setDate(d.getDate() - 2); return d.toLocaleDateString('en-CA')
+  })()
+  const start = fromDate || defaultFrom
+  const end   = toDate   || todayIST
+
+  let q = supabase
     .from('order_items')
     .select(`
       id, product_name, qty, unit, unit_price, normal_price, price_type, edited_at,
       order_id, orders!inner ( id, shop_name, route, order_date, sales_rep_id, created_at )
     `)
     .eq('approval_status', 'pending')
+    .gte('orders.order_date', start)
+    .lte('orders.order_date', end)
     .order('id', { ascending: false })
+  const { data, error } = await q
   if (error) { console.error('load pending approvals failed', error); return [] }
   const rows = (data || []).filter((r) => r.orders)
   const repIds = [...new Set(rows.map((r) => r.orders.sales_rep_id).filter(Boolean))]
@@ -4992,14 +5071,26 @@ export async function loadPendingApprovals() {
   return rows
 }
 
-/** Just the count — cheap, for the sidebar badge. */
-export async function countPendingApprovals() {
-  const { count, error } = await supabase
+/** Just the count — cheap, for the sidebar badge.
+ *  Uses the same date range as loadPendingApprovals so the badge always
+ *  matches what the Admin sees in the approval list. */
+export async function countPendingApprovals({ fromDate, toDate } = {}) {
+  const todayIST = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+  const defaultFrom = (() => {
+    const d = new Date(todayIST); d.setDate(d.getDate() - 2); return d.toLocaleDateString('en-CA')
+  })()
+  const start = fromDate || defaultFrom
+  const end   = toDate   || todayIST
+
+  // Need to join orders to filter by order_date — head-count with !inner join.
+  const { data, error } = await supabase
     .from('order_items')
-    .select('id', { count: 'exact', head: true })
+    .select('id, orders!inner(order_date)')
     .eq('approval_status', 'pending')
+    .gte('orders.order_date', start)
+    .lte('orders.order_date', end)
   if (error) { console.error('count pending approvals failed', error); return 0 }
-  return count || 0
+  return (data || []).length
 }
 
 /** Approve a special-priced line — it becomes normally billable immediately.

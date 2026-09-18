@@ -832,7 +832,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   // Every order attempts to capture current GPS. Soft policy: if it fails we
   // warn and let the rep retry, but never block the sale. A failed capture is
   // stamped 'Not captured' in the message for accountability.
-  const dispatchOrder = async (viaCopy) => {
+  const dispatchOrder = async (viaCopy, isApprovalRequest = false) => {
     if (!canSend) return
     if (sending) return // already sending — ignore double-tap
     setSending(true)
@@ -883,7 +883,14 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
           // price never requires Admin approval (the qty threshold is waived for
           // wholesale customers). Derived from ledger_category, same source OrderPage
           // uses for defaultPriceType.
-          isWholesaleCustomer: defaultPriceType === 'WHOLESALE'
+          isWholesaleCustomer: defaultPriceType === 'WHOLESALE',
+          // When true, the rep explicitly requested Admin approval for special
+          // prices. If the order was already saved (Send button was tapped first),
+          // the duplicate check would normally block this re-submit and leave
+          // the items with approval_status=null — invisible to Admin. Instead,
+          // saveCloudOrder will promote special-priced items on the existing
+          // order to approval_status='pending' and return the existing order id.
+          isApprovalRequest
           })
         }
 
@@ -1434,7 +1441,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
                 <button
                   onClick={() => {
                     setPriceWarningModal(null)
-                    dispatchOrder(true)
+                    dispatchOrder(true, true)  // viaCopy=true, isApprovalRequest=true
                   }}
                   className="w-full rounded-2xl bg-amber-500 text-white py-3 text-sm font-bold active:bg-amber-600"
                 >

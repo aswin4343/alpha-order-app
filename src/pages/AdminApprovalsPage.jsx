@@ -1,6 +1,27 @@
-import { useState, useEffect, useMemo } from 'react'
+import { useState, useEffect, useMemo, useCallback } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
 import { loadPendingApprovals, approveSpecialPrice, rejectSpecialPrice, loadPriceApprovalEnabled, setPriceApprovalEnabled, notifyRepOfPriceRejection } from '../utils/cloudSync.js'
+
+// ─── Date helpers ─────────────────────────────────────────────────────────────
+const todayIST = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+const subtractDays = (dateStr, n) => {
+  const d = new Date(dateStr); d.setDate(d.getDate() - n); return d.toLocaleDateString('en-CA')
+}
+const fmtDisplay = (iso) => {
+  // "2026-09-16" → "16 Sep 2026"
+  const [y, m, day] = iso.split('-')
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec']
+  return `${parseInt(day, 10)} ${months[parseInt(m, 10) - 1]} ${y}`
+}
+
+// Quick-select presets
+const PRESETS = [
+  { label: 'Last 3 Days', getRange: () => { const t = todayIST(); return { from: subtractDays(t, 2), to: t } } },
+  { label: 'Today',       getRange: () => { const t = todayIST(); return { from: t, to: t } } },
+  { label: 'Yesterday',   getRange: () => { const t = todayIST(); const y = subtractDays(t, 1); return { from: y, to: y } } },
+  { label: 'Last 7 Days', getRange: () => { const t = todayIST(); return { from: subtractDays(t, 6), to: t } } },
+  { label: 'Last 30 Days',getRange: () => { const t = todayIST(); return { from: subtractDays(t, 29), to: t } } },
+]
 
 const APPROVE_REASONS = [
   { value: 'competitor',  label: 'Competitor Price',           needsName: true },
@@ -10,7 +31,7 @@ const APPROVE_REASONS = [
 ]
 const REJECT_REASONS = ['Price too low','Discount exceeds limit','Needs manager sign-off','Incorrect price entered','Others']
 
-export default function AdminApprovalsPage() {
+export default function AdminApprovalsPage({ dateRange, onDateRangeChange, onApprovalActioned }) {
   const { profile } = useAuth()
   const [rows,setRows]   = useState(null)
   const [busyId,setBusy] = useState(null)
@@ -18,6 +39,33 @@ export default function AdminApprovalsPage() {
   // Runtime toggle — loaded from DB; admin can flip without redeployment
   const [approvalOn, setApprovalOn]     = useState(true)
   const [toggleBusy, setToggleBusy]     = useState(false)
+
+  // Date range state — use the shared range from AdminApp when provided,
+  // fall back to internal state when rendered standalone (e.g. tests).
+  const defaultRange = useMemo(() => {
+    const t = todayIST(); return { from: subtractDays(t, 2), to: t }
+  }, [])
+  const [internalRange, setInternalRange] = useState(defaultRange)
+  const range = dateRange || internalRange
+  const setRange = useCallback((r) => {
+    setInternalRange(r)
+    onDateRangeChange?.(r)
+    setRows(null)
+  }, [onDateRangeChange])
+
+  // Custom range editing state
+  const [customFrom, setCustomFrom] = useState(range.from)
+  const [customTo,   setCustomTo]   = useState(range.to)
+  const [showCustom, setShowCustom] = useState(false)
+
+  // Which preset button is active (null = custom)
+  const activePreset = useMemo(() => {
+    const p = PRESETS.find((p) => {
+      const r = p.getRange()
+      return r.from === range.from && r.to === range.to
+    })
+    return p?.label || null
+  }, [range])
 
   useEffect(() => {
     loadPriceApprovalEnabled().then(setApprovalOn).catch(() => {})
@@ -43,8 +91,11 @@ export default function AdminApprovalsPage() {
   const [rejecting,setRejecting]           = useState(null)
   const [rejectReason,setRejectReason]     = useState('')
 
-  const refresh = () => { setRows(null); loadPendingApprovals().then(setRows).catch(()=>setRows([])) }
-  useEffect(()=>{ refresh() },[])
+  const refresh = useCallback(() => {
+    setRows(null)
+    loadPendingApprovals({ fromDate: range.from, toDate: range.to }).then(setRows).catch(() => setRows([]))
+  }, [range.from, range.to])
+  useEffect(() => { refresh() }, [refresh])
   const flash = (m) => { setToast(m); setTimeout(()=>setToast(''),3000) }
 
   const groups = useMemo(()=>{
@@ -70,6 +121,7 @@ export default function AdminApprovalsPage() {
         approvedPrice: finalApprovedPrice
       })
       setRows(prev=>prev.filter(r=>r.id!==approving.id));setApproving(null)
+      onApprovalActioned?.()
       flash(`Approved ₹${finalApprovedPrice ?? approving.unit_price} for ${approving.product_name}.`)
     }catch(e){console.error(e);alert('Could not approve.')}finally{setBusy(null)}
   }
@@ -95,13 +147,14 @@ export default function AdminApprovalsPage() {
         }
       } catch (e) { console.error('[notifyRep] failed to initiate (non-fatal)', e) }
       setRows(prev=>prev.filter(r=>r.id!==rejecting.id));setRejecting(null)
+      onApprovalActioned?.()
       flash(`Rejected ${rejecting.product_name}.`)
     }catch(e){console.error(e);alert('Could not reject.')}finally{setBusy(null)}
   }
 
   return(
     <div className="px-3 sm:px-6 pt-4 pb-10 max-w-3xl">
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-3">
         <div>
           <h1 className="text-lg font-bold text-slate-800">Price Approvals</h1>
           <p className="text-[12px] text-slate-400">Special/custom prices awaiting Admin sign-off.</p>
@@ -124,6 +177,73 @@ export default function AdminApprovalsPage() {
         </div>
       </div>
 
+      {/* ── Date Range Filter ─────────────────────────────────────────────── */}
+      <div className="mb-4 rounded-2xl bg-white border border-slate-100 px-4 py-3">
+        {/* Current range display */}
+        <div className="flex items-center justify-between mb-2.5">
+          <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Date Range</p>
+          <p className="text-xs font-bold text-slate-700">
+            {fmtDisplay(range.from)}{range.from !== range.to ? ` → ${fmtDisplay(range.to)}` : ''}
+          </p>
+        </div>
+        {/* Quick-select preset chips */}
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {PRESETS.map((p) => (
+            <button
+              key={p.label}
+              onClick={() => { const r = p.getRange(); setRange(r); setCustomFrom(r.from); setCustomTo(r.to); setShowCustom(false) }}
+              className={`px-2.5 py-1 rounded-full text-xs font-semibold border transition-colors ${
+                activePreset === p.label
+                  ? 'bg-brand-600 text-white border-brand-600'
+                  : 'text-slate-600 border-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+          <button
+            onClick={() => setShowCustom(!showCustom)}
+            className={`px-2.5 py-1 rounded-full text-xs font-semibold border transition-colors ${
+              activePreset === null
+                ? 'bg-brand-600 text-white border-brand-600'
+                : 'text-slate-600 border-slate-200 hover:bg-slate-50'
+            }`}
+          >
+            Custom
+          </button>
+        </div>
+        {/* Custom date range inputs */}
+        {showCustom && (
+          <div className="flex items-center gap-2 mt-2">
+            <input
+              type="date"
+              value={customFrom}
+              onChange={(e) => setCustomFrom(e.target.value)}
+              className="flex-1 rounded-lg border border-slate-200 px-2 py-1.5 text-xs outline-none focus:border-brand-500"
+            />
+            <span className="text-xs text-slate-400">→</span>
+            <input
+              type="date"
+              value={customTo}
+              max={todayIST()}
+              onChange={(e) => setCustomTo(e.target.value)}
+              className="flex-1 rounded-lg border border-slate-200 px-2 py-1.5 text-xs outline-none focus:border-brand-500"
+            />
+            <button
+              onClick={() => {
+                if (customFrom && customTo && customFrom <= customTo) {
+                  setRange({ from: customFrom, to: customTo })
+                  setShowCustom(false)
+                }
+              }}
+              className="px-3 py-1.5 rounded-lg bg-brand-600 text-white text-xs font-bold"
+            >
+              Apply
+            </button>
+          </div>
+        )}
+      </div>
+
       {/* Informational banner when approval is OFF */}
       {!approvalOn && (
         <div className="mb-4 rounded-xl bg-amber-50 border border-amber-200 px-4 py-3">
@@ -136,8 +256,14 @@ export default function AdminApprovalsPage() {
         <div className="py-16 flex justify-center"><div className="h-6 w-6 rounded-full border-4 border-slate-200 border-t-slate-800 animate-spin"/></div>
       ) : rows.length===0 ? (
         <div className="py-16 text-center">
-          <p className="font-semibold text-slate-600">No prices waiting for approval</p>
-          <p className="text-sm text-slate-400 mt-1">Every special-priced line has been decided.</p>
+          <p className="font-semibold text-slate-600">No pending approvals</p>
+          <p className="text-sm text-slate-400 mt-1">
+            No special-priced requests between {fmtDisplay(range.from)}{range.from !== range.to ? ` and ${fmtDisplay(range.to)}` : ''}.
+          </p>
+          <button onClick={() => { const r = PRESETS[4].getRange(); setRange(r); setCustomFrom(r.from); setCustomTo(r.to) }}
+            className="mt-3 text-xs font-semibold text-brand-700 underline">
+            Show last 30 days
+          </button>
         </div>
       ) : (
         <div className="space-y-5">

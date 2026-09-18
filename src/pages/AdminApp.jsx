@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
 import AdminShell from '../components/AdminShell.jsx'
 import AdminDashboard from '../pages/AdminDashboard.jsx'
@@ -33,18 +33,25 @@ export default function AdminApp() {
   const { profile, signOut } = useAuth()
   const [section, setSection] = useState('dashboard')
 
+  // Shared date range for Price Approvals — drives both the sidebar badge and
+  // the approvals page itself so they are always in sync. Default: last 3 IST days.
+  const todayIST = useMemo(() => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }), [])
+  const defaultFromIST = useMemo(() => {
+    const d = new Date(todayIST); d.setDate(d.getDate() - 2); return d.toLocaleDateString('en-CA')
+  }, [todayIST])
+  const [approvalDateRange, setApprovalDateRange] = useState({ from: defaultFromIST, to: todayIST })
+
   // Live count for the sidebar badge — refreshed on mount and periodically,
-  // plus immediately after visiting Approvals (so acting on one doesn't leave
-  // a stale number behind). Skipped entirely while PRICE_APPROVAL_ENABLED is
-  // false — nothing to count, no point polling.
+  // and whenever the selected date range changes. Skipped while flag is off.
   const [approvalsCount, setApprovalsCount] = useState(0)
   useEffect(() => {
     if (!PRICE_APPROVAL_ENABLED) return
-    const refresh = () => countPendingApprovals().then(setApprovalsCount).catch(() => {})
+    const refresh = () => countPendingApprovals({ fromDate: approvalDateRange.from, toDate: approvalDateRange.to })
+      .then(setApprovalsCount).catch(() => {})
     refresh()
     const id = setInterval(refresh, 60000)
     return () => clearInterval(id)
-  }, [])
+  }, [approvalDateRange])
 
   return (
     <AdminShell
@@ -91,7 +98,19 @@ export default function AdminApp() {
       {section === 'billing' && <AdminBillingView />}
       {section === 'qc' && <AdminQcView />}
       {section === 'delivery' && <AdminDeliveryView />}
-      {section === 'approvals' && <AdminApprovalsPage />}
+      {section === 'approvals' && (
+        <AdminApprovalsPage
+          dateRange={approvalDateRange}
+          onDateRangeChange={(range) => {
+            setApprovalDateRange(range)
+          }}
+          onApprovalActioned={() => {
+            // Re-count after approve/reject so the badge stays accurate
+            countPendingApprovals({ fromDate: approvalDateRange.from, toDate: approvalDateRange.to })
+              .then(setApprovalsCount).catch(() => {})
+          }}
+        />
+      )}
 
       {section === 'purchase-orders' && <AdminPurchaseOrdersView />}
 
