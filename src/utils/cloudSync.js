@@ -5502,34 +5502,85 @@ export async function loadCustomerLedgerCategory(shopName, route) {
 // ---------------------------------------------------------------------------
 
 /**
- * Load all order_items in pending-approval state for this sales rep.
- * Returns items grouped by order so the UI can show per-bill breakdowns.
- * Each item carries: id, order_id, product_name, qty, unit, unit_price,
- * normal_price, price_type, approval_status, approved_price, approval_reason,
- * and parent order fields (shop_name, route, order_date, bill_approval_status).
+ * Load ALL approval-related order items for this sales rep — pending, approved,
+ * and rejected. Includes bills that have been fully approved (so the APPROVED
+ * tab can be populated). Also fetches price_approval_history per item for the
+ * audit trail (attempt 1 → rejected → attempt 2 → approved, etc.).
+ *
+ * Returns items grouped by order. Each item carries:
+ *   id, order_id, product_name, qty, unit, unit_price, normal_price,
+ *   price_type, approval_status, approved_price, approved_by, approved_at,
+ *   approval_reason, rejection_reason, and history[].
  */
-export async function loadMyApprovalItems({ salesRepId } = {}) {
+export async function loadMyApprovalItems({ salesRepId, limitDays = 60 } = {}) {
   if (!salesRepId) return []
+  const since = new Date(Date.now() - limitDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
   const { data, error } = await supabase
     .from('orders')
-    .select(`id, shop_name, route, order_date, created_at, bill_approval_status, bill_approval_required,
+    .select(`id, shop_name, route, order_date, created_at, billing_status, bill_approval_status, bill_approval_required,
              order_items(id, product_name, product_id, qty, unit, unit_price, normal_price, price_type,
                          approval_status, approved_price, approved_by, approved_at,
                          approval_reason_type, approval_competitor_name, approval_other_reason,
-                         approval_reason, removed)`)
+                         approval_reason, rejection_reason, removed)`)
     .eq('bill_approval_required', true)
-    .neq('bill_approval_status', 'approved') // exclude fully-approved bills
     .eq('hidden', false)
     .eq('sales_rep_id', salesRepId)
+    .gte('order_date', since)
     .order('created_at', { ascending: false })
+    .limit(200)
   if (error) { console.error('[loadMyApprovalItems]', error); return [] }
 
-  // Flatten into order objects, each with an items array (only non-removed
-  // items that have a meaningful approval_status).
+  // Fetch approval history for all affected items (non-fatal)
+  const allItemIds = (data || []).flatMap((o) => (o.order_items || []).map((i) => i.id))
+  let historyMap = {}
+  if (allItemIds.length > 0) {
+    try {
+      const { data: hist } = await supabase
+        .from('price_approval_history')
+        .select('order_item_id, decision, requested_price, decided_by, decided_at, rejection_reason, approved_price')
+        .in('order_item_id', allItemIds)
+        .order('decided_at', { ascending: true })
+      if (hist) {
+        for (const h of hist) {
+          if (!historyMap[h.order_item_id]) historyMap[h.order_item_id] = []
+          historyMap[h.order_item_id].push(h)
+        }
+      }
+    } catch (e) { console.error('[loadMyApprovalItems] history fetch non-fatal', e) }
+  }
+
   return (data || []).map((order) => ({
     ...order,
-    items: (order.order_items || []).filter((it) => !it.removed)
+    items: (order.order_items || [])
+      .filter((it) => !it.removed && it.approval_status != null)
+      .map((it) => ({ ...it, history: historyMap[it.id] || [] }))
   })).filter((o) => o.items.length > 0)
+}
+
+/**
+ * Returns item-level counts {pending, approved, rejected} for the approval
+ * summary tiles on the Sales Rep's Admin Approval view. Counts individual
+ * product lines, not orders — as the spec requires.
+ */
+export async function loadMyApprovalSummary({ salesRepId, limitDays = 60 } = {}) {
+  if (!salesRepId) return { pending: 0, approved: 0, rejected: 0 }
+  const since = new Date(Date.now() - limitDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const { data, error } = await supabase
+    .from('order_items')
+    .select('approval_status, removed, orders!inner(sales_rep_id, bill_approval_required, hidden, order_date)')
+    .eq('orders.sales_rep_id', salesRepId)
+    .eq('orders.bill_approval_required', true)
+    .eq('orders.hidden', false)
+    .gte('orders.order_date', since)
+    .neq('removed', true)
+    .in('approval_status', ['pending', 'approved', 'rejected'])
+  if (error) { console.error('[loadMyApprovalSummary]', error); return { pending: 0, approved: 0, rejected: 0 } }
+  const rows = data || []
+  return {
+    pending:  rows.filter((r) => r.approval_status === 'pending').length,
+    approved: rows.filter((r) => r.approval_status === 'approved').length,
+    rejected: rows.filter((r) => r.approval_status === 'rejected').length,
+  }
 }
 
 /**

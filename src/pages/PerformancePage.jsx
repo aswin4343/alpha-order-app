@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, useRef } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
 import { useApp } from '../context/AppContext.jsx'
-import { loadMyPerformance, loadPerformanceForDate, currentUserId, resolvePeriodRange, loadMyShortageSummary, loadPendingApprovalBills, loadRejectedBills } from '../utils/cloudSync.js'
+import { loadMyPerformance, loadPerformanceForDate, currentUserId, resolvePeriodRange, loadMyShortageSummary, loadPendingApprovalBills, loadRejectedBills, loadMyApprovalSummary } from '../utils/cloudSync.js'
 import { supabase } from '../utils/supabase.js'
 import { BackIcon } from '../components/Icons.jsx'
 import VisitsListModal from '../components/VisitsListModal.jsx'
@@ -41,6 +41,8 @@ export default function PerformancePage({ onBack, onEditOrder }) {
   const [uid, setUid] = useState(null)
   const [pendingBills, setPendingBills] = useState(null)
   const [rejectedBills, setRejectedBills] = useState([])
+  // Item-level approval summary for the stat card (pending/approved/rejected counts)
+  const [approvalSummary, setApprovalSummary] = useState(null)
   // Realtime rejection popup — fires when Admin rejects a line while rep is on this screen
   const [rejectionPopup, setRejectionPopup] = useState(null) // { title, body } | null
   const realtimeChannelRef = useRef(null)
@@ -72,6 +74,8 @@ export default function PerformancePage({ onBack, onEditOrder }) {
       // Load this rep's bills awaiting Admin approval
       loadPendingApprovalBills({ salesRepId: id }).then((d) => { if (!cancelled) setPendingBills(d) }).catch(() => { if (!cancelled) setPendingBills([]) })
       loadRejectedBills({ salesRepId: id }).then((d) => { if (!cancelled) setRejectedBills(d) }).catch(() => { if (!cancelled) setRejectedBills([]) })
+      // Item-level approval summary for the stat card
+      loadMyApprovalSummary({ salesRepId: id }).then((s) => { if (!cancelled) setApprovalSummary(s) }).catch(() => {})
       try { const t = await loadMyPerformance(id); if (!cancelled) setTotals(t) } catch {}
 
       // Realtime: listen for price_rejection notifications addressed to this rep.
@@ -106,9 +110,14 @@ export default function PerformancePage({ onBack, onEditOrder }) {
                 .maybeSingle()
               if (ann && ann.notif_type === 'price_rejection') {
                 setRejectionPopup({ title: ann.title || 'Price Rejected', body: ann.body || '' })
-                // Also refresh the pending/rejected lists so counts update
+                // Refresh counts so cards update immediately
                 loadPendingApprovalBills({ salesRepId: id }).then(setPendingBills).catch(() => {})
                 loadRejectedBills({ salesRepId: id }).then(setRejectedBills).catch(() => {})
+                loadMyApprovalSummary({ salesRepId: id }).then(setApprovalSummary).catch(() => {})
+              } else if (ann && ann.notif_type === 'price_approved') {
+                // Also refresh on approval notifications
+                loadPendingApprovalBills({ salesRepId: id }).then(setPendingBills).catch(() => {})
+                loadMyApprovalSummary({ salesRepId: id }).then(setApprovalSummary).catch(() => {})
               }
             } catch (e) { console.error('[PerformancePage] realtime ann fetch failed', e) }
           }
@@ -272,17 +281,36 @@ export default function PerformancePage({ onBack, onEditOrder }) {
             </div>
             <div className="grid grid-cols-2 gap-2 mb-4">
               <StatCard label="Order Value" value={`₹${dayPerf.orderValue.toLocaleString('en-IN')}`} />
-              {/* Admin Approval Pending — separate from Billing pending.
-                  Also clickable when there are rejected bills (so rep can
-                  take action on rejected items even after count hits 0). */}
-              {pendingBills != null && (
+              {/* Admin Approval Pending — shows item-level pending count.
+                  Clickable whenever any approval activity exists (pending,
+                  approved, or rejected items) so the rep can always review
+                  and act on rejections. approvalSummary uses item-level
+                  counts, not order-level, matching the spec requirement. */}
+              {approvalSummary != null ? (
+                <StatCard
+                  label="Admin Approval Pending"
+                  value={approvalSummary.pending}
+                  sub={
+                    approvalSummary.rejected > 0
+                      ? `${approvalSummary.rejected} rejected · TAP`
+                      : approvalSummary.approved > 0
+                      ? `${approvalSummary.approved} approved`
+                      : undefined
+                  }
+                  onClick={
+                    (approvalSummary.pending > 0 || approvalSummary.rejected > 0 || approvalSummary.approved > 0)
+                      ? () => setOpenModal('adminPending')
+                      : undefined
+                  }
+                />
+              ) : pendingBills != null ? (
                 <StatCard
                   label="Admin Approval Pending"
                   value={pendingBills.length}
                   sub={rejectedBills.length > 0 ? `${rejectedBills.length} rejected` : undefined}
                   onClick={(pendingBills.length > 0 || rejectedBills.length > 0) ? () => setOpenModal('adminPending') : undefined}
                 />
-              )}
+              ) : null}
             </div>
             <p className="text-center text-[11px] text-slate-400">
               Order Value uses the actual selling price recorded on each order. Tap a highlighted card to see the details behind it.
