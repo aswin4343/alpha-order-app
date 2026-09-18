@@ -307,8 +307,16 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
       billNeedsApproval = items.some((i) => {
         const ep = i.finalSellingPrice != null ? i.finalSellingPrice : null
         if (ep == null || i.normalPrice == null) return false
-        // Only run if price governance fields are available (post-migration)
-        if (!i.priceVersion && !i.wholesaleThreshold) return false
+        // Fallback for products without SQL 63 governance fields: use the same
+        // isSpecial logic as the order_items insert (effectivePrice !== normalPrice,
+        // with box-unit and wholesale-customer exemptions).
+        if (!i.priceVersion && !i.wholesaleThreshold) {
+          const epN = ep, npN = i.normalPrice
+          if (epN === npN) return false
+          if (i.isBoxUnit && epN >= (i.wholesaleAtOrderTime ?? epN)) return false
+          if (isWholesaleCustomer && i.wholesaleAtOrderTime != null && Math.abs(epN - i.wholesaleAtOrderTime) < 0.001) return false
+          return epN !== npN
+        }
         const { approvalRequired } = evaluatePriceApproval({
           product: {
             retail: i.normalPrice,
@@ -332,6 +340,22 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     // Never block order saving due to approval engine errors
     console.warn('bill approval check failed (non-fatal):', e.message)
     billNeedsApproval = false
+  }
+
+  // [PRICE APPROVAL] Debug: log what is about to be saved
+  const _pendingItems = items.filter((i) => {
+    const ep = i.finalSellingPrice != null ? i.finalSellingPrice : null
+    if (ep == null || i.normalPrice == null) return false
+    const diff = ep !== i.normalPrice
+    if (!diff) return false
+    if (i.isBoxUnit && ep >= (i.wholesaleAtOrderTime ?? ep)) return false
+    if (isWholesaleCustomer && i.wholesaleAtOrderTime != null && Math.abs(ep - i.wholesaleAtOrderTime) < 0.001) return false
+    return true
+  })
+  if (_pendingItems.length > 0) {
+    console.log('[PRICE APPROVAL] Saving order with', _pendingItems.length, 'special-price item(s):',
+      _pendingItems.map(i => `${i.name}: normalPrice=₹${i.normalPrice} effectivePrice=₹${i.finalSellingPrice}`))
+    console.log('[PRICE APPROVAL] billNeedsApproval:', billNeedsApproval, '| isApprovalRequest:', isApprovalRequest, '| runtimeApprovalEnabled:', _runtimeApprovalEnabled, '| PRICE_APPROVAL_ENABLED:', PRICE_APPROVAL_ENABLED)
   }
 
   const { data: order, error } = await supabase
@@ -483,6 +507,23 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     throw new Error('order_items insert failed: ' + (itemsErr.message || 'unknown error'))
   }
 
+  // [PRICE APPROVAL] Debug: verify items were saved with correct approval_status
+  if (_pendingItems.length > 0) {
+    console.log('[PRICE APPROVAL] order_items inserted. Checking approval_status in DB for order', order.id)
+    supabase.from('order_items').select('id, product_name, unit_price, normal_price, is_special_price, approval_status')
+      .eq('order_id', order.id)
+      .then(({ data: dbRows, error: dbErr }) => {
+        if (dbErr) { console.error('[PRICE APPROVAL] verification query failed:', dbErr.message); return }
+        const pendingInDb = (dbRows || []).filter(r => r.approval_status === 'pending')
+        console.log('[PRICE APPROVAL] order', order.id, '— items in DB:', (dbRows || []).length,
+          '— with approval_status=pending:', pendingInDb.length,
+          pendingInDb.length === 0 ? '⚠ NONE PENDING — approval_status column may be missing (run sql/55_price_approval.sql)' : '✅')
+        if (dbRows && dbRows.length > 0) {
+          dbRows.forEach(r => console.log('[PRICE APPROVAL]  item:', r.product_name, '| unit_price:', r.unit_price, '| normal_price:', r.normal_price, '| is_special_price:', r.is_special_price, '| approval_status:', r.approval_status))
+        }
+      }).catch(() => {})
+  }
+
   // Notify Admin if any items require price approval AND flip all orders for
   // this shop on this date to pending_approval so Billing Team cannot see them
   // until Admin decides — including the parent order already in Billing queue.
@@ -498,8 +539,16 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
       const ep = i.finalSellingPrice ?? null
       if (ep == null || i.normalPrice == null) return false
       if (!i.priceVersion && !i.wholesaleThreshold) {
-        // Fallback: item-level approval_status was set to 'pending' at insert time
-        return i.isSpecial === true
+        // Fallback for products without SQL 63 governance fields: replicate the
+        // same isSpecial logic used at order_items insert time (line ~427).
+        // NOTE: i.isSpecial does NOT exist on item objects — this was the original
+        // bug that made approvalNeededItems always return false for these products,
+        // so the order status was never flipped to pending_approval and Admin was
+        // never notified.
+        if (ep === i.normalPrice) return false
+        if (i.isBoxUnit && ep >= (i.wholesaleAtOrderTime ?? ep)) return false
+        if (isWholesaleCustomer && i.wholesaleAtOrderTime != null && Math.abs(ep - i.wholesaleAtOrderTime) < 0.001) return false
+        return true
       }
       const { approvalRequired } = evaluatePriceApproval({
         product: {
@@ -514,7 +563,8 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
         qty: i.qty,
         selectedPrice: ep,
         priceType: i.priceType,
-        isBoxUnit: i.isBoxUnit
+        isBoxUnit: i.isBoxUnit,
+        isWholesaleCustomer: !!isWholesaleCustomer  // was missing — wholesale customer WP exemption
       })
       return approvalRequired
     })
@@ -5023,6 +5073,15 @@ export async function loadPendingApprovals({ fromDate, toDate } = {}) {
   const start = fromDate || defaultFrom
   const end   = toDate   || todayIST
 
+  // [ADMIN PRICE APPROVALS] Debug: log query parameters
+  const _nowIST = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+  const _nowTime = new Date().toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false })
+  console.log('[ADMIN PRICE APPROVALS] loadPendingApprovals called')
+  console.log('[ADMIN PRICE APPROVALS] Selected Start Date:', start)
+  console.log('[ADMIN PRICE APPROVALS] Selected End Date:', end)
+  console.log('[ADMIN PRICE APPROVALS] Current IST Date/Time:', _nowIST, _nowTime)
+  console.log('[ADMIN PRICE APPROVALS] Query: order_items WHERE approval_status=pending AND orders.order_date BETWEEN', start, 'AND', end)
+
   let q = supabase
     .from('order_items')
     .select(`
@@ -5034,7 +5093,18 @@ export async function loadPendingApprovals({ fromDate, toDate } = {}) {
     .lte('orders.order_date', end)
     .order('id', { ascending: false })
   const { data, error } = await q
-  if (error) { console.error('load pending approvals failed', error); return [] }
+  if (error) {
+    console.error('[ADMIN PRICE APPROVALS] Query Error:', error.message, error)
+    console.error('load pending approvals failed', error)
+    return []
+  }
+  console.log('[ADMIN PRICE APPROVALS] Returned Count:', (data || []).length, 'rows (before orders filter)')
+  if (data && data.length === 0) {
+    console.warn('[ADMIN PRICE APPROVALS] ⚠ NO PENDING APPROVALS FOUND for date range', start, '→', end)
+    console.warn('[ADMIN PRICE APPROVALS]   Possible causes: (1) approval_status column missing (run sql/55), (2) no orders in this date range have custom prices, (3) date filter is excluding new records, (4) orders.order_date is wrong')
+  } else if (data && data.length > 0) {
+    console.log('[ADMIN PRICE APPROVALS] ✅ Found items:', data.map(r => `${r.product_name} (order_date: ${r.orders?.order_date}, approval_status: pending)`).join(', '))
+  }
   const rows = (data || []).filter((r) => r.orders)
   const repIds = [...new Set(rows.map((r) => r.orders.sales_rep_id).filter(Boolean))]
   if (repIds.length) {
@@ -5083,14 +5153,21 @@ export async function countPendingApprovals({ fromDate, toDate } = {}) {
   const end   = toDate   || todayIST
 
   // Need to join orders to filter by order_date — head-count with !inner join.
+  console.log('[ADMIN PRICE APPROVALS] countPendingApprovals: date range', start, '→', end)
   const { data, error } = await supabase
     .from('order_items')
     .select('id, orders!inner(order_date)')
     .eq('approval_status', 'pending')
     .gte('orders.order_date', start)
     .lte('orders.order_date', end)
-  if (error) { console.error('count pending approvals failed', error); return 0 }
-  return (data || []).length
+  if (error) {
+    console.error('[ADMIN PRICE APPROVALS] countPendingApprovals Query Error:', error.message)
+    console.error('count pending approvals failed', error)
+    return 0
+  }
+  const cnt = (data || []).length
+  console.log('[ADMIN PRICE APPROVALS] countPendingApprovals: badge count =', cnt)
+  return cnt
 }
 
 /** Approve a special-priced line — it becomes normally billable immediately.
@@ -5652,25 +5729,41 @@ export async function loadMyApprovalItems({ salesRepId, limitDays = 60 } = {}) {
  * Returns item-level counts {pending, approved, rejected} for the approval
  * summary tiles on the Sales Rep's Admin Approval view. Counts individual
  * product lines, not orders — as the spec requires.
+ *
+ * IMPORTANT: uses the IDENTICAL query strategy as loadMyApprovalItems so the
+ * counts always match the lists. The previous implementation queried
+ * order_items with join filters on orders (.eq('orders.sales_rep_id', ...))
+ * which PostgREST does NOT apply as WHERE clauses on the outer query — they
+ * act as JOIN conditions and return rows from other reps' orders, making
+ * counts disagree with the filtered lists. This version queries orders first
+ * (direct filters) and flattens order_items client-side, identical to
+ * loadMyApprovalItems.
  */
 export async function loadMyApprovalSummary({ salesRepId, limitDays = 60 } = {}) {
   if (!salesRepId) return { pending: 0, approved: 0, rejected: 0 }
   const since = new Date(Date.now() - limitDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+
+  // Query orders directly (same filters as loadMyApprovalItems) so the
+  // sales_rep_id, bill_approval_required, hidden, and order_date filters are
+  // applied as true WHERE clauses on the orders table.
   const { data, error } = await supabase
-    .from('order_items')
-    .select('approval_status, removed, orders!inner(sales_rep_id, bill_approval_required, hidden, order_date)')
-    .eq('orders.sales_rep_id', salesRepId)
-    .eq('orders.bill_approval_required', true)
-    .eq('orders.hidden', false)
-    .gte('orders.order_date', since)
-    .neq('removed', true)
-    .in('approval_status', ['pending', 'approved', 'rejected'])
+    .from('orders')
+    .select('id, order_items(approval_status, removed)')
+    .eq('bill_approval_required', true)
+    .eq('hidden', false)
+    .eq('sales_rep_id', salesRepId)
+    .gte('order_date', since)
   if (error) { console.error('[loadMyApprovalSummary]', error); return { pending: 0, approved: 0, rejected: 0 } }
-  const rows = data || []
+
+  // Flatten items — same filter as loadMyApprovalItems line 5723:
+  //   !it.removed (null / false / undefined all pass) AND approval_status != null
+  const items = (data || []).flatMap((o) =>
+    (o.order_items || []).filter((it) => !it.removed && it.approval_status != null)
+  )
   return {
-    pending:  rows.filter((r) => r.approval_status === 'pending').length,
-    approved: rows.filter((r) => r.approval_status === 'approved').length,
-    rejected: rows.filter((r) => r.approval_status === 'rejected').length,
+    pending:  items.filter((r) => r.approval_status === 'pending').length,
+    approved: items.filter((r) => r.approval_status === 'approved').length,
+    rejected: items.filter((r) => r.approval_status === 'rejected').length,
   }
 }
 

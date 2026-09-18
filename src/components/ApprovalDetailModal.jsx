@@ -173,9 +173,12 @@ export default function ApprovalDetailModal({ onClose }) {
   }
 
   // Filter orders for the active tab — an order shows if it has at least
-  // one item matching the tab filter
+  // one item matching the tab filter.
+  // allItems (unfiltered) goes in _allItems so OrderApprovalCard header badges
+  // can show counts across ALL statuses regardless of the active tab.
   const visibleOrders = (orders || []).map((order) => ({
     ...order,
+    _allItems: order.items,   // full list — for header badge counts
     items: activeTab === 'all'
       ? order.items
       : order.items.filter((it) => it.approval_status === activeTab)
@@ -381,7 +384,11 @@ export default function ApprovalDetailModal({ onClose }) {
 
 // ── Per-order card ────────────────────────────────────────────────────────────
 function OrderApprovalCard({ order, activeTab, onResubmit, onRemove }) {
-  const allOrderItems = (order.order_items || []).filter((it) => !it.removed && it.approval_status != null)
+  // Header badge counts use _allItems (all approval items for this order,
+  // regardless of active tab) so the "2 pending / 1 rejected" summary always
+  // shows the full picture even when the tab is filtering to just one status.
+  // _allItems is set by the visibleOrders mapping in the parent component.
+  const allOrderItems = (order._allItems || order.items || [])
   const pendingCount  = allOrderItems.filter((i) => i.approval_status === 'pending').length
   const approvedCount = allOrderItems.filter((i) => i.approval_status === 'approved').length
   const rejectedCount = allOrderItems.filter((i) => i.approval_status === 'rejected').length
