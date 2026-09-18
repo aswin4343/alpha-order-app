@@ -5,7 +5,8 @@ import {
   loadInventoryMap, applyStockChange, recordPurchase, setMinimumStock,
   loadConsumption60d, buildInventoryAnalysis,
   loadInventoryTransactions, loadPurchases,
-  loadPurchaseAlertPushEnabled, setPurchaseAlertPushEnabled
+  loadPurchaseAlertPushEnabled, setPurchaseAlertPushEnabled,
+  loadPoDashboard, updatePoSchedule
 } from '../utils/cloudSync.js'
 import { inventoryStatus, STATUS_PILL, STATUS_DOT } from '../utils/inventoryStatus.js'
 import EnablePushBanner from '../components/EnablePushBanner.jsx'
@@ -20,7 +21,9 @@ export default function PurchaseManagerDashboard() {
   const [invMap, setInvMap] = useState(new Map())
   const [consMap, setConsMap] = useState(new Map())
   const [loading, setLoading] = useState(true)
-  const [tab, setTab] = useState('add')          // add | inventory | reorder | analysis
+  const [tab, setTab] = useState('add')          // add | inventory | reorder | analysis | po
+  const [poDashboard, setPoDashboard] = useState(null)
+  const [poLoading, setPoLoading] = useState(false)
   const [toast, setToast] = useState('')
 
   const refresh = useCallback(async () => {
@@ -37,7 +40,7 @@ export default function PurchaseManagerDashboard() {
   useEffect(() => { verifyPushSubscription('purchase_manager') }, [])
 
   // Deep-link: clicking a "Purchase Order Required" push (open OR closed app)
-  // should land the PM directly on Reorder Alerts, not the default tab.
+  // should land the PM directly on Reorder Alerts or the PO tab, not the default tab.
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
     if (params.get('purchase_reorder')) {
@@ -46,14 +49,34 @@ export default function PurchaseManagerDashboard() {
       url.searchParams.delete('purchase_reorder')
       window.history.replaceState({}, '', url)
     }
+    if (params.get('po_due')) {
+      setTab('po')
+      const url = new URL(window.location.href)
+      url.searchParams.delete('po_due')
+      window.history.replaceState({}, '', url)
+    }
     const onSwMessage = (event) => {
       if (event.data?.type === 'qc_open' && event.data?.data?.type === 'purchase_alert') {
         setTab('reorder')
+      }
+      if (event.data?.type === 'po_open') {
+        setTab('po')
       }
     }
     navigator.serviceWorker?.addEventListener?.('message', onSwMessage)
     return () => navigator.serviceWorker?.removeEventListener?.('message', onSwMessage)
   }, [])
+
+  // Load PO dashboard data when the PO tab is opened.
+  const refreshPo = useCallback(async () => {
+    setPoLoading(true)
+    const data = await loadPoDashboard(30)
+    setPoDashboard(data)
+    setPoLoading(false)
+  }, [])
+  useEffect(() => {
+    if (tab === 'po') refreshPo()
+  }, [tab, refreshPo])
 
   const analysis = useMemo(
     () => buildInventoryAnalysis(products, invMap, consMap),
@@ -75,7 +98,7 @@ export default function PurchaseManagerDashboard() {
           <button onClick={signOut} className="text-sm font-semibold text-red-600 px-2">Sign Out</button>
         </div>
         <div className="px-4 lg:px-6 flex gap-1 -mb-px overflow-x-auto">
-          {[['add', 'Add Stock'], ['inventory', 'Inventory'], ['table', 'Inventory Table'], ['reorder', 'Reorder Alerts'], ['analysis', 'Consumption'], ['history', 'Stock History'], ['purchases', 'Purchases']].map(([k, label]) => (
+          {[['po', 'Purchase Orders'], ['add', 'Add Stock'], ['inventory', 'Inventory'], ['table', 'Inventory Table'], ['reorder', 'Reorder Alerts'], ['analysis', 'Consumption'], ['history', 'Stock History'], ['purchases', 'Purchases']].map(([k, label]) => (
             <button key={k} onClick={() => setTab(k)}
               className={`px-4 py-2 text-sm font-semibold border-b-2 whitespace-nowrap ${tab === k ? 'border-brand-600 text-brand-700' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>
               {label}
@@ -88,6 +111,14 @@ export default function PurchaseManagerDashboard() {
         <div className="mb-3">
           <EnablePushBanner role="purchase_manager" label="Get purchase &amp; stock alerts instantly — even when the app is closed." />
         </div>
+        {tab === 'po' && (
+          <PurchaseOrdersTab
+            dashboard={poDashboard}
+            loading={poLoading}
+            onRefresh={refreshPo}
+            onFlash={flash}
+          />
+        )}
         {tab === 'add' && (
           <AddStock products={products} invMap={invMap} profile={profile}
             onDone={async (msg) => { await refresh(); flash(msg) }} />
@@ -662,6 +693,327 @@ function PurchaseHistory() {
           ))}
         </tbody>
       </table>
+    </div>
+  )
+}
+
+// ─── Purchase Orders Tab ─────────────────────────────────────────────────────
+
+const PO_STATUS_STYLE = {
+  UPCOMING:    { bg: 'bg-slate-100',   text: 'text-slate-600',   label: 'Upcoming' },
+  DUE:         { bg: 'bg-amber-100',   text: 'text-amber-700',   label: 'Due Today' },
+  NOTIFIED:    { bg: 'bg-blue-100',    text: 'text-blue-700',    label: 'Notified' },
+  IN_PROGRESS: { bg: 'bg-indigo-100',  text: 'text-indigo-700',  label: 'In Progress' },
+  PO_GENERATED:{ bg: 'bg-emerald-100', text: 'text-emerald-700', label: 'PO Generated' },
+  IGNORED:     { bg: 'bg-orange-100',  text: 'text-orange-700',  label: 'Ignored' },
+  ESCALATED:   { bg: 'bg-red-100',     text: 'text-red-700',     label: '🚨 Escalated' },
+  RESCHEDULED: { bg: 'bg-purple-100',  text: 'text-purple-700',  label: 'Rescheduled' },
+  COMPLETED:   { bg: 'bg-green-100',   text: 'text-green-700',   label: 'Completed' },
+}
+
+function StatusPill({ status }) {
+  const s = PO_STATUS_STYLE[status] || { bg: 'bg-slate-100', text: 'text-slate-600', label: status }
+  return (
+    <span className={`inline-flex items-center text-[11px] font-semibold px-2 py-0.5 rounded-full ${s.bg} ${s.text}`}>
+      {s.label}
+    </span>
+  )
+}
+
+function fmtDate(d) {
+  if (!d) return '—'
+  const dt = new Date(d + 'T00:00:00')
+  return dt.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
+function daysUntil(dateStr) {
+  if (!dateStr) return null
+  const today = new Date(); today.setHours(0,0,0,0)
+  const dt = new Date(dateStr + 'T00:00:00'); dt.setHours(0,0,0,0)
+  const diff = Math.round((dt - today) / 86400000)
+  return diff
+}
+
+function PurchaseOrdersTab({ dashboard, loading, onRefresh, onFlash }) {
+  const [actionModal, setActionModal] = useState(null) // { vendor, schedule, action }
+  const [filter, setFilter] = useState('all') // all | due | upcoming | escalated | generated
+
+  const vendors = dashboard?.vendors || []
+  const summary = dashboard?.summary || {}
+
+  // Play notification sound on load when there are escalated items
+  useEffect(() => {
+    if (!dashboard) return
+    if ((summary.escalated || 0) > 0 || (summary.due_today || 0) > 0) {
+      try {
+        const ctx = new (window.AudioContext || window.webkitAudioContext)()
+        const osc = ctx.createOscillator()
+        const gain = ctx.createGain()
+        osc.connect(gain); gain.connect(ctx.destination)
+        osc.type = 'sine'; osc.frequency.value = 880
+        gain.gain.setValueAtTime(0.3, ctx.currentTime)
+        gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 0.4)
+        osc.start(); osc.stop(ctx.currentTime + 0.4)
+      } catch {}
+    }
+  }, [dashboard, summary.escalated, summary.due_today])
+
+  const filtered = vendors.filter((v) => {
+    const s = v.upcoming_schedule
+    if (filter === 'all') return true
+    if (filter === 'due')       return s && ['DUE','NOTIFIED','IN_PROGRESS','IGNORED'].includes(s.status)
+    if (filter === 'upcoming')  return s && s.status === 'UPCOMING'
+    if (filter === 'escalated') return s && s.status === 'ESCALATED'
+    if (filter === 'generated') return s && ['PO_GENERATED','COMPLETED'].includes(s.status)
+    return true
+  })
+
+  // Sort: escalated → due → upcoming by date → generated
+  const sorted = [...filtered].sort((a, b) => {
+    const order = { ESCALATED:0, IGNORED:1, DUE:2, NOTIFIED:2, IN_PROGRESS:2, UPCOMING:3, RESCHEDULED:3, PO_GENERATED:4, COMPLETED:5 }
+    const sa = a.upcoming_schedule; const sb = b.upcoming_schedule
+    const oa = order[sa?.status || 'UPCOMING'] ?? 3
+    const ob = order[sb?.status || 'UPCOMING'] ?? 3
+    if (oa !== ob) return oa - ob
+    const da = sa?.effective_date || '9999'; const db = sb?.effective_date || '9999'
+    return da.localeCompare(db)
+  })
+
+  async function handleAction(scheduleId, action, extra = {}) {
+    try {
+      await updatePoSchedule({ scheduleId, action, ...extra })
+      onFlash(`${action === 'generate' ? 'PO Generated ✅' : action === 'complete' ? 'Completed ✅' : action === 'ignore' ? 'Ignored' : action === 'reschedule' ? 'Rescheduled' : 'Updated'} — refreshing…`)
+      setActionModal(null)
+      await onRefresh()
+    } catch (e) {
+      onFlash('Error: ' + (e?.message || 'Could not update'))
+    }
+  }
+
+  if (loading) {
+    return <div className="py-16 text-center text-slate-400 text-sm">Loading Purchase Orders…</div>
+  }
+  if (!dashboard) {
+    return (
+      <div className="py-16 text-center">
+        <p className="text-slate-400 text-sm mb-4">Could not load PO data.</p>
+        <button onClick={onRefresh} className="text-brand-700 font-semibold text-sm">Retry</button>
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      {/* Summary tiles */}
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 mb-5">
+        {[
+          { label: 'Due Today',        value: summary.due_today       || 0, color: 'text-amber-700',   bg: 'bg-amber-50',   filter: 'due'       },
+          { label: 'Escalated',        value: summary.escalated       || 0, color: 'text-red-700',     bg: 'bg-red-50',     filter: 'escalated' },
+          { label: 'Upcoming (7d)',    value: summary.upcoming_7days  || 0, color: 'text-blue-700',    bg: 'bg-blue-50',    filter: 'upcoming'  },
+          { label: 'Generated Today',  value: summary.generated_today || 0, color: 'text-emerald-700', bg: 'bg-emerald-50', filter: 'generated' },
+          { label: '⚠️ Unconfigured', value: summary.unconfigured    || 0, color: 'text-orange-700',  bg: 'bg-orange-50',  filter: 'all'       },
+        ].map((tile) => (
+          <button
+            key={tile.label}
+            onClick={() => setFilter(filter === tile.filter ? 'all' : tile.filter)}
+            className={`rounded-2xl p-3 text-center border transition-all ${tile.bg} ${filter === tile.filter ? 'ring-2 ring-brand-500' : 'border-transparent'}`}
+          >
+            <p className={`text-2xl font-bold ${tile.color}`}>{tile.value}</p>
+            <p className={`text-[11px] font-semibold mt-0.5 ${tile.color}`}>{tile.label}</p>
+          </button>
+        ))}
+      </div>
+
+      {/* Refresh + filter row */}
+      <div className="flex items-center justify-between mb-3">
+        <div className="flex gap-1.5 flex-wrap">
+          {[['all','All'],['due','Due'],['upcoming','Upcoming'],['escalated','Escalated'],['generated','Generated']].map(([k,l]) => (
+            <button key={k} onClick={() => setFilter(k)}
+              className={`px-3 py-1 rounded-full text-xs font-semibold border transition ${filter===k ? 'bg-brand-600 text-white border-brand-600' : 'text-slate-600 border-slate-200 hover:bg-slate-50'}`}>
+              {l}
+            </button>
+          ))}
+        </div>
+        <button onClick={onRefresh} className="text-xs text-brand-700 font-semibold px-3 py-1.5 rounded-lg border border-slate-200 hover:bg-slate-50">
+          Refresh
+        </button>
+      </div>
+
+      {/* Vendor PO cards */}
+      <div className="space-y-2">
+        {sorted.length === 0 && (
+          <p className="text-sm text-slate-400 text-center py-12">No vendors match this filter.</p>
+        )}
+        {sorted.map((v) => {
+          const s = v.upcoming_schedule
+          const days = s ? daysUntil(s.effective_date) : null
+          const isUnconfigured = v.config_incomplete
+          const isActionable = s && ['DUE','NOTIFIED','IN_PROGRESS','IGNORED','ESCALATED','RESCHEDULED'].includes(s.status)
+          const isDone = s && ['PO_GENERATED','COMPLETED'].includes(s.status)
+
+          return (
+            <div key={v.id}
+              className={`bg-white rounded-2xl border p-4 ${
+                s?.status === 'ESCALATED' ? 'border-red-300 bg-red-50/30' :
+                s?.status === 'IGNORED'   ? 'border-orange-300' :
+                ['DUE','NOTIFIED','IN_PROGRESS'].includes(s?.status||'') ? 'border-amber-300' :
+                'border-slate-100'
+              }`}
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="font-semibold text-slate-800 text-sm leading-tight">{v.vendor_name}</p>
+                    {v.brand && <span className="text-[10px] text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded font-medium">{v.brand}</span>}
+                    {isUnconfigured && <span className="text-[10px] text-orange-700 bg-orange-50 border border-orange-200 px-1.5 py-0.5 rounded font-semibold">⚠️ No PO Gap Set</span>}
+                  </div>
+                  <div className="flex items-center gap-3 mt-1 flex-wrap">
+                    {v.po_gap_days && <span className="text-[11px] text-slate-400">Every {v.po_gap_days}d{v.weekly_days ? ` (${v.weekly_days})` : ''}</span>}
+                    {v.lead_time_days && <span className="text-[11px] text-slate-400">Lead: {v.lead_time_days}d</span>}
+                    {v.last_po_date && <span className="text-[11px] text-slate-400">Last PO: {fmtDate(v.last_po_date)}</span>}
+                  </div>
+                </div>
+                <div className="text-right shrink-0">
+                  {s ? (
+                    <>
+                      <StatusPill status={s.status} />
+                      <p className="text-[11px] text-slate-500 mt-1">
+                        {s.status === 'UPCOMING'
+                          ? `${fmtDate(s.effective_date)}${days !== null ? ` (in ${days}d)` : ''}`
+                          : s.status === 'RESCHEDULED'
+                          ? `Rescheduled → ${fmtDate(s.effective_date)}`
+                          : fmtDate(s.effective_date)
+                        }
+                      </p>
+                    </>
+                  ) : (
+                    <span className="text-[11px] text-slate-300">No schedule</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Action buttons for actionable schedules */}
+              {isActionable && (
+                <div className="mt-3 flex gap-2 flex-wrap">
+                  <button
+                    onClick={() => setActionModal({ vendor: v, schedule: s, action: 'generate' })}
+                    className="flex-1 min-w-[120px] rounded-xl bg-emerald-600 text-white text-sm font-bold py-2.5 active:bg-emerald-700"
+                  >
+                    ✅ Mark PO Generated
+                  </button>
+                  <button
+                    onClick={() => setActionModal({ vendor: v, schedule: s, action: 'reschedule' })}
+                    className="rounded-xl border border-slate-200 text-slate-600 text-sm font-semibold py-2.5 px-3 active:bg-slate-50"
+                  >
+                    Reschedule
+                  </button>
+                  <button
+                    onClick={() => setActionModal({ vendor: v, schedule: s, action: 'ignore' })}
+                    className="rounded-xl border border-orange-200 text-orange-600 text-sm font-semibold py-2.5 px-3 active:bg-orange-50"
+                  >
+                    Ignore
+                  </button>
+                </div>
+              )}
+              {isDone && (
+                <p className="mt-2 text-[11px] text-emerald-700 font-semibold">
+                  PO Generated {s.po_generated_at ? `at ${new Date(s.po_generated_at).toLocaleTimeString('en-IN', { hour:'2-digit', minute:'2-digit' })}` : ''}
+                </p>
+              )}
+              {s?.notes && <p className="mt-1.5 text-[11px] text-slate-500 italic">Note: {s.notes}</p>}
+            </div>
+          )
+        })}
+      </div>
+
+      {/* Action Modal */}
+      {actionModal && (
+        <PoActionModal
+          vendor={actionModal.vendor}
+          schedule={actionModal.schedule}
+          defaultAction={actionModal.action}
+          onConfirm={handleAction}
+          onClose={() => setActionModal(null)}
+        />
+      )}
+    </div>
+  )
+}
+
+function PoActionModal({ vendor, schedule, defaultAction, onConfirm, onClose }) {
+  const [action, setAction] = useState(defaultAction)
+  const [notes, setNotes] = useState('')
+  const [rescheduleDate, setRescheduleDate] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const todayIST = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+
+  async function submit() {
+    setBusy(true)
+    await onConfirm(schedule.id, action, {
+      notes: notes.trim() || undefined,
+      rescheduleDate: action === 'reschedule' ? rescheduleDate || undefined : undefined
+    })
+    setBusy(false)
+  }
+
+  return (
+    <div className="fixed inset-0 z-[80] bg-black/40 flex items-end sm:items-center justify-center">
+      <div className="bg-white w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl p-5">
+        <h3 className="font-bold text-slate-800 mb-0.5">Purchase Order Action</h3>
+        <p className="text-xs text-slate-400 mb-4 truncate">{vendor.vendor_name}</p>
+
+        <div className="flex gap-2 mb-4">
+          {[['generate','✅ PO Generated'],['reschedule','📅 Reschedule'],['ignore','⏭ Ignore']].map(([k,l]) => (
+            <button key={k} onClick={() => setAction(k)}
+              className={`flex-1 rounded-xl py-2 text-xs font-semibold border transition ${action===k ? 'bg-brand-600 text-white border-brand-600' : 'text-slate-600 border-slate-200'}`}>
+              {l}
+            </button>
+          ))}
+        </div>
+
+        {action === 'reschedule' && (
+          <div className="mb-4">
+            <label className="block text-xs font-semibold text-slate-600 mb-1">New Date (one-time override)</label>
+            <input
+              type="date"
+              min={todayIST}
+              value={rescheduleDate}
+              onChange={(e) => setRescheduleDate(e.target.value)}
+              className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-brand-500"
+            />
+            <p className="text-[10px] text-slate-400 mt-1">This overrides only this cycle. Next cycle follows normal {vendor.po_gap_days}-day gap.</p>
+          </div>
+        )}
+
+        {action === 'ignore' && (
+          <p className="text-xs text-orange-700 bg-orange-50 rounded-xl p-3 mb-3">
+            If ignored for 24+ hours, this will auto-escalate to Admin.
+          </p>
+        )}
+
+        <div className="mb-4">
+          <label className="block text-xs font-semibold text-slate-600 mb-1">Notes (optional)</label>
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            rows={2}
+            placeholder="Any notes about this PO…"
+            className="w-full rounded-xl border border-slate-200 px-3 py-2 text-sm outline-none focus:border-brand-500 resize-none"
+          />
+        </div>
+
+        <button
+          onClick={submit}
+          disabled={busy || (action === 'reschedule' && !rescheduleDate)}
+          className="w-full rounded-xl bg-brand-600 text-white py-3 font-bold mb-2 active:bg-brand-700 disabled:opacity-50"
+        >
+          {busy ? 'Saving…' : action === 'generate' ? 'Confirm PO Generated' : action === 'reschedule' ? 'Confirm Reschedule' : 'Confirm Ignore'}
+        </button>
+        <button onClick={onClose} className="w-full rounded-xl border border-slate-200 text-slate-600 py-2.5 font-semibold text-sm">
+          Cancel
+        </button>
+      </div>
     </div>
   )
 }

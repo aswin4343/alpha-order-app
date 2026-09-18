@@ -5027,6 +5027,58 @@ export async function approveSpecialPrice(itemId, adminName, adminId, reasonPayl
     .eq('id', itemId)
     .eq('approval_status', 'pending') // idempotency guard
   if (error) throw error
+
+  // ─── CRITICAL FIX (v182) ───────────────────────────────────────────────────
+  // After approving this item, check whether any OTHER items in the same order
+  // still have approval_status='pending'. If none remain, promote the parent
+  // order from billing_status='pending_approval' → 'pending' so it becomes
+  // visible to the Billing Team. Without this step the order stays permanently
+  // hidden by loadBillingOrders' .neq('billing_status','pending_approval') filter.
+  try {
+    // Fetch the order_id for this item (and all sibling items in one query)
+    const { data: siblings } = await supabase
+      .from('order_items')
+      .select('id, order_id, approval_status, removed, qty, unit_price, approved_price')
+      .eq('id', itemId)
+      .maybeSingle()
+    if (siblings?.order_id) {
+      const orderId = siblings.order_id
+      // Count remaining pending items across the entire order
+      const { count: stillPending } = await supabase
+        .from('order_items')
+        .select('id', { count: 'exact', head: true })
+        .eq('order_id', orderId)
+        .eq('approval_status', 'pending')
+        .neq('removed', true)
+      if ((stillPending || 0) === 0) {
+        // All items resolved — recalculate totals from active (non-removed) items
+        const { data: activeItems } = await supabase
+          .from('order_items')
+          .select('qty, unit_price, approved_price, removed')
+          .eq('order_id', orderId)
+        const active = (activeItems || []).filter((r) => !r.removed)
+        const totalValue = active.reduce((s, r) => s + ((r.approved_price ?? r.unit_price ?? 0) * (r.qty || 0)), 0)
+        const totalQty = active.reduce((s, r) => s + (r.qty || 0), 0)
+        await supabase.from('orders').update({
+          billing_status: 'pending',
+          bill_approval_status: 'approved',
+          bill_approved_at: new Date().toISOString(),
+          bill_approval_required: false,
+          total_value: Math.round(totalValue),
+          total_quantity: totalQty,
+          total_products: active.length
+        })
+          .eq('id', orderId)
+          .eq('billing_status', 'pending_approval') // idempotency: only if still stuck
+      }
+    }
+  } catch (transitionErr) {
+    // Non-fatal: item is already approved; a stuck order is better than
+    // a thrown error that makes Admin think the approval itself failed.
+    console.error('[ADMIN APPROVAL] order transition to billing failed (non-fatal):', transitionErr)
+  }
+  // ─── END CRITICAL FIX ──────────────────────────────────────────────────────
+
   // Write audit history (non-fatal if history table not yet migrated)
   try {
     const { data: it } = await supabase
@@ -5070,6 +5122,65 @@ export async function rejectSpecialPrice(itemId, adminName, adminId, reason) {
     .eq('id', itemId)
     .eq('approval_status', 'pending')
   if (error) throw error
+
+  // ─── CRITICAL FIX (v182) ───────────────────────────────────────────────────
+  // Same as approveSpecialPrice: after rejecting this item check whether any
+  // sibling items are still 'pending'. If none remain, the order stays in
+  // pending_approval indefinitely — promote it so the Billing Team can see
+  // the approved (non-rejected) items and note the rejection.
+  // NOTE: We do NOT auto-promote if ANY approved items exist alongside
+  // rejected ones — the rep must explicitly remove rejected items first
+  // (which then triggers removeRejectedItemFromOrder's own promotion logic).
+  // We DO promote if every non-removed item is approved (rejection happened
+  // but other items passed — rare edge case where all items rejected is
+  // handled by the rep removing them one by one).
+  try {
+    const { data: refItem } = await supabase
+      .from('order_items')
+      .select('order_id')
+      .eq('id', itemId)
+      .maybeSingle()
+    if (refItem?.order_id) {
+      const orderId = refItem.order_id
+      const { count: stillPending } = await supabase
+        .from('order_items')
+        .select('id', { count: 'exact', head: true })
+        .eq('order_id', orderId)
+        .eq('approval_status', 'pending')
+        .neq('removed', true)
+      // Only auto-promote if there are approved items and nothing pending
+      if ((stillPending || 0) === 0) {
+        const { data: allItems } = await supabase
+          .from('order_items')
+          .select('qty, unit_price, approved_price, removed, approval_status')
+          .eq('order_id', orderId)
+        const active = (allItems || []).filter((r) => !r.removed)
+        const hasApproved = active.some((r) => r.approval_status === 'approved')
+        if (hasApproved) {
+          // At least some items approved, none pending — promote so Billing can
+          // process the approved items (they'll see rejection notes on the others)
+          const approvedItems = active.filter((r) => r.approval_status === 'approved')
+          const totalValue = approvedItems.reduce((s, r) => s + ((r.approved_price ?? r.unit_price ?? 0) * (r.qty || 0)), 0)
+          const totalQty = approvedItems.reduce((s, r) => s + (r.qty || 0), 0)
+          await supabase.from('orders').update({
+            billing_status: 'pending',
+            bill_approval_status: 'approved',
+            bill_approved_at: new Date().toISOString(),
+            bill_approval_required: false,
+            total_value: Math.round(totalValue),
+            total_quantity: totalQty,
+            total_products: approvedItems.length
+          })
+            .eq('id', orderId)
+            .eq('billing_status', 'pending_approval')
+        }
+      }
+    }
+  } catch (transitionErr) {
+    console.error('[ADMIN REJECTION] order transition to billing failed (non-fatal):', transitionErr)
+  }
+  // ─── END CRITICAL FIX ──────────────────────────────────────────────────────
+
   // Write audit history (non-fatal)
   try {
     const { data: it } = await supabase
@@ -5583,4 +5694,82 @@ export async function notifyRepOfPriceRejection({ orderId, productName, reason, 
     notifType: 'price_rejection',
     refOrderId: order.id
   })
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// Purchase Order Scheduling (v181)
+// ────────────────────────────────────────────────────────────────────────────
+
+/** Load full PO dashboard data: vendors + schedule summaries. */
+export async function loadPoDashboard(daysAhead = 30) {
+  const { data, error } = await supabase.rpc('load_po_dashboard', { p_days_ahead: daysAhead })
+  if (error) { console.error('loadPoDashboard error', error); return null }
+  return data
+}
+
+/** Load vendors list with their config (for admin editing). */
+export async function loadVendors() {
+  const { data, error } = await supabase
+    .from('vendors')
+    .select('*')
+    .eq('active', true)
+    .order('vendor_name')
+  if (error) { console.error('loadVendors error', error); return [] }
+  return data || []
+}
+
+/** Update a vendor's PO config (admin only). */
+export async function updateVendor(id, patch) {
+  const { error } = await supabase
+    .from('vendors')
+    .update(patch)
+    .eq('id', id)
+  if (error) throw error
+}
+
+/**
+ * PM action on a PO schedule.
+ * action: 'acknowledge' | 'generate' | 'ignore' | 'reschedule' | 'complete'
+ */
+export async function updatePoSchedule({ scheduleId, action, notes, rescheduleDate }) {
+  const { data, error } = await supabase.rpc('update_po_schedule', {
+    p_schedule_id:    scheduleId,
+    p_action:         action,
+    p_notes:          notes ?? null,
+    p_reschedule_date: rescheduleDate ?? null
+  })
+  if (error) throw error
+  return data
+}
+
+/** Load audit log for a specific schedule. */
+export async function loadPoAuditLog(scheduleId, limit = 50) {
+  const { data, error } = await supabase
+    .from('po_audit_log')
+    .select('*')
+    .eq('schedule_id', scheduleId)
+    .order('created_at', { ascending: false })
+    .limit(limit)
+  if (error) { console.error('loadPoAuditLog error', error); return [] }
+  return data || []
+}
+
+/** Load all PO schedules for admin monitoring view. */
+export async function loadPoSchedulesAdmin({ status, from, to } = {}) {
+  let q = supabase
+    .from('purchase_order_schedules')
+    .select(`
+      id, scheduled_date, rescheduled_date, effective_date, status,
+      notified_at, acknowledged_at, po_generated_at, ignored_at,
+      escalated_at, completed_at, notes, created_at,
+      vendors ( vendor_name, brand, po_gap_days )
+    `)
+    .order('effective_date', { ascending: false })
+    .limit(200)
+  if (status) q = q.eq('status', status)
+  if (from)   q = q.gte('effective_date', from)
+  if (to)     q = q.lte('effective_date', to)
+  const { data, error } = await q
+  if (error) { console.error('loadPoSchedulesAdmin error', error); return [] }
+  return data || []
 }

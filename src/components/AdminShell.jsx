@@ -11,7 +11,7 @@ import { PRICE_APPROVAL_ENABLED } from '../utils/featureFlags.js'
 const NAV_ITEMS = [
   { key: 'dashboard', label: 'Dashboard', icon: '📊' },
   { key: 'sales', label: 'Sales', icon: '🧑‍💼', soon: true },
-  { key: 'orders', label: 'Orders', icon: '🛒', soon: true },
+  { key: 'purchase-orders', label: 'Purchase Orders', icon: '📦' },
   { key: 'billing', label: 'Billing', icon: '🧾' },
   { key: 'approvals', label: 'Price Approvals', icon: '🛡️' },
   { key: 'approval-report', label: 'Approval History', icon: '📋' },

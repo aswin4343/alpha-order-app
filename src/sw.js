@@ -36,25 +36,45 @@ self.addEventListener('push', (event) => {
     data = { title: 'Alpha Trade Links', body: event.data ? event.data.text() : '' }
   }
 
+  const notifType = (data.data && data.data.type) || 'qc_new'
   const title = data.title || '🔔 New Quality Check Required'
+
+  // PO reminders use a distinct tag per vendor so each fires independently.
+  let tag = 'qc'
+  if (notifType === 'po_reminder' && data.data && data.data.vendor_id) {
+    tag = `po-${data.data.vendor_id}`
+  } else if (notifType === 'po_escalation' && data.data && data.data.schedule_id) {
+    tag = `po-esc-${data.data.schedule_id}`
+  } else if (data.data && data.data.delivery_id) {
+    tag = `qc-${data.data.delivery_id}`
+  }
+
+  // PO notifications play a sound via a silent audio trick in the click handler.
+  // requireInteraction keeps the PO alert visible until the PM acts.
   const options = {
     body: data.body || 'A bill has been verified and is ready for Quality Check.',
     icon: '/pwa-192.png',
     badge: '/pwa-192.png',
-    tag: data.data && data.data.delivery_id ? `qc-${data.data.delivery_id}` : 'qc',
+    tag,
     renotify: true,
-    requireInteraction: true, // stays until QC taps it
+    requireInteraction: notifType === 'po_reminder' || notifType === 'po_escalation' || true,
     data: data.data || {}
   }
 
   event.waitUntil(self.registration.showNotification(title, options))
 })
 
-// --- Notification click: deep-link to the relevant QC task --------------------
+// --- Notification click: deep-link to the relevant QC or PO task -------------
 self.addEventListener('notificationclick', (event) => {
   event.notification.close()
   const d = event.notification.data || {}
   const targetUrl = d.url || '/'
+  const notifType = d.type || 'qc_new'
+
+  // Determine the message type to post to the app window.
+  const msgType = (notifType === 'po_reminder' || notifType === 'po_escalation')
+    ? 'po_open'
+    : 'qc_open'
 
   event.waitUntil(
     (async () => {
@@ -63,7 +83,7 @@ self.addEventListener('notificationclick', (event) => {
       for (const client of allClients) {
         if ('focus' in client) {
           await client.focus()
-          client.postMessage({ type: 'qc_open', data: d })
+          client.postMessage({ type: msgType, data: d })
           return
         }
       }
