@@ -237,11 +237,6 @@ BEGIN
         DECLARE
           day_names text[] := string_to_array(UPPER(TRIM(v.weekly_days)), ',');
           day_name  text;
-          adjusted  date := next_d;
-          offset    integer;
-          dow_map   integer[] := ARRAY[0,1,2,3,4,5,6]; -- Sun=0..Sat=6
-          -- ISO weekday for each day name
-          name_dow  hstore := 'SUNDAY=>0,MONDAY=>1,TUESDAY=>2,WEDNESDAY=>3,THURSDAY=>4,FRIDAY=>5,SATURDAY=>6'::hstore;
           best_date date := NULL;
           candidate date;
           wday_num  integer;
@@ -249,22 +244,31 @@ BEGIN
         BEGIN
           FOREACH day_name IN ARRAY day_names LOOP
             day_name := TRIM(day_name);
-            wday_num := (name_dow -> day_name)::integer;
-            -- ISO dow: Mon=1..Sun=7; convert to Sun=0..Sat=6
+            -- Map day name → Sun=0..Sat=6 using CASE (no hstore extension needed)
+            wday_num := CASE day_name
+              WHEN 'SUNDAY'    THEN 0
+              WHEN 'MONDAY'    THEN 1
+              WHEN 'TUESDAY'   THEN 2
+              WHEN 'WEDNESDAY' THEN 3
+              WHEN 'THURSDAY'  THEN 4
+              WHEN 'FRIDAY'    THEN 5
+              WHEN 'SATURDAY'  THEN 6
+              ELSE NULL
+            END;
+            CONTINUE WHEN wday_num IS NULL;
             days_diff := (wday_num - EXTRACT(DOW FROM next_d)::integer + 7) % 7;
             candidate := next_d + days_diff;
             IF best_date IS NULL OR candidate < best_date THEN
               best_date := candidate;
             END IF;
           END LOOP;
-          adjusted := COALESCE(best_date, next_d);
-          next_d := adjusted;
+          next_d := COALESCE(best_date, next_d);
         END;
       END IF;
 
       -- Idempotent insert — skip if row already exists for this vendor+date
       INSERT INTO purchase_order_schedules (vendor_id, scheduled_date, status)
-      VALUES (v.id, next_d, CASE WHEN next_d = today THEN 'DUE' ELSE 'UPCOMING' END)
+      VALUES (v.id, next_d, CASE WHEN next_d = today THEN 'DUE'::po_status ELSE 'UPCOMING'::po_status END)
       ON CONFLICT (vendor_id, scheduled_date) DO NOTHING;
 
       GET DIAGNOSTICS inserted_action = ROW_COUNT;
