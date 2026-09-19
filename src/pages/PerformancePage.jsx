@@ -74,22 +74,46 @@ export default function PerformancePage({ onBack, onEditOrder }) {
       // Load this rep's bills awaiting Admin approval
       loadPendingApprovalBills({ salesRepId: id }).then((d) => { if (!cancelled) setPendingBills(d) }).catch(() => { if (!cancelled) setPendingBills([]) })
       loadRejectedBills({ salesRepId: id }).then((d) => { if (!cancelled) setRejectedBills(d) }).catch(() => { if (!cancelled) setRejectedBills([]) })
-      // Item-level approval summary for the stat card
+      // Item-level approval summary for the stat card — initial load uses no date
+      // filter (60-day default) so the count is always populated before period picker
+      // is interacted with. The period-aware refresh happens in the range effect below.
       loadMyApprovalSummary({ salesRepId: id }).then((s) => { if (!cancelled) setApprovalSummary(s) }).catch(() => {})
       try { const t = await loadMyPerformance(id); if (!cancelled) setTotals(t) } catch {}
 
-      // Realtime: listen for price_rejection notifications addressed to this rep.
-      // When Admin rejects a price-approval item from the Admin dashboard, a
-      // notifyRepOfPriceRejection() call inserts a row into announcement_recipients
-      // with recipient_id = this rep's uid. The realtime channel fires here, and
-      // we surface a non-blocking popup so the rep knows immediately — even if they
-      // are already on this screen rather than navigating in cold.
+      // Realtime: two channels keep the approval stat card in sync.
+      //
+      // Channel 1 — watches orders UPDATE for this rep's sales_rep_id directly.
+      //   This fires the moment Admin approves or rejects an order, so the
+      //   "Admin Approval Pending" card count updates instantly without waiting
+      //   for an announcement to be written. Uses a filter so only this rep's
+      //   own orders trigger the refresh.
+      //
+      // Channel 2 — watches announcement_recipients INSERT addressed to this rep.
+      //   Fires when notifyRepOfPriceRejection() writes a notification. Used
+      //   to show the popup toast AND as a secondary refresh trigger.
       if (realtimeChannelRef.current) {
         supabase.removeChannel(realtimeChannelRef.current)
         realtimeChannelRef.current = null
       }
       const channel = supabase
-        .channel(`approval_rejection_${id}`)
+        .channel(`approval_realtime_${id}`)
+        // Direct order status change → refresh counts immediately
+        .on(
+          'postgres_changes',
+          {
+            event: 'UPDATE',
+            schema: 'public',
+            table: 'orders',
+            filter: `sales_rep_id=eq.${id}`
+          },
+          () => {
+            // Re-fetch approval summary whenever any of this rep's orders are updated
+            loadPendingApprovalBills({ salesRepId: id }).then(setPendingBills).catch(() => {})
+            loadRejectedBills({ salesRepId: id }).then(setRejectedBills).catch(() => {})
+            loadMyApprovalSummary({ salesRepId: id }).then(setApprovalSummary).catch(() => {})
+          }
+        )
+        // Announcement notification → show popup + refresh (belt-and-suspenders)
         .on(
           'postgres_changes',
           {
@@ -110,12 +134,12 @@ export default function PerformancePage({ onBack, onEditOrder }) {
                 .maybeSingle()
               if (ann && ann.notif_type === 'price_rejection') {
                 setRejectionPopup({ title: ann.title || 'Price Rejected', body: ann.body || '' })
-                // Refresh counts so cards update immediately
+                // Refresh counts (the orders UPDATE channel may have already done this,
+                // but refreshing twice is harmless — both return the same data)
                 loadPendingApprovalBills({ salesRepId: id }).then(setPendingBills).catch(() => {})
                 loadRejectedBills({ salesRepId: id }).then(setRejectedBills).catch(() => {})
                 loadMyApprovalSummary({ salesRepId: id }).then(setApprovalSummary).catch(() => {})
               } else if (ann && ann.notif_type === 'price_approved') {
-                // Also refresh on approval notifications
                 loadPendingApprovalBills({ salesRepId: id }).then(setPendingBills).catch(() => {})
                 loadMyApprovalSummary({ salesRepId: id }).then(setApprovalSummary).catch(() => {})
               }
@@ -141,6 +165,18 @@ export default function PerformancePage({ onBack, onEditOrder }) {
     () => resolvePeriodRange(periodMode, dateStr),
     [periodMode, dateStr]
   )
+
+  // Refresh the approval summary whenever the period range changes so the
+  // "Admin Approval Pending" stat card matches the same date window the rest
+  // of the page is using. This keeps the modal tile counts and the stat card
+  // in agreement (both use the same dateFrom/dateTo when the modal is opened).
+  useEffect(() => {
+    if (!uid) return
+    loadMyApprovalSummary({ salesRepId: uid, dateFrom: range.start, dateTo: range.end })
+      .then(setApprovalSummary)
+      .catch(() => {})
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [uid, range])
 
   // Load performance for the selected period + route. Empty route → all
   // routes (original behaviour unchanged when mode='today'/no route picked).
@@ -415,7 +451,11 @@ export default function PerformancePage({ onBack, onEditOrder }) {
       </main>
 
       {openModal === 'adminPending' && (
-        <ApprovalDetailModal onClose={() => setOpenModal(null)} />
+        <ApprovalDetailModal
+          onClose={() => setOpenModal(null)}
+          dateFrom={range.start}
+          dateTo={range.end}
+        />
       )}
 
       {/* Realtime rejection popup — fires when Admin rejects a price while this

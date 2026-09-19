@@ -457,7 +457,15 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
       // (spec: retain original entry). qty above is ALWAYS pieces; these two
       // record e.g. "3 Outer" that produced it. Null-safe for old callers.
       entered_qty: i.entered_qty ?? null,
-      entered_unit: i.entered_unit ?? null
+      entered_unit: i.entered_unit ?? null,
+      // Price version at the time this order was placed — used by
+      // loadCustomerLastPrices to detect stale Last Prices. When the product's
+      // price_version is later bumped by a price revision, any Last Price derived
+      // from THIS order item will be recognised as belonging to an older version
+      // and will require Admin approval before use (v193). Null-safe: items from
+      // older code paths that don't carry priceVersion just store null here,
+      // which is treated as "unknown version — no staleness check".
+      approved_price_version: i.priceVersion ?? null
     }
     })
   } catch (buildErr) {
@@ -477,13 +485,14 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
   // then reach Billing empty, add-ons included. Strip the optional columns and
   // retry so the order is never lost over a column that only affects
   // reporting.
-  if (itemsErr && /approval_status|entered_qty|entered_unit/i.test(String(itemsErr.message || ''))) {
+  if (itemsErr && /approval_status|entered_qty|entered_unit|approved_price_version/i.test(String(itemsErr.message || ''))) {
     console.warn(
-      'order_items is missing approval_status/entered_qty/entered_unit — run ' +
-      'sql/55_price_approval.sql (and 42_product_packaging.sql). ' +
+      'order_items is missing approval_status/entered_qty/entered_unit/approved_price_version — run ' +
+      'sql/55_price_approval.sql (and 42_product_packaging.sql and 63_price_versioning.sql). ' +
       'Saving order items without those columns for now.'
     )
-    const slimRows = rows.map(({ approval_status, entered_qty, entered_unit, ...keep }) => keep)
+    // eslint-disable-next-line no-unused-vars
+    const slimRows = rows.map(({ approval_status, entered_qty, entered_unit, approved_price_version, ...keep }) => keep)
     ;({ error: itemsErr } = await supabase.from('order_items').insert(slimRows))
   }
   if (itemsErr) {
@@ -663,7 +672,12 @@ export async function loadCustomerLastPrices(shopName, customerId = null) {
   const runQuery = async (filter) => {
     const q = supabase
       .from('orders')
-      .select('id, shop_name, customer_id, billing_status, order_date, created_at, billing_verified_at, order_items(product_name, unit_price, approved_price, removed)')
+      // approved_price_version: the product's price_version at the time this
+      // order item was saved. Used here to detect whether the customer's Last
+      // Price is stale (the product's version has since been bumped by a price
+      // revision), so ProductCard can show the version-mismatch warning and
+      // route the line through Admin approval.
+      .select('id, shop_name, customer_id, billing_status, order_date, created_at, billing_verified_at, order_items(product_name, unit_price, approved_price, approved_price_version, removed)')
       .eq('hidden', false)
       .eq('billing_status', 'verified')
       .order('created_at', { ascending: false })
@@ -714,6 +728,11 @@ export async function loadCustomerLastPrices(shopName, customerId = null) {
     return tb - ta
   })
   dbg(`Processing ${orders.length} verified orders...`)
+  // Returns { PRODUCT_NAME: { price, priceVersion } }
+  // priceVersion = approved_price_version stored on the order_item at the time
+  // the order was saved — tells us which product price_version was current when
+  // this Last Price was established. If the product's current price_version no
+  // longer matches, the Last Price is stale and requires Admin approval before use.
   const out = {}
   for (const o of orders) {
     for (const it of o.order_items || []) {
@@ -725,8 +744,13 @@ export async function loadCustomerLastPrices(shopName, customerId = null) {
       // unit_price     = what the rep entered / billing accepted as-is
       const price = it.approved_price ?? it.unit_price
       if (price == null) continue
-      out[key] = price
-      dbg(`  ${key} → ₹${price} (order ${o.id.slice(-6)}, date ${o.order_date}, verified_at ${o.billing_verified_at || 'null'})`)
+      // approved_price_version — present on rows saved after SQL 63 ran.
+      // null/undefined for older rows (pre-versioning): treated as "unknown"
+      // so we never incorrectly stale a Last Price that predates the versioning
+      // system (a null priceVersion simply means "no version info; don't warn").
+      const priceVersion = it.approved_price_version ?? null
+      out[key] = { price, priceVersion }
+      dbg(`  ${key} → ₹${price} (v${priceVersion ?? '?'}) (order ${o.id.slice(-6)}, date ${o.order_date}, verified_at ${o.billing_verified_at || 'null'})`)
     }
   }
   dbg(`Result: ${Object.keys(out).length} products with last price`)
@@ -3868,7 +3892,10 @@ export async function updateCloudOrder(orderId, { items, userId, isApprovalReque
         unit: i.unit || ex.unit || "Piece",
         unit_price: ep != null ? ep : ex.unit_price,
         price_type: i.priceType || null,
-        normal_price: i.normalPrice ?? null
+        normal_price: i.normalPrice ?? null,
+        // Refresh price version on update so loadCustomerLastPrices can detect
+        // staleness if the product's version bumps again after this edit.
+        approved_price_version: i.priceVersion ?? null
       }
       if (isApprovalRequest) {
         // Only set approval fields when rep is explicitly requesting approval —
@@ -3904,7 +3931,9 @@ export async function updateCloudOrder(orderId, { items, userId, isApprovalReque
         gst_percent: i.gst ?? null,
         hsn: i.hsn ?? null,
         scheme_enabled: i.schemeEnabled !== false,
-        approval_status: (approvalEnabled && isApprovalRequest && isSpecial) ? 'pending' : null
+        approval_status: (approvalEnabled && isApprovalRequest && isSpecial) ? 'pending' : null,
+        // Price version at the time of edit — same as saveCloudOrder
+        approved_price_version: i.priceVersion ?? null
       }
       const { error: insErr } = await supabase.from("order_items").insert(insertRow)
       if (insErr) throw insErr
@@ -5865,10 +5894,11 @@ export async function loadCustomerLedgerCategory(shopName, route) {
  *   'rejected' — Admin rejected the order; rep needs to resubmit
  *   'approved' — Admin approved; order went to Billing
  */
-export async function loadMyApprovalItems({ salesRepId, limitDays = 60 } = {}) {
+export async function loadMyApprovalItems({ salesRepId, limitDays = 60, dateFrom, dateTo } = {}) {
   if (!salesRepId) return []
-  const since = new Date(Date.now() - limitDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
-  const { data, error } = await supabase
+  // If explicit date range provided (from period picker), use it; otherwise fall back to limitDays window
+  const since = dateFrom || new Date(Date.now() - limitDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  let query = supabase
     .from('orders')
     .select(`id, shop_name, route, order_date, created_at, billing_status,
              bill_approval_status, bill_approval_required, bill_rejection_reason,
@@ -5883,6 +5913,8 @@ export async function loadMyApprovalItems({ salesRepId, limitDays = 60 } = {}) {
     .gte('order_date', since)
     .order('created_at', { ascending: false })
     .limit(200)
+  if (dateTo) query = query.lte('order_date', dateTo)
+  const { data, error } = await query
   if (error) { console.error('[loadMyApprovalItems]', error); return [] }
 
   // Fetch order-level approval history from price_approval_history
@@ -5925,9 +5957,10 @@ export async function loadMyApprovalItems({ salesRepId, limitDays = 60 } = {}) {
  * IMPORTANT: uses the IDENTICAL query strategy as loadMyApprovalItems so the
  * counts always match the lists.
  */
-export async function loadMyApprovalSummary({ salesRepId, limitDays = 60 } = {}) {
+export async function loadMyApprovalSummary({ salesRepId, limitDays = 60, dateFrom, dateTo } = {}) {
   if (!salesRepId) return { pending: 0, approved: 0, rejected: 0 }
-  const since = new Date(Date.now() - limitDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  // If explicit date range provided (from period picker), use it; otherwise fall back to limitDays window
+  const since = dateFrom || new Date(Date.now() - limitDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
   // Include order_items so we can apply the SAME existence filter that
   // loadMyApprovalItems applies: only count orders that have at least one
@@ -5935,13 +5968,15 @@ export async function loadMyApprovalSummary({ salesRepId, limitDays = 60 } = {})
   // removed=true would be counted here but never appear in the list — the
   // exact "Pending: 2 / No orders waiting for approval" mismatch seen in the
   // v190 screenshot bug.
-  const { data, error } = await supabase
+  let query = supabase
     .from('orders')
     .select('id, bill_approval_status, order_items(id, removed)')
     .eq('bill_approval_required', true)
     .eq('hidden', false)
     .eq('sales_rep_id', salesRepId)
     .gte('order_date', since)
+  if (dateTo) query = query.lte('order_date', dateTo)
+  const { data, error } = await query
   if (error) { console.error('[loadMyApprovalSummary]', error); return { pending: 0, approved: 0, rejected: 0 } }
 
   // Mirror loadMyApprovalItems: only count orders with at least one non-removed item.

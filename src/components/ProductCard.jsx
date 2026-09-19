@@ -148,7 +148,7 @@ function EditableBoxTag({ value, overridden, onChange }) {
  * line's own priceType + finalRate (stored in `override`), so the master
  * catalogue is completely unaffected by a rep's per-order choice.
  */
-function PriceSelector({ product, override, onOverride, lastPrice, defaultPriceType, onRemoveProduct }) {
+function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVersion, defaultPriceType, onRemoveProduct }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   // Warning modal state: shown when rep selects LAST price but the official
@@ -204,14 +204,24 @@ function PriceSelector({ product, override, onOverride, lastPrice, defaultPriceT
     : (activeOption?.value ?? options[0].value)
 
   const selectType = (type) => {
-    // When rep selects LAST price and the product's official price has changed
-    // since that last price was set, show the two-option warning (spec 61).
-    if (type === 'LAST' && lastPrice != null && product.price_increased) {
-      const currentFloor = product.retail ?? product.wholesale ?? null
+    // When rep selects LAST price and the product's price has been revised
+    // since that last price was established (version mismatch), show the
+    // warning modal. Uses version-based staleness — not price_increased alone —
+    // so a price decrease or any other revision (not just an increase) is
+    // correctly caught. Only fires when we have version info for both the
+    // Last Price and the current product; if either is null (old order rows
+    // pre-dating versioning) we skip the check and let the order flow normally.
+    if (type === 'LAST' && lastPrice != null) {
+      // Version-based staleness: the Last Price is stale when the version it
+      // was saved under no longer matches the product's current version.
+      const lastPriceIsStale = lastPriceVersion != null &&
+        product.price_version != null &&
+        lastPriceVersion !== product.price_version
       const lastApprovedValid = product.last_approved_price != null &&
+        product.last_approved_version != null &&
         product.last_approved_version === (product.price_version ?? 1) &&
         Math.abs(product.last_approved_price - lastPrice) < 0.01
-      if (currentFloor != null && lastPrice < currentFloor - 0.001 && !lastApprovedValid) {
+      if (lastPriceIsStale && !lastApprovedValid) {
         setShowLastPriceWarning(true)
         return
       }
@@ -252,17 +262,22 @@ function PriceSelector({ product, override, onOverride, lastPrice, defaultPriceT
     <div className="flex flex-wrap items-center gap-1">
       {options.map((o) => {
         const isActive = !isCustom && activeType === o.type
-        // Show amber ⚠ on LAST chip only when it genuinely needs approval:
-        // - price has increased since last order, AND
-        // - lastPrice is below current floor, AND
-        // - there's no existing valid Admin-approved price for current version
+        // Show amber ⚠ on LAST chip when the Last Price is stale:
+        // - the price_version under which that Last Price was saved no longer
+        //   matches the product's current price_version (any revision, not just
+        //   an increase), AND
+        // - there's no existing valid Admin-approved price for the current version.
+        // Skipped when version info is absent (null) — older order rows that
+        // pre-date versioning are treated as "no change known; don't warn".
         const lastApprovedValid = product.last_approved_price != null &&
           product.last_approved_version != null &&
           product.last_approved_version === (product.price_version ?? 1) &&
           Math.abs(product.last_approved_price - (lastPrice ?? 0)) < 0.01
+        const lastPriceIsStale = lastPriceVersion != null &&
+          product.price_version != null &&
+          lastPriceVersion !== product.price_version
         const lastPriceNeedsApproval = o.type === 'LAST' && lastPrice != null &&
-          product.price_increased &&
-          (product.retail ?? product.wholesale ?? 0) > lastPrice + 0.001 &&
+          lastPriceIsStale &&
           !lastApprovedValid
         return (
           <button
@@ -307,20 +322,23 @@ function PriceSelector({ product, override, onOverride, lastPrice, defaultPriceT
           3. Cancel — Go Back to Edit (rep adjusts price themselves)          */}
     {showLastPriceWarning && (() => {
       const currentFloor = product.retail ?? product.wholesale ?? 0
-      const actualPct = lastPrice > 0 ? ((currentFloor - lastPrice) / lastPrice) * 100 : 0
+      const diff = currentFloor - lastPrice
+      const absPct = lastPrice > 0 ? Math.abs(diff / lastPrice) * 100 : 0
+      const priceWentUp = diff > 0.001
+      const priceWentDown = diff < -0.001
       return (
         <div className="fixed inset-0 z-[100] bg-black/50 flex items-end sm:items-center justify-center px-0 sm:px-4">
           <div className="bg-white w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl p-5 shadow-2xl max-h-[92vh] overflow-y-auto">
             <div className="text-center mb-3">
               <div className="text-3xl mb-1.5">⚠️</div>
-              <p className="font-bold text-slate-800 text-base">Price Has Increased</p>
+              <p className="font-bold text-slate-800 text-base">Price Has Been Revised</p>
               <p className="text-sm text-slate-500 mt-0.5 truncate px-2">{product.name}</p>
             </div>
 
             {/* Price comparison */}
             <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-sm mb-4 space-y-1.5">
               <div className="flex justify-between items-center">
-                <span className="text-slate-500">Previous Last Price</span>
+                <span className="text-slate-500">Last Price (old)</span>
                 <span className="font-bold text-purple-700">₹{lastPrice}</span>
               </div>
               <div className="flex justify-between items-center">
@@ -328,9 +346,9 @@ function PriceSelector({ product, override, onOverride, lastPrice, defaultPriceT
                 <span className="font-bold text-slate-800">₹{currentFloor}</span>
               </div>
               <div className="flex justify-between items-center border-t border-amber-200 pt-1.5 mt-1">
-                <span className="text-slate-500">Price Increase</span>
-                <span className="font-bold text-red-700">
-                  +{actualPct.toFixed(1)}% (₹{(currentFloor - lastPrice).toFixed(2)})
+                <span className="text-slate-500">Change</span>
+                <span className={`font-bold ${priceWentUp ? 'text-red-700' : priceWentDown ? 'text-emerald-700' : 'text-slate-600'}`}>
+                  {priceWentUp ? '+' : ''}{diff.toFixed(2)} ({priceWentUp ? '+' : priceWentDown ? '-' : ''}{absPct.toFixed(1)}%)
                 </span>
               </div>
             </div>
@@ -355,8 +373,14 @@ function PriceSelector({ product, override, onOverride, lastPrice, defaultPriceT
                   setSelectedRecommendedPrice(null)
                   // Apply LAST price — evaluatePriceApproval at saveCloudOrder
                   // time will detect it's below floor and mark bill pending_approval.
+                  // Also flag lastPriceStale: true so checkViolations can catch the
+                  // case where the stale Last Price is ABOVE the new current floor
+                  // (e.g. price decreased: old ₹115, new ₹110). Without this flag,
+                  // evaluatePriceApproval wouldn't fire on that case since ₹115 > ₹110
+                  // doesn't trigger the "price below floor" rule — but it's still a
+                  // stale price that needs Admin sign-off.
                   const opt = options.find((o) => o.type === 'LAST')
-                  onOverride(product.id, { priceType: 'LAST', finalRate: opt?.value ?? lastPrice })
+                  onOverride(product.id, { priceType: 'LAST', finalRate: opt?.value ?? lastPrice, lastPriceStale: true })
                 }}
                 className="w-full rounded-2xl bg-amber-500 text-white py-3 text-sm font-bold active:bg-amber-600"
               >
@@ -385,7 +409,7 @@ function PriceSelector({ product, override, onOverride, lastPrice, defaultPriceT
  * Product row. Scheme products show BR/NR; all others show RP/WP.
  * Layout is tuned for one-hand use on a phone.
  */
-function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, lastPrice, defaultPriceType, inventory, onRemoveProduct }) {
+function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, lastPrice, lastPriceVersion, defaultPriceType, inventory, onRemoveProduct }) {
   const selected = qty > 0
   const units = availableUnits(product)
   const stockStatus = inventoryStatus(inventory)
@@ -532,7 +556,7 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, 
             onChange={(v) => onOverride(product.id, { boxRate: v })}
           />
         ) : (
-          <PriceSelector product={product} override={override} onOverride={onOverride} lastPrice={lastPrice} defaultPriceType={defaultPriceType} onRemoveProduct={onRemoveProduct} />
+          <PriceSelector product={product} override={override} onOverride={onOverride} lastPrice={lastPrice} lastPriceVersion={lastPriceVersion} defaultPriceType={defaultPriceType} onRemoveProduct={onRemoveProduct} />
         )}
       </div>
 

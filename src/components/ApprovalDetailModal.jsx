@@ -36,7 +36,7 @@ const TABS = ['all', 'pending', 'approved', 'rejected']
  * can revise any/all prices and send the complete order back to Admin.
  * Each resubmission creates a new version (v1, v2, v3...).
  */
-export default function ApprovalDetailModal({ onClose }) {
+export default function ApprovalDetailModal({ onClose, dateFrom, dateTo }) {
   const { user, profile } = useAuth()
   const [uid, setUid]     = useState(null)
   const [orders, setOrders] = useState(null)
@@ -52,14 +52,17 @@ export default function ApprovalDetailModal({ onClose }) {
   const [resubmitting,  setResubmitting]  = useState(false)
   const [resubmitError, setResubmitError] = useState('')
 
+  // dateFrom/dateTo come from the period picker in PerformancePage so the
+  // modal shows the same date window as the stat card that was tapped.
+  // When not provided (e.g. opened from elsewhere), falls back to 60-day default.
   const reload = useCallback(async (id) => {
     if (!id) return
     setLoading(true)
     setError('')
     try {
       const [data, summ] = await Promise.all([
-        loadMyApprovalItems({ salesRepId: id }),
-        loadMyApprovalSummary({ salesRepId: id })
+        loadMyApprovalItems({ salesRepId: id, dateFrom, dateTo }),
+        loadMyApprovalSummary({ salesRepId: id, dateFrom, dateTo })
       ])
       setOrders(data)
       setSummary(summ)
@@ -69,7 +72,7 @@ export default function ApprovalDetailModal({ onClose }) {
     } finally {
       setLoading(false)
     }
-  }, [])
+  }, [dateFrom, dateTo])
 
   useEffect(() => {
     let cancelled = false

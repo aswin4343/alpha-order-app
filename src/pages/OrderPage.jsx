@@ -573,6 +573,14 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
             lastApprovedPrice:     p.last_approved_price ?? null,
             lastApprovedVersion:   p.last_approved_version ?? null,
             priceIncreased:        p.price_increased ?? false,
+            // Stale Last Price flag: set by ProductCard's warning modal when the
+            // rep clicks "Request Admin Approval" for a LAST price whose version
+            // no longer matches the product's current price_version. Used by
+            // checkViolations to catch the case where the stale Last Price is
+            // ABOVE the new current floor (price decreased since last order) —
+            // evaluatePriceApproval alone won't flag that since it only checks
+            // whether selectedPrice < currentFloor.
+            lastPriceStale:        priceOverrides[id]?.lastPriceStale === true,
             // Sell-by permissions — passed through for backend validation
             sell_by_piece: p.sell_by_piece ?? true,
             sell_by_outer: p.sell_by_outer ?? false,
@@ -1031,6 +1039,22 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
 
       // Method 1: Use evaluatePriceApproval if price governance fields exist (SQL 63 run)
       if (i.priceVersion || i.lastApprovedPrice != null || i.priceIncreased) {
+        // Special case: stale Last Price where the official price DECREASED —
+        // old Last Price (₹115) > new floor (₹110). evaluatePriceApproval won't
+        // flag this (selectedPrice is not < currentFloor) but it's still stale
+        // and requires Admin sign-off. The rep already saw the warning and clicked
+        // "Request Admin Approval", which set lastPriceStale=true on the override.
+        if (i.lastPriceStale) {
+          const currentFloor = i.normalPrice ?? i.wholesaleAtOrderTime ?? null
+          violations.push({
+            id: i.id,
+            name: i.name,
+            selectedPrice: ep,
+            currentPrice: currentFloor ?? ep,
+            diff: ep - (currentFloor ?? ep)
+          })
+          continue
+        }
         const { approvalRequired, currentPrice } = evaluatePriceApproval({
           product: {
             retail: i.normalPrice,
@@ -1055,6 +1079,32 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
             currentPrice: currentPrice ?? i.normalPrice ?? i.wholesaleAtOrderTime,
             diff: ep - (currentPrice ?? i.normalPrice ?? i.wholesaleAtOrderTime ?? ep)
           })
+          continue
+        }
+        // Secondary check: LAST price type that is not equal to normalPrice
+        // catches the price-decreased case (stale ₹115, new ₹110 floor) —
+        // evaluatePriceApproval returns no-violation since ₹115 > ₹110, but
+        // ₹115 ≠ normalPrice (₹110) means the stale Last Price deviates from
+        // current pricing and requires Admin sign-off. A Last Price that
+        // exactly equals the new normalPrice is fine (no change needed).
+        if (i.priceType === 'LAST' && i.normalPrice != null && Math.abs(ep - i.normalPrice) > 0.001) {
+          // Only flag when there's a valid reason to think this is stale —
+          // i.e. the last approved version differs from current. If we have no
+          // version info on this item, skip (don't false-positive on old orders).
+          const lastApprovedCurrentVersion =
+            i.lastApprovedVersion != null &&
+            i.lastApprovedPrice != null &&
+            i.lastApprovedVersion === (i.priceVersion ?? 1) &&
+            Math.abs(i.lastApprovedPrice - ep) < 0.001
+          if (!lastApprovedCurrentVersion) {
+            violations.push({
+              id: i.id,
+              name: i.name,
+              selectedPrice: ep,
+              currentPrice: i.normalPrice,
+              diff: ep - i.normalPrice
+            })
+          }
         }
         continue
       }
@@ -1286,7 +1336,8 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
               unit={units[p.id] || 'Piece'}
               onQty={onQty}
               onUnit={onUnit}
-              lastPrice={customer ? lastPrices[(p.name || '').trim().toUpperCase()] : undefined}
+              lastPrice={customer ? (lastPrices[(p.name || '').trim().toUpperCase()]?.price ?? lastPrices[(p.name || '').trim().toUpperCase()] ?? undefined) : undefined}
+              lastPriceVersion={customer ? (lastPrices[(p.name || '').trim().toUpperCase()]?.priceVersion ?? null) : null}
               defaultPriceType={defaultPriceType}
               inventory={inventoryMap.get(p.id)}
               onRemoveProduct={() => {
