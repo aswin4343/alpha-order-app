@@ -327,6 +327,17 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
                 lastPriceVersion={lastPrices[(p.name || '').trim().toUpperCase()]?.priceVersion ?? null}
                 shopApproval={shopApprovals[p.id] ?? null}
                 defaultPriceType={defaultPriceType}
+                onRequestApproval={({ priceType, finalRate: rate }) => {
+                  setPriceOverrides(prev => ({
+                    ...prev,
+                    [p.id]: {
+                      ...(prev[p.id] || {}),
+                      priceType,
+                      finalRate: rate,
+                      lastPriceStale: true
+                    }
+                  }))
+                }}
               />
             </div>
           ))}

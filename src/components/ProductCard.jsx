@@ -156,8 +156,14 @@ const PRICE_CHANGED_RECENT_DAYS = 7
  *   { approvedPrice, approvedPriceVersion } | null
  *   When present, takes precedence over product.last_approved_price for the
  *   approval validity check, so Shop X's approval doesn't apply to Shop Y.
+ *
+ * onRequestApproval — callback fired when the rep taps "Request Admin Approval"
+ *   from the inline banner. Receives { priceType, finalRate, lastPriceStale }.
+ *   Provided by OrderPage; the card stays stateless about the approval request
+ *   itself so OrderPage (which owns items[]) can mark the line and run
+ *   checkViolations consistently.
  */
-function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVersion, shopApproval, defaultPriceType, onRemoveProduct }) {
+function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVersion, shopApproval, defaultPriceType, onRemoveProduct, onRequestApproval }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   // Warning modal state: shown when rep selects LAST price but the official
@@ -294,6 +300,60 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
     )
   }
 
+  // ── Inline approval banner ──────────────────────────────────────────────
+  // Compute whether the CURRENTLY ACTIVE price (whatever is selected right now,
+  // including auto-defaulted LAST) requires Admin approval but has no valid
+  // approval yet. This fires regardless of how the price got selected —
+  // user click, auto-default, or custom entry — fixing the bug where LAST was
+  // auto-selected as default below retail with no visible approval action.
+  //
+  // Uses the same logic as selectType() / chip rendering above, but applied to
+  // the ACTIVE rate (finalRate) rather than just the LAST chip.
+  const activeApprovalBannerState = (() => {
+    // Only evaluate when the order is still editable (onRequestApproval present)
+    if (!onRequestApproval) return null
+
+    const activeFinalRate = finalRate  // the price that will actually be charged
+    if (activeFinalRate == null) return null
+
+    const currentFloor = product.retail ?? product.wholesale ?? null
+    if (currentFloor == null) return null
+
+    // Below-retail check
+    const isBelowFloor = activeFinalRate < currentFloor - 0.001
+    if (!isBelowFloor) return null
+
+    // Check for valid approval (per-shop first, product-level fallback)
+    const priceVer = product.price_version ?? 1
+    const shopApprovalValid =
+      shopApproval != null &&
+      shopApproval.approvedPriceVersion === priceVer &&
+      Math.abs(shopApproval.approvedPrice - activeFinalRate) < 0.01
+    const productApprovalValid =
+      !shopApproval &&
+      product.last_approved_price != null &&
+      product.last_approved_version != null &&
+      product.last_approved_version === priceVer &&
+      Math.abs(product.last_approved_price - activeFinalRate) < 0.01
+    const approvalValid = shopApprovalValid || productApprovalValid
+
+    if (approvalValid) return null  // valid approval — no banner needed
+
+    // Determine if this is a stale-LAST scenario (version mismatch on top of
+    // below-retail). We mark lastPriceStale=true so checkViolations can catch
+    // the edge case where a stale Last is ABOVE the new floor (price decreased).
+    const isLastType = activeType === 'LAST'
+    const versionMismatch = isLastType &&
+      lastPriceVersion != null &&
+      product.price_version != null &&
+      lastPriceVersion !== product.price_version
+
+    // Already in pending state (rep already clicked Request Approval this session)
+    if (override?.lastPriceStale === true) return 'pending'
+
+    return { isBelowFloor, versionMismatch, activeFinalRate, currentFloor }
+  })()
+
   return (
     <>
     <div className="flex flex-wrap items-center gap-1">
@@ -360,6 +420,55 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
         {isCustom ? `✎ ₹${finalRate}` : '✎ Custom'}
       </button>
     </div>
+
+    {/* ── Inline Approval Banner ───────────────────────────────────────────
+        Shows below the price chips whenever the CURRENTLY ACTIVE price is
+        below retail and has no valid approval — regardless of whether it
+        was set by clicking a chip or auto-defaulted (the main bug fix).
+
+        Two states:
+          'pending' — rep already clicked Request Approval this session
+          object    — needs approval, show action button                      */}
+    {activeApprovalBannerState === 'pending' && (
+      <div className="mt-2 rounded-xl bg-amber-50 border border-amber-200 px-3 py-2.5 flex items-center gap-2">
+        <span className="text-amber-500 text-base leading-none">⏳</span>
+        <div className="min-w-0">
+          <p className="text-[11px] font-bold text-amber-800 leading-tight">Approval Pending</p>
+          <p className="text-[10px] text-amber-700 leading-tight mt-0.5">Admin has been notified. You can still submit the order.</p>
+        </div>
+      </div>
+    )}
+    {activeApprovalBannerState && activeApprovalBannerState !== 'pending' && (
+      <div className="mt-2 rounded-xl bg-red-50 border border-red-200 px-3 py-2.5">
+        <div className="flex items-center gap-1.5 mb-2">
+          <span className="text-red-500 text-base leading-none">⚠</span>
+          <p className="text-[11px] font-bold text-red-800 leading-tight">Admin Approval Required</p>
+        </div>
+        <p className="text-[10px] text-red-700 leading-snug mb-2.5">
+          Selected price <span className="font-bold">₹{activeApprovalBannerState.activeFinalRate}</span> is below the current retail price of <span className="font-bold">₹{activeApprovalBannerState.currentFloor}</span>. Admin must approve this before billing.
+        </p>
+        <button
+          type="button"
+          onClick={() => {
+            onRequestApproval({
+              priceType: activeType,
+              finalRate: finalRate,
+              lastPriceStale: true
+            })
+            // Apply the override with lastPriceStale so checkViolations picks it up
+            onOverride(product.id, {
+              ...(override || {}),
+              priceType: activeType,
+              finalRate: finalRate,
+              lastPriceStale: true
+            })
+          }}
+          className="w-full rounded-lg bg-red-600 text-white text-[11px] font-bold py-2 active:bg-red-700"
+        >
+          Request Admin Approval
+        </button>
+      </div>
+    )}
 
     {/* ── Last Price Warning Modal ─────────────────────────────────────────
         Fires when rep taps LAST chip and the official price has increased.
@@ -456,7 +565,7 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
  * Product row. Scheme products show BR/NR; all others show RP/WP.
  * Layout is tuned for one-hand use on a phone.
  */
-function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, lastPrice, lastPriceVersion, shopApproval, defaultPriceType, inventory, onRemoveProduct }) {
+function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, lastPrice, lastPriceVersion, shopApproval, defaultPriceType, inventory, onRemoveProduct, onRequestApproval }) {
   const selected = qty > 0
   const units = availableUnits(product)
   const stockStatus = inventoryStatus(inventory)
@@ -603,7 +712,7 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, 
             onChange={(v) => onOverride(product.id, { boxRate: v })}
           />
         ) : (
-          <PriceSelector product={product} override={override} onOverride={onOverride} lastPrice={lastPrice} lastPriceVersion={lastPriceVersion} shopApproval={shopApproval} defaultPriceType={defaultPriceType} onRemoveProduct={onRemoveProduct} />
+          <PriceSelector product={product} override={override} onOverride={onOverride} lastPrice={lastPrice} lastPriceVersion={lastPriceVersion} shopApproval={shopApproval} defaultPriceType={defaultPriceType} onRemoveProduct={onRemoveProduct} onRequestApproval={onRequestApproval} />
         )}
       </div>
 

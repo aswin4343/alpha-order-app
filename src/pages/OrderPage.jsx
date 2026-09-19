@@ -1361,6 +1361,21 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
                 setQuantities(prev => { const n = {...prev}; delete n[p.id]; return n })
                 setPriceOverrides(prev => { const n = {...prev}; delete n[p.id]; return n })
               }}
+              onRequestApproval={({ priceType, finalRate: rate, lastPriceStale }) => {
+                // Rep tapped "Request Admin Approval" from the inline banner.
+                // Apply the override with lastPriceStale=true so checkViolations
+                // correctly marks this line as needing approval at submit time.
+                // The banner itself switches to "Approval Pending" state via this flag.
+                setPriceOverrides(prev => ({
+                  ...prev,
+                  [p.id]: {
+                    ...(prev[p.id] || {}),
+                    priceType,
+                    finalRate: rate,
+                    lastPriceStale: true
+                  }
+                }))
+              }}
             />
           ))}
 
