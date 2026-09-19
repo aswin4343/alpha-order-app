@@ -525,39 +525,50 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
             // this product. Scheme products (base/net overrides) are unaffected.
             priceType: priceOverrides[id]?.priceType || (priceOverrides[id]
               ? null // legacy override present (base/net/etc, e.g. a scheme product) — no explicit type
-              : defaultPriceTypeFor(p, defaultPriceType)),
-            finalSellingPrice:
-              priceOverrides[id]?.finalRate != null ? priceOverrides[id].finalRate :
-              // BOX unit selected: that line bills at the master Wholesale
-              // Price regardless of customer category. Scoped to THIS line via
-              // its own enteredUnit — other products in the same order, and the
-              // customer's default price type, are untouched. Switching back to
-              // Piece simply stops matching here and the normal chain below
-              // resumes.
-              // BOX unit selected: bills at the master Wholesale Price by
-              // default, or a rep-entered custom price (boxRate) if one was
-              // set via the pencil icon on the BOX·WP tag. boxRate is its own
-              // dedicated override — deliberately NOT the same finalRate
-              // override PriceSelector uses for Piece pricing — so a custom
-              // Box price can never leak into Piece pricing after a unit
-              // switch; it's only read here, only while Box is selected.
-              // Scoped to THIS line via its own enteredUnit — other products
-              // in the same order, and the customer's default price type,
-              // are untouched. Switching back to Piece simply stops matching
-              // here and the normal chain below resumes.
-              (enteredUnit === 'Box' && (priceOverrides[id]?.boxRate != null || p.wholesale != null))
-                ? (priceOverrides[id]?.boxRate != null ? priceOverrides[id].boxRate : p.wholesale) :
-              // Scheme OFF on a scheme product: the Net Rate no longer applies,
-              // so the line bills at the master Wholesale Price — matching
-              // exactly what the product card displays in that state.
-              (priceOverrides[id]?.schemeEnabled === false && p.wholesale != null) ? p.wholesale :
-              priceOverrides[id]?.net != null ? priceOverrides[id].net :
-              priceOverrides[id]?.base != null ? priceOverrides[id].base :
-              priceOverrides[id]?.wholesale != null ? priceOverrides[id].wholesale :
-              priceOverrides[id]?.retail != null ? priceOverrides[id].retail :
-              // No override yet: use the price for the category-driven default
+              : (() => {
+                  // Mirror PriceSelector's defaultType: LAST wins when a last price exists.
+                  const lpKey = (p.name || '').trim().toUpperCase()
+                  const lpEntry = lastPrices[lpKey]
+                  const lastPriceVal = lpEntry?.price ?? (typeof lpEntry === 'number' ? lpEntry : null)
+                  return lastPriceVal != null ? 'LAST' : defaultPriceTypeFor(p, defaultPriceType)
+                })()),
+            finalSellingPrice: (() => {
+              // When the rep has set an explicit finalRate override (via chip click
+              // or inline banner), use it directly — highest priority.
+              if (priceOverrides[id]?.finalRate != null) return priceOverrides[id].finalRate
+
+              // BOX unit: bills at master Wholesale Price (or custom boxRate).
+              if (enteredUnit === 'Box' && (priceOverrides[id]?.boxRate != null || p.wholesale != null))
+                return priceOverrides[id]?.boxRate != null ? priceOverrides[id].boxRate : p.wholesale
+
+              // Scheme OFF on a scheme product: bills at Wholesale Price.
+              if (priceOverrides[id]?.schemeEnabled === false && p.wholesale != null) return p.wholesale
+
+              // Legacy scheme override fields (base/net/wholesale/retail).
+              if (priceOverrides[id]?.net != null) return priceOverrides[id].net
+              if (priceOverrides[id]?.base != null) return priceOverrides[id].base
+              if (priceOverrides[id]?.wholesale != null) return priceOverrides[id].wholesale
+              if (priceOverrides[id]?.retail != null) return priceOverrides[id].retail
+
+              // No explicit override set. Mirror PriceSelector's default-type logic:
+              // if this customer has a LAST price for this product, LAST is the
+              // default chip — the rep sees the last price and the order must SAVE
+              // that same price. Without this, the order would silently save the
+              // retail/wholesale price instead of the displayed last price, causing
+              // isSpecial=false and suppressing the approval request entirely.
+              // PriceSelector sets defaultType='LAST' when lastPrice exists, so we
+              // replicate that here: look up lastPrices[productName].
+              if (priceOverrides[id] == null) {  // no override of any kind
+                const lpKey = (p.name || '').trim().toUpperCase()
+                const lpEntry = lastPrices[lpKey]
+                const lastPriceVal = lpEntry?.price ?? (typeof lpEntry === 'number' ? lpEntry : null)
+                if (lastPriceVal != null) return lastPriceVal
+              }
+
+              // No override, no last price — use the category-driven default
               // type, falling back through what the product actually has.
-              defaultPriceValueFor(p, defaultPriceType),
+              return defaultPriceValueFor(p, defaultPriceType)
+            })(),
             // The price the system would use with NO selection — the true
             // default for THIS customer (category-driven). Billing's SPECIAL
             // PRICE detection compares against this, so an ordinary order at the
@@ -619,7 +630,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
           // Quantity unchanged or reduced from the original — not an add-on.
           return [{ id, name: p.name, qty, unit, ...entry, isAddon: false, ...priceFields }]
         }),
-    [quantities, units, productMap, originalQtyById, priceOverrides, defaultPriceType]
+    [quantities, units, productMap, originalQtyById, priceOverrides, defaultPriceType, lastPrices]
   )
 
   // Only treat as an add-on order if a previous order was loaded AND at least
@@ -1149,8 +1160,20 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
     if (violations.length === 0) {
       dispatchOrder(false)
     } else {
-      console.log('[PRICE APPROVAL] handleSend blocked — violations found:', violations.map(v => `${v.name}: ₹${v.selectedPrice} vs ₹${v.currentPrice}`))
-      setPriceWarningModal({ violations, viaCopy: false })
+      // If the rep already clicked "Request Admin Approval" on the inline banner
+      // for ALL violating items (lastPriceStale=true on each), treat that as
+      // consent — skip the modal and dispatch directly with isApprovalRequest=true.
+      // Showing the modal again after the rep already tapped the inline approval
+      // button is a double-confirmation that breaks the UX and causes reps to
+      // remove the product instead of approving it (losing the approval request).
+      const allAlreadyApproved = violations.every(v => items.find(i => i.id === v.id)?.lastPriceStale === true)
+      if (allAlreadyApproved) {
+        console.log('[PRICE APPROVAL] handleSend — all violations pre-approved via inline banner, dispatching with isApprovalRequest=true')
+        dispatchOrder(false, true)
+      } else {
+        console.log('[PRICE APPROVAL] handleSend blocked — violations found:', violations.map(v => `${v.name}: ₹${v.selectedPrice} vs ₹${v.currentPrice}`))
+        setPriceWarningModal({ violations, viaCopy: false })
+      }
     }
   }
 
@@ -1160,8 +1183,17 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
     if (violations.length === 0) {
       dispatchOrder(true)
     } else {
-      console.log('[PRICE APPROVAL] handleCopy blocked — violations found:', violations.map(v => `${v.name}: ₹${v.selectedPrice} vs ₹${v.currentPrice}`))
-      setPriceWarningModal({ violations, viaCopy: true })
+      // Same pre-approved shortcut as handleSend: if the rep already tapped the
+      // inline "Request Admin Approval" banner for every violating item, bypass
+      // the modal and dispatch immediately with isApprovalRequest=true.
+      const allAlreadyApproved = violations.every(v => items.find(i => i.id === v.id)?.lastPriceStale === true)
+      if (allAlreadyApproved) {
+        console.log('[PRICE APPROVAL] handleCopy — all violations pre-approved via inline banner, dispatching with isApprovalRequest=true')
+        dispatchOrder(true, true)
+      } else {
+        console.log('[PRICE APPROVAL] handleCopy blocked — violations found:', violations.map(v => `${v.name}: ₹${v.selectedPrice} vs ₹${v.currentPrice}`))
+        setPriceWarningModal({ violations, viaCopy: true })
+      }
     }
   }
 

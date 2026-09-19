@@ -121,13 +121,34 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
         // ignored, and finalSellingPrice fell straight through to p.retail.
         // finalRate is now checked first, exactly like OrderPage.jsx's own
         // (correct) chain already does for the main order screen.
-        finalSellingPrice:
-          priceOverrides[id]?.finalRate != null ? priceOverrides[id].finalRate :
-          priceOverrides[id]?.net != null ? priceOverrides[id].net :
-          priceOverrides[id]?.base != null ? priceOverrides[id].base :
-          priceOverrides[id]?.wholesale != null ? priceOverrides[id].wholesale :
-          priceOverrides[id]?.retail != null ? priceOverrides[id].retail :
-          (p.retail != null ? p.retail : null),
+        finalSellingPrice: (() => {
+          // Explicit override wins (chip click or inline approval banner).
+          if (priceOverrides[id]?.finalRate != null) return priceOverrides[id].finalRate
+          if (priceOverrides[id]?.net != null) return priceOverrides[id].net
+          if (priceOverrides[id]?.base != null) return priceOverrides[id].base
+          if (priceOverrides[id]?.wholesale != null) return priceOverrides[id].wholesale
+          if (priceOverrides[id]?.retail != null) return priceOverrides[id].retail
+
+          // Mirror PriceSelector's auto-default: when a customer has a LAST price
+          // for this product, LAST is the default chip. The order must save THAT
+          // price (not retail) so the saved price matches what the card displays.
+          if (priceOverrides[id] == null) {
+            const lpKey = (p.name || '').trim().toUpperCase()
+            const lpEntry = lastPrices[lpKey]
+            const lastPriceVal = lpEntry?.price ?? (typeof lpEntry === 'number' ? lpEntry : null)
+            if (lastPriceVal != null) return lastPriceVal
+          }
+
+          // Category-driven fallback: Wholesale customer → Wholesale Price,
+          // Retail customer → Retail Price. Matches OrderPage's defaultPriceValueFor.
+          // Previously this was hardcoded to p.retail, which caused a wholesale
+          // customer with no last price to save retail price instead of wholesale.
+          const fbOrder = defaultPriceType === 'WHOLESALE'
+            ? ['wholesale', 'retail', 'mrp']
+            : ['retail', 'wholesale', 'mrp']
+          for (const k of fbOrder) { if (p[k] != null) return p[k] }
+          return null
+        })(),
         // Category-aware, matching OrderPage.jsx's defaultPriceValueFor
         // fallback order exactly (wholesale -> retail -> mrp, or the
         // reverse) — a hardcoded p.retail here would incorrectly flag a
@@ -142,7 +163,7 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
         schemeEnabled: priceOverrides[id]?.schemeEnabled !== false
       }
     }).filter(Boolean),
-    [quantities, units, productMap, priceOverrides, defaultPriceType]
+    [quantities, units, productMap, priceOverrides, defaultPriceType, lastPrices]
   )
 
   const totalQty = items.reduce((s, i) => s + i.qty, 0)

@@ -237,7 +237,12 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
     // product-level last_approved_price so Shop X's approval never covers Shop Y.
     if (type === 'LAST' && lastPrice != null) {
       const priceVer = product.price_version ?? 1
-      const currentFloor = product.retail ?? product.wholesale ?? null
+      // Category-aware floor: compare against the customer's own default price
+      // (Wholesale for WHOLESALE customers, Retail for Retail customers), so a
+      // wholesale customer's last price is checked against WP, not RP.
+      const currentFloor = defaultPriceType === 'WHOLESALE'
+        ? (product.wholesale ?? product.retail ?? null)
+        : (product.retail ?? product.wholesale ?? null)
 
       // Determine whether a valid approval exists for this shop + product (spec §8).
       // shopApproval (per-customer row) wins over product.last_approved_price (global).
@@ -260,8 +265,8 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
         product.price_version != null &&
         lastPriceVersion !== product.price_version
 
-      // Condition B: last price is below current retail floor (requires approval
-      // even if versioning info is absent — spec §7)
+      // Condition B: last price is below the customer's category price floor
+      // (requires approval even if versioning info is absent — spec §7)
       const lastPriceBelowFloor = currentFloor != null && lastPrice < currentFloor - 0.001
 
       if ((lastPriceIsStale || lastPriceBelowFloor) && !lastApprovedValid) {
@@ -316,10 +321,13 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
     const activeFinalRate = finalRate  // the price that will actually be charged
     if (activeFinalRate == null) return null
 
-    const currentFloor = product.retail ?? product.wholesale ?? null
+    // Category-aware floor: Wholesale customer → WP floor, Retail → RP floor.
+    const currentFloor = defaultPriceType === 'WHOLESALE'
+      ? (product.wholesale ?? product.retail ?? null)
+      : (product.retail ?? product.wholesale ?? null)
     if (currentFloor == null) return null
 
-    // Below-retail check
+    // Below-floor check (floor is category-specific, not always retail)
     const isBelowFloor = activeFinalRate < currentFloor - 0.001
     if (!isBelowFloor) return null
 
@@ -366,7 +374,10 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
         // Neither triggers when a valid per-shop OR product-level approval exists.
         if (o.type === 'LAST' && lastPrice != null) {
           const priceVer = product.price_version ?? 1
-          const currentFloor = product.retail ?? product.wholesale ?? null
+          // Category-aware floor for chip warning ⚠ — same rule as selectType().
+          const currentFloor = defaultPriceType === 'WHOLESALE'
+            ? (product.wholesale ?? product.retail ?? null)
+            : (product.retail ?? product.wholesale ?? null)
           const shopApprovalValid =
             shopApproval != null &&
             shopApproval.approvedPriceVersion === priceVer &&
@@ -445,7 +456,7 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
           <p className="text-[11px] font-bold text-red-800 leading-tight">Admin Approval Required</p>
         </div>
         <p className="text-[10px] text-red-700 leading-snug mb-2.5">
-          Selected price <span className="font-bold">₹{activeApprovalBannerState.activeFinalRate}</span> is below the current retail price of <span className="font-bold">₹{activeApprovalBannerState.currentFloor}</span>. Admin must approve this before billing.
+          Selected price <span className="font-bold">₹{activeApprovalBannerState.activeFinalRate}</span> is below the current {defaultPriceType === 'WHOLESALE' ? 'wholesale' : 'retail'} price of <span className="font-bold">₹{activeApprovalBannerState.currentFloor}</span>. Admin must approve this before billing.
         </p>
         <button
           type="button"
