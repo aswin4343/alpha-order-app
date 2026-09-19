@@ -139,6 +139,10 @@ function EditableBoxTag({ value, overridden, onChange }) {
   )
 }
 
+// How many days after a price change to show the "PRICE CHANGED" badge.
+// Centralised here so it's easy to adjust without hunting through the code.
+const PRICE_CHANGED_RECENT_DAYS = 7
+
 /**
  * Click-to-select selling price: MRP / Retail / Wholesale, one always active
  * (Wholesale by default — per spec section 1). Tapping a pill selects that
@@ -147,8 +151,13 @@ function EditableBoxTag({ value, overridden, onChange }) {
  * the product's own MRP/Retail/Wholesale master values — only the order
  * line's own priceType + finalRate (stored in `override`), so the master
  * catalogue is completely unaffected by a rep's per-order choice.
+ *
+ * shopApproval — per-customer approval from customer_price_approvals table:
+ *   { approvedPrice, approvedPriceVersion } | null
+ *   When present, takes precedence over product.last_approved_price for the
+ *   approval validity check, so Shop X's approval doesn't apply to Shop Y.
  */
-function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVersion, defaultPriceType, onRemoveProduct }) {
+function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVersion, shopApproval, defaultPriceType, onRemoveProduct }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   // Warning modal state: shown when rep selects LAST price but the official
@@ -204,24 +213,52 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
     : (activeOption?.value ?? options[0].value)
 
   const selectType = (type) => {
-    // When rep selects LAST price and the product's price has been revised
-    // since that last price was established (version mismatch), show the
-    // warning modal. Uses version-based staleness — not price_increased alone —
-    // so a price decrease or any other revision (not just an increase) is
-    // correctly caught. Only fires when we have version info for both the
-    // Last Price and the current product; if either is null (old order rows
-    // pre-dating versioning) we skip the check and let the order flow normally.
+    // When rep selects LAST price, check two conditions — either one can
+    // trigger the Admin Approval warning modal:
+    //
+    // Condition A — Version mismatch (spec §4-5):
+    //   The Last Price was established under an older price_version. Any price
+    //   change bumps price_version, so this catches both increases and decreases.
+    //
+    // Condition B — Below current retail (spec §1-2, §7):
+    //   Last Price < current retail, regardless of version. This catches the
+    //   case where versioning info is absent (older order rows) but the price
+    //   is still clearly below the current authorized floor.
+    //
+    // In both cases, the warning is skipped when a valid shop-specific approval
+    // already exists for this exact product + customer + price (spec §3, §8).
+    // shopApproval (from customer_price_approvals) takes precedence over the
+    // product-level last_approved_price so Shop X's approval never covers Shop Y.
     if (type === 'LAST' && lastPrice != null) {
-      // Version-based staleness: the Last Price is stale when the version it
-      // was saved under no longer matches the product's current version.
+      const priceVer = product.price_version ?? 1
+      const currentFloor = product.retail ?? product.wholesale ?? null
+
+      // Determine whether a valid approval exists for this shop + product (spec §8).
+      // shopApproval (per-customer row) wins over product.last_approved_price (global).
+      const shopApprovalValid =
+        shopApproval != null &&
+        shopApproval.approvedPriceVersion === priceVer &&
+        Math.abs(shopApproval.approvedPrice - lastPrice) < 0.01
+
+      const productApprovalValid =
+        !shopApproval &&  // only fall back when no shop-level row exists
+        product.last_approved_price != null &&
+        product.last_approved_version != null &&
+        product.last_approved_version === priceVer &&
+        Math.abs(product.last_approved_price - lastPrice) < 0.01
+
+      const lastApprovedValid = shopApprovalValid || productApprovalValid
+
+      // Condition A: version mismatch
       const lastPriceIsStale = lastPriceVersion != null &&
         product.price_version != null &&
         lastPriceVersion !== product.price_version
-      const lastApprovedValid = product.last_approved_price != null &&
-        product.last_approved_version != null &&
-        product.last_approved_version === (product.price_version ?? 1) &&
-        Math.abs(product.last_approved_price - lastPrice) < 0.01
-      if (lastPriceIsStale && !lastApprovedValid) {
+
+      // Condition B: last price is below current retail floor (requires approval
+      // even if versioning info is absent — spec §7)
+      const lastPriceBelowFloor = currentFloor != null && lastPrice < currentFloor - 0.001
+
+      if ((lastPriceIsStale || lastPriceBelowFloor) && !lastApprovedValid) {
         setShowLastPriceWarning(true)
         return
       }
@@ -262,23 +299,33 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
     <div className="flex flex-wrap items-center gap-1">
       {options.map((o) => {
         const isActive = !isCustom && activeType === o.type
-        // Show amber ⚠ on LAST chip when the Last Price is stale:
-        // - the price_version under which that Last Price was saved no longer
-        //   matches the product's current price_version (any revision, not just
-        //   an increase), AND
-        // - there's no existing valid Admin-approved price for the current version.
-        // Skipped when version info is absent (null) — older order rows that
-        // pre-date versioning are treated as "no change known; don't warn".
-        const lastApprovedValid = product.last_approved_price != null &&
-          product.last_approved_version != null &&
-          product.last_approved_version === (product.price_version ?? 1) &&
-          Math.abs(product.last_approved_price - (lastPrice ?? 0)) < 0.01
-        const lastPriceIsStale = lastPriceVersion != null &&
-          product.price_version != null &&
-          lastPriceVersion !== product.price_version
-        const lastPriceNeedsApproval = o.type === 'LAST' && lastPrice != null &&
-          lastPriceIsStale &&
-          !lastApprovedValid
+        // Show amber ⚠ on LAST chip when approval is needed for this price.
+        // Two conditions trigger it (matching selectType above):
+        //   A) Version mismatch — price_version changed since last price was set
+        //   B) Last price is below current retail floor
+        // Neither triggers when a valid per-shop OR product-level approval exists.
+        if (o.type === 'LAST' && lastPrice != null) {
+          const priceVer = product.price_version ?? 1
+          const currentFloor = product.retail ?? product.wholesale ?? null
+          const shopApprovalValid =
+            shopApproval != null &&
+            shopApproval.approvedPriceVersion === priceVer &&
+            Math.abs(shopApproval.approvedPrice - lastPrice) < 0.01
+          const productApprovalValid =
+            !shopApproval &&
+            product.last_approved_price != null &&
+            product.last_approved_version != null &&
+            product.last_approved_version === priceVer &&
+            Math.abs(product.last_approved_price - lastPrice) < 0.01
+          const chipApprovalValid = shopApprovalValid || productApprovalValid
+          const chipPriceIsStale = lastPriceVersion != null &&
+            product.price_version != null &&
+            lastPriceVersion !== product.price_version
+          const chipBelowFloor = currentFloor != null && lastPrice < currentFloor - 0.001
+          var lastPriceNeedsApproval = (chipPriceIsStale || chipBelowFloor) && !chipApprovalValid
+        } else {
+          var lastPriceNeedsApproval = false  // eslint-disable-line no-redeclare
+        }
         return (
           <button
             key={o.type}
@@ -409,7 +456,7 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
  * Product row. Scheme products show BR/NR; all others show RP/WP.
  * Layout is tuned for one-hand use on a phone.
  */
-function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, lastPrice, lastPriceVersion, defaultPriceType, inventory, onRemoveProduct }) {
+function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, lastPrice, lastPriceVersion, shopApproval, defaultPriceType, inventory, onRemoveProduct }) {
   const selected = qty > 0
   const units = availableUnits(product)
   const stockStatus = inventoryStatus(inventory)
@@ -556,60 +603,29 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, 
             onChange={(v) => onOverride(product.id, { boxRate: v })}
           />
         ) : (
-          <PriceSelector product={product} override={override} onOverride={onOverride} lastPrice={lastPrice} lastPriceVersion={lastPriceVersion} defaultPriceType={defaultPriceType} onRemoveProduct={onRemoveProduct} />
+          <PriceSelector product={product} override={override} onOverride={onOverride} lastPrice={lastPrice} lastPriceVersion={lastPriceVersion} shopApproval={shopApproval} defaultPriceType={defaultPriceType} onRemoveProduct={onRemoveProduct} />
         )}
       </div>
 
-      {/* ── Price Change Indicator ────────────────────────────────────────── */}
-      {/* Shows when Admin has uploaded a new price via Excel and the official
-          retail or wholesale price changed. Uses price_increased + previous_*
-          fields stored during mergeUpdateCloudProducts — no extra query. */}
+      {/* ── Price Change Indicator (spec §11-14) ─────────────────────────── */}
+      {/* Shows a small "PRICE CHANGED" badge when the product's retail or
+          wholesale price changed within the last PRICE_CHANGED_RECENT_DAYS days.
+          Uses price_changed_at (set by mergeUpdateCloudProducts on any retail/
+          wholesale change). Does NOT show for metadata-only edits (name, image,
+          stock, schemes) — those don't update price_changed_at.
+          No percentage, no old/new comparison — just the badge (spec §11). */}
       {(() => {
-        // Determine which applicable price changed
-        const prevRetail    = product.previous_retail    ?? null
-        const prevWholesale = product.previous_wholesale ?? null
-        const curRetail     = product.retail ?? null
-        const curWholesale  = product.wholesale ?? null
-        const retailChanged    = prevRetail    != null && curRetail    != null && Math.abs(curRetail    - prevRetail)    > 0.001
-        const wholesaleChanged = prevWholesale != null && curWholesale != null && Math.abs(curWholesale - prevWholesale) > 0.001
-        const priceChanged = retailChanged || wholesaleChanged
-
-        // % difference between current applicable price and last order price
-        const applicablePrice = curRetail ?? curWholesale
-        const pctRaw = (lastPrice != null && applicablePrice != null && lastPrice > 0)
-          ? ((applicablePrice - lastPrice) / lastPrice) * 100
-          : null
-        // Round to 2 dp, strip trailing zeros
-        const fmtPct = (n) => {
-          const abs = Math.abs(n)
-          if (abs < 0.01) return null
-          const s = abs % 1 === 0 ? abs.toFixed(0) : abs.toFixed(2).replace(/\.?0+$/, '')
-          return (n > 0 ? '+' : '-') + s + '%'
-        }
-        const pctStr = pctRaw != null ? fmtPct(pctRaw) : null
-        const pctUp  = pctRaw != null && pctRaw > 0.01
-        const pctDown = pctRaw != null && pctRaw < -0.01
-
-        if (!priceChanged && !pctStr) return null
-
+        if (!product.price_changed_at) return null
+        const changedMs = new Date(product.price_changed_at).getTime()
+        if (isNaN(changedMs)) return null
+        const ageMs = Date.now() - changedMs
+        const recentMs = PRICE_CHANGED_RECENT_DAYS * 24 * 60 * 60 * 1000
+        if (ageMs > recentMs) return null
         return (
-          <div className="mt-1.5 flex flex-wrap gap-1.5 items-center">
-            {priceChanged && (
-              <span
-                className={`inline-flex items-center gap-1 text-[10px] leading-none font-bold px-1.5 py-1 rounded-md border ${
-                  product.price_increased
-                    ? 'text-red-700 bg-red-50 border-red-200'
-                    : 'text-emerald-700 bg-emerald-50 border-emerald-200'
-                }`}
-                title={[
-                  'Official price changed',
-                  retailChanged    ? `Retail: ₹${prevRetail} → ₹${curRetail}` : '',
-                  wholesaleChanged ? `Wholesale: ₹${prevWholesale} → ₹${curWholesale}` : ''
-                ].filter(Boolean).join('\n')}
-              >
-                {product.price_increased ? '↑' : '↓'} PRICE {product.price_increased ? 'RAISED' : 'LOWERED'}
-              </span>
-            )}
+          <div className="mt-1.5">
+            <span className="inline-flex items-center text-[10px] leading-none font-bold px-1.5 py-1 rounded-md border text-amber-700 bg-amber-50 border-amber-200">
+              PRICE CHANGED
+            </span>
           </div>
         )
       })()}

@@ -758,6 +758,52 @@ export async function loadCustomerLastPrices(shopName, customerId = null) {
 }
 
 /**
+ * Load per-customer price approvals for a given customer (shop).
+ *
+ * Returns a map: { [product_id]: { approvedPrice, approvedPriceVersion, status } }
+ * Only returns the MOST RECENT 'approved' row per product+customer pair.
+ *
+ * Used by OrderPage to check whether a rep selecting a LAST price below retail
+ * already has a valid Admin approval for this exact product + shop combination
+ * (spec §7-9). Without this, the check fell back to the product-level global
+ * last_approved_price — which made Shop X's approval valid for Shop Y (spec §8 bug).
+ *
+ * Requires SQL migration 73_customer_price_approvals.sql.
+ * Falls back gracefully (returns {}) if the table doesn't exist yet.
+ */
+export async function loadCustomerPriceApprovals(customerId) {
+  if (!customerId) return {}
+  try {
+    const { data, error } = await supabase
+      .from('customer_price_approvals')
+      .select('product_id, approved_price, approved_price_version, status')
+      .eq('customer_id', customerId)
+      .eq('status', 'approved')
+      .order('approved_at', { ascending: false })
+    if (error) {
+      // Table may not exist yet — non-fatal, fall back to product-level approval
+      console.warn('[loadCustomerPriceApprovals] non-fatal:', error.message)
+      return {}
+    }
+    // Deduplicate: keep only the latest approved row per product
+    const out = {}
+    for (const row of (data || [])) {
+      if (!out[row.product_id]) {
+        out[row.product_id] = {
+          approvedPrice: row.approved_price,
+          approvedPriceVersion: row.approved_price_version,
+          status: row.status
+        }
+      }
+    }
+    return out
+  } catch (e) {
+    console.warn('[loadCustomerPriceApprovals] fetch failed (non-fatal):', e.message)
+    return {}
+  }
+}
+
+/**
  * Personal performance counts for the logged-in rep.
  * Returns orders + visits totals for today / this week / this month.
  */
@@ -1290,7 +1336,14 @@ export async function fetchAllCloudProducts() {
     wholesale_threshold: p.wholesale_threshold ?? p.qty_in_box ?? null,
     last_approved_price:   p.last_approved_price ?? null,
     last_approved_version: p.last_approved_version ?? null,
-    price_increased:     p.price_increased ?? false
+    price_increased:     p.price_increased ?? false,
+    // Price change tracking — used by the "PRICE CHANGED" badge on the product card
+    // (spec §11-14). price_changed_at is updated by mergeUpdateCloudProducts whenever
+    // retail or wholesale changes. previous_retail/previous_wholesale record what the
+    // price was before the last change, for the direction indicator.
+    price_changed_at:    p.price_changed_at ?? null,
+    previous_retail:     p.previous_retail ?? null,
+    previous_wholesale:  p.previous_wholesale ?? null
   }))
 }
 
@@ -5092,14 +5145,18 @@ export async function loadPendingApprovalBills({ salesRepId } = {}) {
 export async function approveBill(orderId, itemOverrides, adminUser, reasonPayload = {}) {
   const now = new Date().toISOString()
 
-  // 1. Fetch all pending items in this order
-  const { data: pendingItems, error: fetchErr } = await supabase
-    .from('order_items')
-    .select('id, product_id, unit_price, qty')
-    .eq('order_id', orderId)
-    .eq('approval_status', 'pending')
-    .neq('removed', true)
+  // 1. Fetch the order's customer_id (for per-customer approval records)
+  //    and all pending items in this order
+  const [{ data: orderRow }, { data: pendingItems, error: fetchErr }] = await Promise.all([
+    supabase.from('orders').select('customer_id').eq('id', orderId).maybeSingle(),
+    supabase.from('order_items')
+      .select('id, product_id, unit_price, qty')
+      .eq('order_id', orderId)
+      .eq('approval_status', 'pending')
+      .neq('removed', true)
+  ])
   if (fetchErr) throw fetchErr
+  const customerId = orderRow?.customer_id || null
 
   // 2. Approve ALL pending items at their requested price (unit_price)
   if (pendingItems && pendingItems.length > 0) {
@@ -5114,21 +5171,43 @@ export async function approveBill(orderId, itemOverrides, adminUser, reasonPaylo
       approval_other_reason: reasonPayload.otherReason || null
     }).eq('order_id', orderId).eq('approval_status', 'pending')
 
-    // Save last_approved_price on each product for future reference (non-fatal)
+    // Save approval records — both product-level (existing, for backward compat)
+    // and per-customer (new, spec §8 — so Shop X's approval doesn't auto-apply to Shop Y).
     for (const item of pendingItems) {
       if (item.product_id && item.unit_price != null) {
         try {
           const { data: prod } = await supabase.from('products')
             .select('price_version').eq('id', item.product_id).maybeSingle()
           if (prod) {
+            const priceVer = prod.price_version ?? 1
+            // Product-level last_approved_price (backward compat — kept as fallback)
             await supabase.from('products').update({
               last_approved_price: Number(item.unit_price),
-              last_approved_version: prod.price_version,
+              last_approved_version: priceVer,
               last_approved_at: now,
               last_approved_by: adminUser?.id || null
             }).eq('id', item.product_id)
+
+            // Per-customer approval (spec §8 — shop-scoped, not global)
+            // Upsert: if a prior approval for this product+customer+version exists,
+            // update it; otherwise insert. Use a raw upsert on the unique constraint.
+            if (customerId) {
+              await supabase.from('customer_price_approvals').upsert({
+                product_id: item.product_id,
+                customer_id: customerId,
+                approved_price: Number(item.unit_price),
+                approved_price_version: priceVer,
+                status: 'approved',
+                order_id: orderId,
+                approved_by: adminUser?.id || null,
+                approved_at: now
+              }, {
+                onConflict: 'product_id,customer_id',
+                ignoreDuplicates: false
+              })
+            }
           }
-        } catch (e) { console.error('last_approved_price update (non-fatal):', e) }
+        } catch (e) { console.error('approval records update (non-fatal):', e) }
       }
     }
   }

@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
-import { saveCloudOrder, currentUserId, notifyBillingOfAddon, loadCustomerLastPrices, loadCustomerLedgerCategory } from '../utils/cloudSync.js'
+import { saveCloudOrder, currentUserId, notifyBillingOfAddon, loadCustomerLastPrices, loadCustomerPriceApprovals, loadCustomerLedgerCategory } from '../utils/cloudSync.js'
 import { buildAddOnMessage } from '../utils/whatsapp.js'
 import { useSearch } from '../hooks/useSearch.js'
 import { useDebounce } from '../hooks/useDebounce.js'
@@ -46,6 +46,7 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
   // loads them for its own selected customer, using this order's own
   // shop_name/route (the only customer identity AddOnFlowModal has).
   const [lastPrices, setLastPrices] = useState({})
+  const [shopApprovals, setShopApprovals] = useState({})
   const [defaultPriceType, setDefaultPriceType] = useState('RETAIL')
 
   useEffect(() => {
@@ -53,6 +54,12 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
     // Pass order.customer_id when available (correct per-customer scoping);
     // falls back to shop_name for older rows without a customer_id.
     loadCustomerLastPrices(order.shop_name, order.customer_id ?? null).then((p) => { if (!cancelled) setLastPrices(p) }).catch(() => {})
+    // Per-customer price approvals so the LAST chip knows about shop-specific approvals
+    if (order.customer_id) {
+      loadCustomerPriceApprovals(order.customer_id)
+        .then((m) => { if (!cancelled) setShopApprovals(m || {}) })
+        .catch(() => { if (!cancelled) setShopApprovals({}) })
+    }
     loadCustomerLedgerCategory(order.shop_name, order.route)
       .then((cat) => {
         if (cancelled) return
@@ -318,6 +325,7 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
                 onOverride={onOverride}
                 lastPrice={lastPrices[(p.name || '').trim().toUpperCase()]?.price ?? lastPrices[(p.name || '').trim().toUpperCase()] ?? undefined}
                 lastPriceVersion={lastPrices[(p.name || '').trim().toUpperCase()]?.priceVersion ?? null}
+                shopApproval={shopApprovals[p.id] ?? null}
                 defaultPriceType={defaultPriceType}
               />
             </div>

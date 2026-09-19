@@ -333,18 +333,14 @@ export default function PerformancePage({ onBack, onEditOrder }) {
                       ? `${approvalSummary.approved} approved`
                       : undefined
                   }
-                  onClick={
-                    (approvalSummary.pending > 0 || approvalSummary.rejected > 0 || approvalSummary.approved > 0)
-                      ? () => setOpenModal('adminPending')
-                      : undefined
-                  }
+                  onClick={() => setOpenModal('adminPending')}
                 />
               ) : pendingBills != null ? (
                 <StatCard
                   label="Admin Approval Pending"
                   value={pendingBills.length}
                   sub={rejectedBills.length > 0 ? `${rejectedBills.length} rejected` : undefined}
-                  onClick={(pendingBills.length > 0 || rejectedBills.length > 0) ? () => setOpenModal('adminPending') : undefined}
+                  onClick={() => setOpenModal('adminPending')}
                 />
               ) : null}
             </div>

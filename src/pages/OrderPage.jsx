@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
-import { saveCloudOrder, currentUserId, countUnreadAnnouncements, listAllRoutes, ensureCloudCustomer, updateCustomerDefaultRoute, loadCustomerLastPrices, loadPendingStockOuts, notifyBillingOfAddon, updateCloudOrder, evaluatePriceApproval } from '../utils/cloudSync.js'
+import { saveCloudOrder, currentUserId, countUnreadAnnouncements, listAllRoutes, ensureCloudCustomer, updateCustomerDefaultRoute, loadCustomerLastPrices, loadCustomerPriceApprovals, loadPendingStockOuts, notifyBillingOfAddon, updateCloudOrder, evaluatePriceApproval } from '../utils/cloudSync.js'
 import PreviousOrdersModal from '../components/PreviousOrdersModal.jsx'
 import PendingOrdersModal from '../components/PendingOrdersModal.jsx'
 import OrderSummaryModal from '../components/OrderSummaryModal.jsx'
@@ -139,6 +139,11 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   // Cleared on reset / new order / customer switch — never touches the DB.
   const [priceOverrides, setPriceOverrides] = useState(saved?.priceOverrides ?? {})
   const [lastPrices, setLastPrices] = useState({})
+  // Per-customer price approvals: { [product_id]: { approvedPrice, approvedPriceVersion } }
+  // Loaded alongside lastPrices when customer changes. Used by ProductCard's PriceSelector
+  // to check if a LAST price below retail already has a valid Admin approval for THIS shop
+  // specifically (spec §7-9). Prevents Shop X's approval from covering Shop Y (spec §8).
+  const [shopApprovals, setShopApprovals] = useState({})
   const [toast, setToast] = useState('')
   const [visitStatus, setVisitStatus] = useState(saved?.visitStatus ?? '')
   const [visitRemark, setVisitRemark] = useState(saved?.visitRemark ?? '')
@@ -787,13 +792,23 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   // when no customer is selected, so the badge disappears (display rule #1).
   useEffect(() => {
     let cancelled = false
-    if (!customer?.name) { setLastPrices({}); return }
+    if (!customer?.name) { setLastPrices({}); setShopApprovals({}); return }
     // Pass customer.id (stable UUID) when available so the query matches by
     // customer_id rather than shop_name — immune to name changes and correctly
     // scoped per customer. Falls back to shop_name for older rows.
     loadCustomerLastPrices(customer.name, customer?.id ?? null)
       .then((map) => { if (!cancelled) setLastPrices(map || {}) })
       .catch((e) => { console.error('last prices load failed', e); if (!cancelled) setLastPrices({}) })
+    // Per-customer price approvals (spec §7-9): fetch in parallel so PriceSelector
+    // knows which products have a valid Admin approval specifically for THIS shop.
+    // Falls back to {} if table doesn't exist yet (migration 73 not yet run).
+    if (customer?.id) {
+      loadCustomerPriceApprovals(customer.id)
+        .then((map) => { if (!cancelled) setShopApprovals(map || {}) })
+        .catch(() => { if (!cancelled) setShopApprovals({}) })
+    } else {
+      setShopApprovals({})
+    }
     return () => { cancelled = true }
   }, [customer?.name, customer?.id, customer?.route])
 
@@ -1338,6 +1353,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
               onUnit={onUnit}
               lastPrice={customer ? (lastPrices[(p.name || '').trim().toUpperCase()]?.price ?? lastPrices[(p.name || '').trim().toUpperCase()] ?? undefined) : undefined}
               lastPriceVersion={customer ? (lastPrices[(p.name || '').trim().toUpperCase()]?.priceVersion ?? null) : null}
+              shopApproval={shopApprovals[p.id] ?? null}
               defaultPriceType={defaultPriceType}
               inventory={inventoryMap.get(p.id)}
               onRemoveProduct={() => {
