@@ -163,7 +163,7 @@ const PRICE_CHANGED_RECENT_DAYS = 7
  *   itself so OrderPage (which owns items[]) can mark the line and run
  *   checkViolations consistently.
  */
-function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVersion, shopApproval, defaultPriceType, onRemoveProduct, onRequestApproval }) {
+function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVersion, shopApproval, defaultPriceType, onRemoveProduct, onRequestApproval, schemeOnly }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   // Warning modal state: shown when rep selects LAST price but the official
@@ -191,10 +191,15 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
     // finalRate = lastPrice, which flows to Billing unchanged.
     { type: 'LAST', value: lastPrice }
   ].filter((o) => o.value != null && o.value !== '')
+   // schemeOnly = this PriceSelector is embedded inside a scheme product card
+   // solely to show the LAST chip. RP and WP chips are irrelevant there — the
+   // rep already controls pricing through the BR/NR editable tags — so we drop
+   // everything except LAST, and return null when there's no LAST to show.
+   .filter((o) => !schemeOnly || o.type === 'LAST')
 
   const options = sellingOptions.length > 0
     ? sellingOptions
-    : [{ type: 'MRP', value: product.mrp }].filter((o) => o.value != null && o.value !== '')
+    : (schemeOnly ? [] : [{ type: 'MRP', value: product.mrp }].filter((o) => o.value != null && o.value !== ''))
 
   if (options.length === 0) return null
 
@@ -419,17 +424,22 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
           </button>
         )
       })}
-      <button
-        type="button"
-        onClick={startEdit}
-        className={`text-[10px] leading-none font-semibold px-1.5 py-1 rounded-md border ${
-          isCustom
-            ? 'bg-amber-50 border-amber-300 text-amber-800'
-            : 'bg-white border-dashed border-slate-300 text-slate-400'
-        }`}
-      >
-        {isCustom ? `✎ ₹${finalRate}` : '✎ Custom'}
-      </button>
+      {/* Custom pencil is hidden in schemeOnly mode — scheme products use the
+          BR/NR editable tags for custom pricing; the LAST chip here is for
+          one-tap reuse of the previous price only. */}
+      {!schemeOnly && (
+        <button
+          type="button"
+          onClick={startEdit}
+          className={`text-[10px] leading-none font-semibold px-1.5 py-1 rounded-md border ${
+            isCustom
+              ? 'bg-amber-50 border-amber-300 text-amber-800'
+              : 'bg-white border-dashed border-slate-300 text-slate-400'
+          }`}
+        >
+          {isCustom ? `✎ ₹${finalRate}` : '✎ Custom'}
+        </button>
+      )}
     </div>
 
     {/* ── Inline Approval Banner ───────────────────────────────────────────
@@ -709,6 +719,26 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, 
                 overridden={override?.net != null}
                 accent
                 onChange={(v) => onOverride(product.id, { net: v })}
+              />
+            )}
+            {/* LAST chip for scheme products — shown when this customer has a
+                previous verified purchase price. Scheme products skipped
+                PriceSelector entirely (which is where LAST normally appears),
+                so it was invisible for all scheme products regardless of history.
+                The PriceSelector handles all approval logic (version mismatch,
+                below-floor banner) identically to non-scheme products. */}
+            {!boxSelected && (
+              <PriceSelector
+                product={product}
+                override={override}
+                onOverride={onOverride}
+                lastPrice={lastPrice}
+                lastPriceVersion={lastPriceVersion}
+                shopApproval={shopApproval}
+                defaultPriceType={defaultPriceType}
+                onRemoveProduct={onRemoveProduct}
+                onRequestApproval={onRequestApproval}
+                schemeOnly
               />
             )}
           </>

@@ -709,11 +709,11 @@ export async function loadCustomerLastPrices(shopName, customerId = null) {
       .select('id, shop_name, customer_id, billing_status, order_date, created_at, billing_verified_at, order_items(product_name, unit, entered_unit, unit_price, approved_price, approved_price_version, removed)')
       .eq('hidden', false)
       .eq('billing_status', 'verified')
-      // Order by verification time (billing_verified_at), which is the same field
-      // the in-memory re-sort below uses as the primary key. Rows with null
-      // billing_verified_at (older orders) sort last (nulls last), then the
-      // in-memory sort falls back to order_date / created_at for those rows.
-      .order('billing_verified_at', { ascending: false, nullsFirst: false })
+      // Pre-sort descending so the most-recent order tends to come first over
+      // the network. The authoritative sort is the in-memory re-sort below
+      // (uses billing_verified_at || order_date || created_at), which handles
+      // null billing_verified_at rows correctly regardless of DB ordering.
+      .order('created_at', { ascending: false })
     return filter(q)
   }
 
