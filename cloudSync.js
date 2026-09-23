@@ -457,15 +457,7 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
       // (spec: retain original entry). qty above is ALWAYS pieces; these two
       // record e.g. "3 Outer" that produced it. Null-safe for old callers.
       entered_qty: i.entered_qty ?? null,
-      entered_unit: i.entered_unit ?? null,
-      // Price version at the time this order was placed — used by
-      // loadCustomerLastPrices to detect stale Last Prices. When the product's
-      // price_version is later bumped by a price revision, any Last Price derived
-      // from THIS order item will be recognised as belonging to an older version
-      // and will require Admin approval before use (v193). Null-safe: items from
-      // older code paths that don't carry priceVersion just store null here,
-      // which is treated as "unknown version — no staleness check".
-      approved_price_version: i.priceVersion ?? null
+      entered_unit: i.entered_unit ?? null
     }
     })
   } catch (buildErr) {
@@ -485,14 +477,13 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
   // then reach Billing empty, add-ons included. Strip the optional columns and
   // retry so the order is never lost over a column that only affects
   // reporting.
-  if (itemsErr && /approval_status|entered_qty|entered_unit|approved_price_version/i.test(String(itemsErr.message || ''))) {
+  if (itemsErr && /approval_status|entered_qty|entered_unit/i.test(String(itemsErr.message || ''))) {
     console.warn(
-      'order_items is missing approval_status/entered_qty/entered_unit/approved_price_version — run ' +
-      'sql/55_price_approval.sql (and 42_product_packaging.sql and 63_price_versioning.sql). ' +
+      'order_items is missing approval_status/entered_qty/entered_unit — run ' +
+      'sql/55_price_approval.sql (and 42_product_packaging.sql). ' +
       'Saving order items without those columns for now.'
     )
-    // eslint-disable-next-line no-unused-vars
-    const slimRows = rows.map(({ approval_status, entered_qty, entered_unit, approved_price_version, ...keep }) => keep)
+    const slimRows = rows.map(({ approval_status, entered_qty, entered_unit, ...keep }) => keep)
     ;({ error: itemsErr } = await supabase.from('order_items').insert(slimRows))
   }
   if (itemsErr) {
@@ -672,12 +663,7 @@ export async function loadCustomerLastPrices(shopName, customerId = null) {
   const runQuery = async (filter) => {
     const q = supabase
       .from('orders')
-      // approved_price_version: the product's price_version at the time this
-      // order item was saved. Used here to detect whether the customer's Last
-      // Price is stale (the product's version has since been bumped by a price
-      // revision), so ProductCard can show the version-mismatch warning and
-      // route the line through Admin approval.
-      .select('id, shop_name, customer_id, billing_status, order_date, created_at, billing_verified_at, order_items(product_name, unit_price, approved_price, approved_price_version, removed)')
+      .select('id, shop_name, customer_id, billing_status, order_date, created_at, billing_verified_at, order_items(product_name, unit_price, approved_price, removed)')
       .eq('hidden', false)
       .eq('billing_status', 'verified')
       .order('created_at', { ascending: false })
@@ -728,11 +714,6 @@ export async function loadCustomerLastPrices(shopName, customerId = null) {
     return tb - ta
   })
   dbg(`Processing ${orders.length} verified orders...`)
-  // Returns { PRODUCT_NAME: { price, priceVersion } }
-  // priceVersion = approved_price_version stored on the order_item at the time
-  // the order was saved — tells us which product price_version was current when
-  // this Last Price was established. If the product's current price_version no
-  // longer matches, the Last Price is stale and requires Admin approval before use.
   const out = {}
   for (const o of orders) {
     for (const it of o.order_items || []) {
@@ -744,13 +725,8 @@ export async function loadCustomerLastPrices(shopName, customerId = null) {
       // unit_price     = what the rep entered / billing accepted as-is
       const price = it.approved_price ?? it.unit_price
       if (price == null) continue
-      // approved_price_version — present on rows saved after SQL 63 ran.
-      // null/undefined for older rows (pre-versioning): treated as "unknown"
-      // so we never incorrectly stale a Last Price that predates the versioning
-      // system (a null priceVersion simply means "no version info; don't warn").
-      const priceVersion = it.approved_price_version ?? null
-      out[key] = { price, priceVersion }
-      dbg(`  ${key} → ₹${price} (v${priceVersion ?? '?'}) (order ${o.id.slice(-6)}, date ${o.order_date}, verified_at ${o.billing_verified_at || 'null'})`)
+      out[key] = price
+      dbg(`  ${key} → ₹${price} (order ${o.id.slice(-6)}, date ${o.order_date}, verified_at ${o.billing_verified_at || 'null'})`)
     }
   }
   dbg(`Result: ${Object.keys(out).length} products with last price`)
@@ -3892,10 +3868,7 @@ export async function updateCloudOrder(orderId, { items, userId, isApprovalReque
         unit: i.unit || ex.unit || "Piece",
         unit_price: ep != null ? ep : ex.unit_price,
         price_type: i.priceType || null,
-        normal_price: i.normalPrice ?? null,
-        // Refresh price version on update so loadCustomerLastPrices can detect
-        // staleness if the product's version bumps again after this edit.
-        approved_price_version: i.priceVersion ?? null
+        normal_price: i.normalPrice ?? null
       }
       if (isApprovalRequest) {
         // Only set approval fields when rep is explicitly requesting approval —
@@ -3931,9 +3904,7 @@ export async function updateCloudOrder(orderId, { items, userId, isApprovalReque
         gst_percent: i.gst ?? null,
         hsn: i.hsn ?? null,
         scheme_enabled: i.schemeEnabled !== false,
-        approval_status: (approvalEnabled && isApprovalRequest && isSpecial) ? 'pending' : null,
-        // Price version at the time of edit — same as saveCloudOrder
-        approved_price_version: i.priceVersion ?? null
+        approval_status: (approvalEnabled && isApprovalRequest && isSpecial) ? 'pending' : null
       }
       const { error: insErr } = await supabase.from("order_items").insert(insertRow)
       if (insErr) throw insErr

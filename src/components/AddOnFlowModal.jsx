@@ -132,9 +132,14 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
           // Mirror PriceSelector's auto-default: when a customer has a LAST price
           // for this product, LAST is the default chip. The order must save THAT
           // price (not retail) so the saved price matches what the card displays.
+          // Use unit-aware key (e.g. "PRODUCT NAME||Piece") first so Box prices
+          // don't appear as Piece last prices. Falls back to plain name key for
+          // older rows that pre-date unit storage in loadCustomerLastPrices.
           if (priceOverrides[id] == null) {
-            const lpKey = (p.name || '').trim().toUpperCase()
-            const lpEntry = lastPrices[lpKey]
+            const lpNameKey = (p.name || '').trim().toUpperCase()
+            const currentUnit = (units[id] || 'Piece').trim()
+            const lpUnitKey = `${lpNameKey}||${currentUnit}`
+            const lpEntry = lastPrices[lpUnitKey] ?? lastPrices[lpNameKey]
             const lastPriceVal = lpEntry?.price ?? (typeof lpEntry === 'number' ? lpEntry : null)
             if (lastPriceVal != null) return lastPriceVal
           }
@@ -344,8 +349,20 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
                 onUnit={onUnit}
                 override={priceOverrides[p.id]}
                 onOverride={onOverride}
-                lastPrice={lastPrices[(p.name || '').trim().toUpperCase()]?.price ?? lastPrices[(p.name || '').trim().toUpperCase()] ?? undefined}
-                lastPriceVersion={lastPrices[(p.name || '').trim().toUpperCase()]?.priceVersion ?? null}
+                lastPrice={(() => {
+                  const nameKey = (p.name || '').trim().toUpperCase()
+                  const currentUnit = (units[p.id] || 'Piece').trim()
+                  const unitKey = `${nameKey}||${currentUnit}`
+                  const entry = lastPrices[unitKey] ?? lastPrices[nameKey]
+                  return entry?.price ?? (typeof entry === 'number' ? entry : undefined)
+                })()}
+                lastPriceVersion={(() => {
+                  const nameKey = (p.name || '').trim().toUpperCase()
+                  const currentUnit = (units[p.id] || 'Piece').trim()
+                  const unitKey = `${nameKey}||${currentUnit}`
+                  const entry = lastPrices[unitKey] ?? lastPrices[nameKey]
+                  return entry?.priceVersion ?? null
+                })()}
                 shopApproval={shopApprovals[p.id] ?? null}
                 defaultPriceType={defaultPriceType}
                 onRequestApproval={({ priceType, finalRate: rate }) => {

@@ -488,7 +488,12 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
           2. Request Admin Approval (keep rep's selected price, send for approval)
           3. Cancel — Go Back to Edit (rep adjusts price themselves)          */}
     {showLastPriceWarning && (() => {
-      const currentFloor = product.retail ?? product.wholesale ?? 0
+      // Category-aware current floor: wholesale customer → WP, retail customer → RP.
+      // Previously hardcoded to product.retail, which showed the wrong "current price"
+      // and calculated a wrong % change for wholesale customers in this modal.
+      const currentFloor = defaultPriceType === 'WHOLESALE'
+        ? (product.wholesale ?? product.retail ?? 0)
+        : (product.retail ?? product.wholesale ?? 0)
       const diff = currentFloor - lastPrice
       const absPct = lastPrice > 0 ? Math.abs(diff / lastPrice) * 100 : 0
       const priceWentUp = diff > 0.001

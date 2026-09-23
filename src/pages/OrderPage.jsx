@@ -527,8 +527,11 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
               ? null // legacy override present (base/net/etc, e.g. a scheme product) — no explicit type
               : (() => {
                   // Mirror PriceSelector's defaultType: LAST wins when a last price exists.
-                  const lpKey = (p.name || '').trim().toUpperCase()
-                  const lpEntry = lastPrices[lpKey]
+                  // Use unit-aware key first (e.g. "PRODUCT NAME||Piece"), fall back to
+                  // plain name key for legacy rows that pre-date unit storage.
+                  const lpNameKey = (p.name || '').trim().toUpperCase()
+                  const lpUnitKey = `${lpNameKey}||${enteredUnit}`
+                  const lpEntry = lastPrices[lpUnitKey] ?? lastPrices[lpNameKey]
                   const lastPriceVal = lpEntry?.price ?? (typeof lpEntry === 'number' ? lpEntry : null)
                   return lastPriceVal != null ? 'LAST' : defaultPriceTypeFor(p, defaultPriceType)
                 })()),
@@ -551,16 +554,16 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
               if (priceOverrides[id]?.retail != null) return priceOverrides[id].retail
 
               // No explicit override set. Mirror PriceSelector's default-type logic:
-              // if this customer has a LAST price for this product, LAST is the
+              // if this customer has a LAST price for this product+unit, LAST is the
               // default chip — the rep sees the last price and the order must SAVE
               // that same price. Without this, the order would silently save the
               // retail/wholesale price instead of the displayed last price, causing
               // isSpecial=false and suppressing the approval request entirely.
-              // PriceSelector sets defaultType='LAST' when lastPrice exists, so we
-              // replicate that here: look up lastPrices[productName].
+              // Use unit-aware key first; fall back to plain name for legacy rows.
               if (priceOverrides[id] == null) {  // no override of any kind
-                const lpKey = (p.name || '').trim().toUpperCase()
-                const lpEntry = lastPrices[lpKey]
+                const lpNameKey = (p.name || '').trim().toUpperCase()
+                const lpUnitKey = `${lpNameKey}||${enteredUnit}`
+                const lpEntry = lastPrices[lpUnitKey] ?? lastPrices[lpNameKey]
                 const lastPriceVal = lpEntry?.price ?? (typeof lpEntry === 'number' ? lpEntry : null)
                 if (lastPriceVal != null) return lastPriceVal
               }
@@ -1383,8 +1386,26 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
               unit={units[p.id] || 'Piece'}
               onQty={onQty}
               onUnit={onUnit}
-              lastPrice={customer ? (lastPrices[(p.name || '').trim().toUpperCase()]?.price ?? lastPrices[(p.name || '').trim().toUpperCase()] ?? undefined) : undefined}
-              lastPriceVersion={customer ? (lastPrices[(p.name || '').trim().toUpperCase()]?.priceVersion ?? null) : null}
+              lastPrice={customer ? (() => {
+                // Look up last price by product name + current unit (Piece/Box/Outer).
+                // A Box price and a Piece price are different values — don't mix them.
+                // Falls back to the plain name key for legacy rows without unit data.
+                const nameKey = (p.name || '').trim().toUpperCase()
+                const currentUnit = (units[p.id] || 'Piece').trim()
+                const unitKey = `${nameKey}||${currentUnit}`
+                const byUnit = lastPrices[unitKey]
+                const byName = lastPrices[nameKey]
+                // Prefer per-unit entry; fall back to name-only for older rows
+                const entry = byUnit ?? byName
+                return entry?.price ?? (typeof entry === 'number' ? entry : undefined)
+              })() : undefined}
+              lastPriceVersion={customer ? (() => {
+                const nameKey = (p.name || '').trim().toUpperCase()
+                const currentUnit = (units[p.id] || 'Piece').trim()
+                const unitKey = `${nameKey}||${currentUnit}`
+                const entry = lastPrices[unitKey] ?? lastPrices[nameKey]
+                return entry?.priceVersion ?? null
+              })() : null}
               shopApproval={shopApprovals[p.id] ?? null}
               defaultPriceType={defaultPriceType}
               inventory={inventoryMap.get(p.id)}

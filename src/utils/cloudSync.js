@@ -296,25 +296,37 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     return s + price * (i.qty || 0)
   }, 0)
 
-  // Determine if any item requires bill-level approval.
+  // Determine if this order needs bill-level approval gating.
   //
-  // CRITICAL FIX (v189): billNeedsApproval MUST use the IDENTICAL isSpecial
-  // formula as the order_items insert below (~line 424). Previously it used
-  // evaluatePriceApproval() for SQL-63 products, which has STRICTER criteria —
-  // it allows wholesale-price sales below retail without triggering approval.
-  // That caused a fatal divergence:
-  //   order_items.approval_status  = 'pending'   (isSpecial fired — ep !== normalPrice)
-  //   orders.billing_status        = 'pending'   (billNeedsApproval=false — evaluatePriceApproval said OK)
-  //   orders.bill_approval_required = false
-  //   → Admin notification NEVER sent; order flowed straight to Billing
-  //   → pending approval items sat in DB invisible to Admin forever
+  // DESIGN (v199): There are TWO distinct approval concepts:
   //
-  // Fix: use isSpecial logic here as the single source of truth. If any item
-  // WILL get approval_status='pending', the bill MUST be flagged too.
+  //   1. Item-level: order_items.approval_status = 'pending'
+  //      Set on any item where isSpecial=true. This is the Admin notification
+  //      mechanism — Admin can see and approve/reject individual items.
+  //      The order still reaches Billing normally (billing_status='pending').
+  //
+  //   2. Bill-level: orders.billing_status = 'pending_approval'
+  //      Hides the ENTIRE ORDER from Billing until Admin explicitly releases it.
+  //      This should ONLY fire when the rep explicitly clicked "Request Admin
+  //      Approval" (isApprovalRequest=true) — i.e. the rep KNOWS the price is
+  //      non-standard and has actively invoked the approval flow.
+  //
+  // Previously (v189–v198): billNeedsApproval fired whenever any item had
+  // isSpecial=true, regardless of whether the rep went through the approval
+  // flow. This caused the bug: a rep could place an order with a special-price
+  // item (e.g. last price ₹17.5 vs normal ₹18) WITHOUT clicking the approval
+  // banner — the order got billing_status='pending_approval' and was COMPLETELY
+  // hidden from Billing, even though the rep never intended to request approval.
+  //
+  // Fix (v199): billing_status='pending_approval' ONLY when isApprovalRequest=true.
+  // Item-level approval_status='pending' still fires for isSpecial items, so
+  // Admin still sees the price deviation and can act on it — but the order
+  // reaches Billing normally, preventing the "order stuck in limbo" failure mode.
   let billNeedsApproval = false
   try {
     const approvalEnabled = await isApprovalEnabled()
-    if (approvalEnabled) {
+    if (approvalEnabled && isApprovalRequest) {
+      // Rep explicitly invoked the approval flow → gate the entire bill.
       billNeedsApproval = items.some((i) => {
         const ep = i.finalSellingPrice != null ? i.finalSellingPrice : null
         if (ep == null || i.normalPrice == null) return false
@@ -322,9 +334,13 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
         if (ep === i.normalPrice) return false
         if (i.isBoxUnit && ep >= (i.wholesaleAtOrderTime ?? ep)) return false
         if (isWholesaleCustomer && i.wholesaleAtOrderTime != null && Math.abs(ep - i.wholesaleAtOrderTime) < 0.001) return false
-        return true  // ep !== normalPrice with no valid exemption → needs approval
+        return true  // ep !== normalPrice with no valid exemption → bill-level gate
       })
     }
+    // When isApprovalRequest=false: individual items still get approval_status='pending'
+    // (see order_items insert below) so Admin is notified — but the order reaches
+    // Billing normally. This is intentional: never silently hide an order the rep
+    // didn't know needed approval.
   } catch (e) {
     // Never block order saving due to approval engine errors
     console.warn('bill approval check failed (non-fatal):', e.message)
@@ -659,10 +675,19 @@ export async function loadCustomerLastPrices(shopName, customerId = null) {
   const dbg = (...a) => DEBUG && console.log('[LastPrice]', ...a)
 
   // Only use customerId if it's a real Supabase UUID (8-4-4-4-12 hex).
-  // Local IndexedDB IDs start with "cLoud_" and are NOT valid UUIDs — passing
-  // them to Postgres causes a 400 "invalid input syntax for type uuid" error.
+  // Customer IDs come in three forms from AppContext:
+  //   • "c0", "c42" — seed/local-only IDs (no matching UUID in Supabase)
+  //   • "cloud_<uuid>" — cloud customers synced to local; strip prefix to get UUID
+  //   • "<uuid>" — raw Supabase UUID (rare, but handle it)
+  // Passing a non-UUID to Postgres causes a 400 "invalid input syntax for type uuid".
   const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-  const realCustomerId = (customerId && UUID_RE.test(String(customerId))) ? customerId : null
+  let realCustomerId = null
+  if (customerId) {
+    const raw = String(customerId)
+    // Strip "cloud_" prefix that AppContext adds when syncing cloud customers locally
+    const candidate = raw.startsWith('cloud_') ? raw.slice(6) : raw
+    if (UUID_RE.test(candidate)) realCustomerId = candidate
+  }
 
   dbg('loading for', { shopName, customerId, realCustomerId })
 
@@ -677,10 +702,18 @@ export async function loadCustomerLastPrices(shopName, customerId = null) {
       // Price is stale (the product's version has since been bumped by a price
       // revision), so ProductCard can show the version-mismatch warning and
       // route the line through Admin approval.
-      .select('id, shop_name, customer_id, billing_status, order_date, created_at, billing_verified_at, order_items(product_name, unit_price, approved_price, approved_price_version, removed)')
+      // unit / entered_unit: captured so Last Price is keyed per-unit (Piece vs
+      // Box vs Outer have different prices; mixing them is a bug). entered_unit
+      // is the rep's original selection before conversion to pieces; unit is the
+      // final normalised value. We prefer entered_unit for keying.
+      .select('id, shop_name, customer_id, billing_status, order_date, created_at, billing_verified_at, order_items(product_name, unit, entered_unit, unit_price, approved_price, approved_price_version, removed)')
       .eq('hidden', false)
       .eq('billing_status', 'verified')
-      .order('created_at', { ascending: false })
+      // Order by verification time (billing_verified_at), which is the same field
+      // the in-memory re-sort below uses as the primary key. Rows with null
+      // billing_verified_at (older orders) sort last (nulls last), then the
+      // in-memory sort falls back to order_date / created_at for those rows.
+      .order('billing_verified_at', { ascending: false, nullsFirst: false })
     return filter(q)
   }
 
@@ -721,39 +754,62 @@ export async function loadCustomerLastPrices(shopName, customerId = null) {
     return {}
   }
 
-  // ── Step 4: sort by verified time and extract last price per product ────────
+  // ── Step 4: sort by verified time and extract last price per product+unit ────
   const orders = (data || []).slice().sort((a, b) => {
     const ta = new Date(a.billing_verified_at || a.order_date || a.created_at).getTime()
     const tb = new Date(b.billing_verified_at || b.order_date || b.created_at).getTime()
     return tb - ta
   })
   dbg(`Processing ${orders.length} verified orders...`)
-  // Returns { PRODUCT_NAME: { price, priceVersion } }
+  // Returns {
+  //   "PRODUCT NAME||Piece": { price, priceVersion, unit },
+  //   "PRODUCT NAME||Box":   { price, priceVersion, unit },
+  //   "PRODUCT NAME":        { price, priceVersion, unit },  // fallback with no unit (legacy)
+  // }
+  //
+  // Keyed by BOTH product name AND unit (Piece/Box/Outer) because a Box price
+  // and a Piece price are completely different values for the same product.
+  // A "Piece" last price of ₹275 must not be shown when ordering by Box.
+  //
+  // The plain product-name key (no unit) is also set as a convenience for older
+  // rows that didn't store entered_unit — it holds the most recent price
+  // regardless of unit, so legacy product cards that don't pass a unit still
+  // get a reasonable value.
+  //
   // priceVersion = approved_price_version stored on the order_item at the time
   // the order was saved — tells us which product price_version was current when
   // this Last Price was established. If the product's current price_version no
-  // longer matches, the Last Price is stale and requires Admin approval before use.
+  // longer matches, the Last Price is stale and requires Admin approval.
   const out = {}
   for (const o of orders) {
     for (const it of o.order_items || []) {
-      const key = (it.product_name || '').trim().toUpperCase()
-      if (!key) continue
-      if (out[key] != null) continue      // already have a newer price for this product
+      const nameKey = (it.product_name || '').trim().toUpperCase()
+      if (!nameKey) continue
       if (it.removed) continue            // removed/stock-out lines never count
       // approved_price = Admin overrode the price (custom approval flow)
       // unit_price     = what the rep entered / billing accepted as-is
       const price = it.approved_price ?? it.unit_price
       if (price == null) continue
-      // approved_price_version — present on rows saved after SQL 63 ran.
-      // null/undefined for older rows (pre-versioning): treated as "unknown"
-      // so we never incorrectly stale a Last Price that predates the versioning
-      // system (a null priceVersion simply means "no version info; don't warn").
+      // entered_unit is the rep's original Piece/Box/Outer choice.
+      // unit is the normalised value (same as entered_unit for non-converted orders).
+      // Prefer entered_unit (what the rep saw) for the key; fall back to unit.
+      const unitVal = (it.entered_unit || it.unit || 'Piece').trim()
+      const unitKey = `${nameKey}||${unitVal}`
       const priceVersion = it.approved_price_version ?? null
-      out[key] = { price, priceVersion }
-      dbg(`  ${key} → ₹${price} (v${priceVersion ?? '?'}) (order ${o.id.slice(-6)}, date ${o.order_date}, verified_at ${o.billing_verified_at || 'null'})`)
+      const entry = { price, priceVersion, unit: unitVal }
+      // Per-unit key (precise): first time we see this product+unit combo wins (newest order)
+      if (out[unitKey] == null) {
+        out[unitKey] = entry
+        dbg(`  [${unitVal}] ${nameKey} → ₹${price} (v${priceVersion ?? '?'}) (order ${o.id.slice(-6)}, date ${o.order_date})`)
+      }
+      // Plain name key (fallback for legacy / no-unit callers): first entry wins
+      if (out[nameKey] == null) {
+        out[nameKey] = entry
+      }
     }
   }
-  dbg(`Result: ${Object.keys(out).length} products with last price`)
+  dbg(`Result: ${Object.keys(out).length} keys (including per-unit) for ${
+    Object.keys(out).filter(k => !k.includes('||')).length} products`)
   return out
 }
 
@@ -5045,27 +5101,30 @@ export function evaluatePriceApproval({ product, qty, selectedPrice, priceType, 
     return { approvalRequired: false, reason: null, currentPrice: retail, priceVersion: priceVer }
   }
 
-  // 3. WHOLESALE PRICE — valid when:
-  //    (a) qty >= threshold, OR
-  //    (b) sold as Box unit (auto-wholesale eligible), OR
-  //    (c) customer is a Wholesale customer (ledger_category = 'WHOLESALE-CUSTOMER') —
-  //        selling at the exact WP to a wholesale customer never needs approval,
-  //        regardless of qty. Custom prices below WP still follow the rules below.
+  // 3. WHOLESALE PRICE — valid (no approval needed) only when:
+  //    (a) sold as Box unit (auto-wholesale eligible — unit rule, not customer rule), OR
+  //    (b) customer is a Wholesale customer (ledger_category = 'WHOLESALE-CUSTOMER').
+  //
+  //    NOTE: qty >= threshold NO LONGER exempts retail customers from approval.
+  //    A retail customer selecting wholesale price always needs Admin sign-off,
+  //    regardless of quantity. The threshold exemption only applied to wholesale
+  //    customers (who already get WP by default) and box-unit sales (hardware rule).
+  //    Removing the threshold bypass for retail customers closes the gap where a
+  //    retail shop could silently get wholesale pricing just by ordering in bulk.
   if (wholesale != null && Math.abs(selectedPrice - wholesale) < 0.001) {
-    const thresholdMet       = threshold != null && qty >= threshold
-    const boxUnitOk          = isBoxUnit === true
-    const wholesaleCustomer  = isWholesaleCustomer === true
-    if (thresholdMet || boxUnitOk || wholesaleCustomer) {
+    const boxUnitOk         = isBoxUnit === true
+    const wholesaleCustomer = isWholesaleCustomer === true
+    if (boxUnitOk || wholesaleCustomer) {
       return { approvalRequired: false, reason: null, currentPrice: retail, priceVersion: priceVer }
     }
-    // Wholesale selected but threshold not met and not a wholesale customer
+    // Retail customer selected wholesale price — always requires Admin approval.
     return {
       approvalRequired: true,
-      reason: 'WHOLESALE_BELOW_THRESHOLD',
+      reason: 'WHOLESALE_PRICE_RETAIL_CUSTOMER',
       currentPrice: retail,
       lastApprovedPrice,
       priceVersion: priceVer,
-      message: `Wholesale price selected but order qty (${qty}) is below the threshold (${threshold ?? 'unset'})`
+      message: `Wholesale price selected for a retail customer — Admin approval required`
     }
   }
 
