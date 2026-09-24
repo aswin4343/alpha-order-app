@@ -6223,7 +6223,13 @@ export async function resubmitRejectedOrder(orderId, priceUpdates = [], repName,
     .eq('id', orderId)
     .maybeSingle()
   if (ordErr || !ord) throw ordErr || new Error('Order not found')
-  if (ord.bill_approval_status !== 'rejected') throw new Error('Order is not in rejected state')
+  // Allow resubmit for both full order-level rejections AND orders where
+  // individual items were rejected by Admin (item-level rejection via approveSpecialPrice/rejectSpecialPrice).
+  // In the item-level case, bill_approval_status stays 'pending' but items have approval_status='rejected'.
+  const billStatus = ord.bill_approval_status
+  if (billStatus !== 'rejected' && billStatus !== 'pending') {
+    throw new Error('Order cannot be resubmitted in its current state')
+  }
 
   // 2. Apply new prices to items where the rep changed them
   const priceMap = new Map((priceUpdates || []).map((u) => [u.itemId, Number(u.newPrice)]))
@@ -6254,12 +6260,14 @@ export async function resubmitRejectedOrder(orderId, priceUpdates = [], repName,
   }).eq('order_id', orderId).eq('approval_status', 'rejected').neq('removed', true)
   if (itemErr) throw itemErr
 
-  // 4. Reset the order to pending
+  // 4. Reset the order back to pending (clears rejection reason if it was a full rejection)
+  //    For item-level-only rejections (bill_approval_status already 'pending'), this is a no-op
+  //    on the status field but still clears bill_rejection_reason cleanly.
   const { error: orderErr } = await supabase.from('orders').update({
     bill_approval_status: 'pending',
     bill_rejection_reason: null,
     billing_status: 'pending_approval'  // keep hidden from Billing
-  }).eq('id', orderId).eq('bill_approval_status', 'rejected')  // idempotency guard
+  }).eq('id', orderId)
   if (orderErr) throw orderErr
 
   // 5. Audit trail — non-fatal
