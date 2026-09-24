@@ -6098,7 +6098,7 @@ export async function loadMyApprovalItems({ salesRepId } = {}) {
     .select(`id, shop_name, route, order_date, created_at, billing_status,
              bill_approval_status, bill_approval_required, bill_rejection_reason,
              bill_approved_at, approval_version,
-             order_items(id, product_name, product_id, qty, unit, unit_price, normal_price, price_type,
+             order_items(id, product_name, qty, unit, unit_price, normal_price, price_type,
                          approval_status, approved_price, approved_by, approved_at,
                          approval_reason_type, approval_competitor_name, approval_other_reason,
                          approval_reason, rejection_reason, removed)`)
