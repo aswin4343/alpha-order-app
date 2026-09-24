@@ -5587,11 +5587,11 @@ export async function approveSpecialPrice(itemId, adminName, adminId, reasonPayl
   }
   // ─── END CRITICAL FIX ──────────────────────────────────────────────────────
 
-  // Write audit history (non-fatal if history table not yet migrated)
+  // Write audit history + per-customer approval cache (non-fatal if table not yet migrated)
   try {
     const { data: it } = await supabase
       .from('order_items')
-      .select('id, order_id, product_name, qty, unit, unit_price, normal_price, price_type, orders(shop_name, route, order_date, sales_rep_id)')
+      .select('id, order_id, product_id, product_name, qty, unit, unit_price, normal_price, price_type, orders(shop_name, route, order_date, sales_rep_id, customer_id)')
       .eq('id', itemId).maybeSingle()
     if (it) {
       // Resolve rep name separately (orders has sales_rep_id, not sales_rep_name)
@@ -5600,6 +5600,27 @@ export async function approveSpecialPrice(itemId, adminName, adminId, reasonPayl
         const { data: prof } = await supabase.from('profiles').select('full_name').eq('id', it.orders.sales_rep_id).maybeSingle()
         repName = prof?.full_name || null
       }
+
+      // ─── v205 FIX: fetch product's current price_version for audit + cache ───
+      // This is needed to (a) record approved_price_version in the immutable
+      // history log, and (b) write the per-customer approval cache so the NEXT
+      // time this rep uses "Last Price" for this shop+product the system finds a
+      // valid shopApproval and skips the approval request (spec §7-9).
+      let priceVer = null
+      if (it.product_id) {
+        try {
+          const { data: prod } = await supabase
+            .from('products')
+            .select('price_version')
+            .eq('id', it.product_id)
+            .maybeSingle()
+          priceVer = prod?.price_version ?? null
+        } catch (_) { /* non-fatal — history insert still proceeds */ }
+      }
+      // ─── END v205 FIX ──────────────────────────────────────────────────────
+
+      const finalApprovedPrice = approvedPrice != null ? Number(approvedPrice) : it.unit_price
+
       await supabase.from('price_approval_history').insert({
         order_item_id: it.id, order_id: it.order_id,
         product_name: it.product_name, shop_name: it.orders?.shop_name,
@@ -5611,8 +5632,43 @@ export async function approveSpecialPrice(itemId, adminName, adminId, reasonPayl
         decided_at: new Date().toISOString(),
         reason_type: reasonType || null, competitor_name: competitorName || null,
         other_reason: otherReason || null,
-        approved_price: approvedPrice != null ? Number(approvedPrice) : it.unit_price
+        approved_price: finalApprovedPrice,
+        // v205: record which price_version was current at approval time so
+        // staleness can be audited even from the history table
+        ...(priceVer != null ? { approved_price_version: priceVer } : {})
       })
+
+      // ─── v205 FIX: write per-customer approval cache ────────────────────────
+      // approveBill() (bill-level path) already does this; approveSpecialPrice()
+      // (item-level path from AdminApprovalsPage) was missing it. Without this
+      // record, ProductCard's shopApproval check finds nothing and re-prompts the
+      // rep on every subsequent order for the same shop+product — even though
+      // Admin already approved it. With this record, the existing
+      // evaluatePriceApproval() logic correctly bypasses the prompt until the next
+      // price change (spec §7-9).
+      const customerId = it.orders?.customer_id
+      if (customerId && it.product_id && priceVer != null) {
+        try {
+          const now = new Date().toISOString()
+          await supabase.from('customer_price_approvals').upsert({
+            product_id: it.product_id,
+            customer_id: customerId,
+            approved_price: finalApprovedPrice,
+            approved_price_version: priceVer,
+            status: 'approved',
+            order_id: it.order_id,
+            approved_by: adminId || null,
+            approved_at: now
+          }, {
+            onConflict: 'product_id,customer_id',
+            ignoreDuplicates: false
+          })
+          console.log('[ITEM APPROVAL] customer_price_approvals upserted for customer', customerId, 'product', it.product_id, 'version', priceVer)
+        } catch (cpaErr) {
+          console.error('[ITEM APPROVAL] customer_price_approvals upsert failed (non-fatal):', cpaErr)
+        }
+      }
+      // ─── END v205 FIX ──────────────────────────────────────────────────────
     }
   } catch (histErr) { console.error('price_approval_history insert failed (non-fatal):', histErr) }
 }
@@ -6034,8 +6090,11 @@ export async function loadCustomerLedgerCategory(shopName, route) {
  */
 export async function loadMyApprovalItems({ salesRepId, limitDays = 60, dateFrom, dateTo } = {}) {
   if (!salesRepId) return []
+  // Normalize Date objects → YYYY-MM-DD strings (period picker passes Date objects)
+  const fromStr = dateFrom instanceof Date ? dateFrom.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }) : dateFrom
+  const toStr   = dateTo   instanceof Date ? dateTo.toLocaleDateString('en-CA',   { timeZone: 'Asia/Kolkata' }) : dateTo
   // If explicit date range provided (from period picker), use it; otherwise fall back to limitDays window
-  const since = dateFrom || new Date(Date.now() - limitDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const since = fromStr || new Date(Date.now() - limitDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
   let query = supabase
     .from('orders')
     .select(`id, shop_name, route, order_date, created_at, billing_status,
@@ -6051,7 +6110,7 @@ export async function loadMyApprovalItems({ salesRepId, limitDays = 60, dateFrom
     .gte('order_date', since)
     .order('created_at', { ascending: false })
     .limit(200)
-  if (dateTo) query = query.lte('order_date', dateTo)
+  if (toStr) query = query.lte('order_date', toStr)
   const { data, error } = await query
   if (error) { console.error('[loadMyApprovalItems]', error); return [] }
 
@@ -6097,8 +6156,11 @@ export async function loadMyApprovalItems({ salesRepId, limitDays = 60, dateFrom
  */
 export async function loadMyApprovalSummary({ salesRepId, limitDays = 60, dateFrom, dateTo } = {}) {
   if (!salesRepId) return { pending: 0, approved: 0, rejected: 0 }
+  // Normalize Date objects → YYYY-MM-DD strings (period picker passes Date objects)
+  const fromStr = dateFrom instanceof Date ? dateFrom.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }) : dateFrom
+  const toStr   = dateTo   instanceof Date ? dateTo.toLocaleDateString('en-CA',   { timeZone: 'Asia/Kolkata' }) : dateTo
   // If explicit date range provided (from period picker), use it; otherwise fall back to limitDays window
-  const since = dateFrom || new Date(Date.now() - limitDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  const since = fromStr || new Date(Date.now() - limitDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
 
   // Include order_items so we can apply the SAME existence filter that
   // loadMyApprovalItems applies: only count orders that have at least one
@@ -6113,7 +6175,7 @@ export async function loadMyApprovalSummary({ salesRepId, limitDays = 60, dateFr
     .eq('hidden', false)
     .eq('sales_rep_id', salesRepId)
     .gte('order_date', since)
-  if (dateTo) query = query.lte('order_date', dateTo)
+  if (toStr) query = query.lte('order_date', toStr)
   const { data, error } = await query
   if (error) { console.error('[loadMyApprovalSummary]', error); return { pending: 0, approved: 0, rejected: 0 } }
 
@@ -6345,7 +6407,17 @@ export async function loadPoDashboard(daysAhead = 30) {
   return data
 }
 
-/** Load vendors list with their config (for admin editing). */
+/** Load ALL vendors (active + inactive) for Vendor Management. */
+export async function loadVendorsAll() {
+  const { data, error } = await supabase
+    .from('vendors')
+    .select('*')
+    .order('vendor_name')
+  if (error) { console.error('loadVendorsAll error', error); return [] }
+  return data || []
+}
+
+/** Load vendors list with their config (for admin editing / PO workflow). */
 export async function loadVendors() {
   const { data, error } = await supabase
     .from('vendors')
@@ -6361,6 +6433,86 @@ export async function updateVendor(id, patch) {
   const { error } = await supabase
     .from('vendors')
     .update(patch)
+    .eq('id', id)
+  if (error) throw error
+}
+
+/**
+ * Add a new vendor. Returns the created row.
+ * Checks for duplicate by vendor_name (case-insensitive) before inserting.
+ */
+export async function addVendor(fields) {
+  // Duplicate check: same vendor_name (case-insensitive) already in table
+  const { data: existing } = await supabase
+    .from('vendors')
+    .select('id, vendor_name, active')
+    .ilike('vendor_name', fields.vendor_name?.trim() || '')
+    .limit(1)
+  if (existing && existing.length > 0) {
+    throw new Error(`Vendor "${existing[0].vendor_name}" already exists (${existing[0].active ? 'Active' : 'Inactive'}).`)
+  }
+  const { data, error } = await supabase
+    .from('vendors')
+    .insert({ ...fields, active: fields.active !== false })
+    .select()
+    .single()
+  if (error) throw error
+  return data
+}
+
+/**
+ * Bulk upsert vendors from Excel import.
+ * Matches on vendor_name (case-insensitive). Returns { inserted, updated, skipped }.
+ * Never duplicates — uses upsert conflict on vendor_name.
+ */
+export async function importVendorsBulk(rows) {
+  // Fetch existing vendors for duplicate detection
+  const { data: existing } = await supabase.from('vendors').select('id, vendor_name')
+  const existingMap = new Map((existing || []).map((v) => [
+    (v.vendor_name || '').trim().toUpperCase(), v.id
+  ]))
+
+  const toInsert = []
+  const toUpdate = []
+  const duplicates = []
+
+  for (const row of rows) {
+    const nameKey = (row.vendor_name || '').trim().toUpperCase()
+    if (!nameKey) continue
+    if (existingMap.has(nameKey)) {
+      const existingId = existingMap.get(nameKey)
+      // Update existing — preserve id, merge new fields
+      toUpdate.push({ id: existingId, ...row })
+      duplicates.push(nameKey)
+    } else {
+      toInsert.push({ ...row, active: true })
+    }
+  }
+
+  let inserted = 0
+  let updated = 0
+
+  if (toInsert.length > 0) {
+    const { error } = await supabase.from('vendors').insert(toInsert)
+    if (error) throw error
+    inserted = toInsert.length
+  }
+
+  for (const v of toUpdate) {
+    const { id, ...patch } = v
+    const { error } = await supabase.from('vendors').update(patch).eq('id', id)
+    if (error) console.error('importVendorsBulk update error', error)
+    else updated++
+  }
+
+  return { inserted, updated, skipped: 0 }
+}
+
+/** Activate or deactivate a vendor. Does NOT delete — historical POs are preserved. */
+export async function setVendorActive(id, active) {
+  const { error } = await supabase
+    .from('vendors')
+    .update({ active, updated_at: new Date().toISOString() })
     .eq('id', id)
   if (error) throw error
 }

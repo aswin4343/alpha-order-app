@@ -10,6 +10,7 @@ import {
 } from '../utils/cloudSync.js'
 import { inventoryStatus, STATUS_PILL, STATUS_DOT } from '../utils/inventoryStatus.js'
 import EnablePushBanner from '../components/EnablePushBanner.jsx'
+import VendorManagement from '../components/VendorManagement.jsx'
 import { verifyPushSubscription } from '../utils/push.js'
 import appIcon from '../assets/app_icon.png'
 
@@ -98,7 +99,7 @@ export default function PurchaseManagerDashboard() {
           <button onClick={signOut} className="text-sm font-semibold text-red-600 px-2">Sign Out</button>
         </div>
         <div className="px-4 lg:px-6 flex gap-1 -mb-px overflow-x-auto">
-          {[['po', 'Purchase Orders'], ['add', 'Add Stock'], ['inventory', 'Inventory'], ['table', 'Inventory Table'], ['reorder', 'Reorder Alerts'], ['analysis', 'Consumption'], ['history', 'Stock History'], ['purchases', 'Purchases']].map(([k, label]) => (
+          {[['po', 'Purchase Orders'], ['vendors', 'Vendors'], ['add', 'Add Stock'], ['inventory', 'Inventory'], ['table', 'Inventory Table'], ['reorder', 'Reorder Alerts'], ['analysis', 'Consumption'], ['history', 'Stock History'], ['purchases', 'Purchases']].map(([k, label]) => (
             <button key={k} onClick={() => setTab(k)}
               className={`px-4 py-2 text-sm font-semibold border-b-2 whitespace-nowrap ${tab === k ? 'border-brand-600 text-brand-700' : 'border-transparent text-slate-500 hover:text-slate-700'}`}>
               {label}
@@ -119,6 +120,7 @@ export default function PurchaseManagerDashboard() {
             onFlash={flash}
           />
         )}
+        {tab === 'vendors' && <VendorManagement />}
         {tab === 'add' && (
           <AddStock products={products} invMap={invMap} profile={profile}
             onDone={async (msg) => { await refresh(); flash(msg) }} />

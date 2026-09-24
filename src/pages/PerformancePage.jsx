@@ -74,9 +74,8 @@ export default function PerformancePage({ onBack, onEditOrder }) {
       // Load this rep's bills awaiting Admin approval
       loadPendingApprovalBills({ salesRepId: id }).then((d) => { if (!cancelled) setPendingBills(d) }).catch(() => { if (!cancelled) setPendingBills([]) })
       loadRejectedBills({ salesRepId: id }).then((d) => { if (!cancelled) setRejectedBills(d) }).catch(() => { if (!cancelled) setRejectedBills([]) })
-      // Item-level approval summary for the stat card — initial load uses no date
-      // filter (60-day default) so the count is always populated before period picker
-      // is interacted with. The period-aware refresh happens in the range effect below.
+      // Approval summary: no date filter — always uses 60-day default window.
+      // Approvals are cross-period (a rep's pending order from yesterday still needs action today).
       loadMyApprovalSummary({ salesRepId: id }).then((s) => { if (!cancelled) setApprovalSummary(s) }).catch(() => {})
       try { const t = await loadMyPerformance(id); if (!cancelled) setTotals(t) } catch {}
 
@@ -166,17 +165,18 @@ export default function PerformancePage({ onBack, onEditOrder }) {
     [periodMode, dateStr]
   )
 
-  // Refresh the approval summary whenever the period range changes so the
-  // "Admin Approval Pending" stat card matches the same date window the rest
-  // of the page is using. This keeps the modal tile counts and the stat card
-  // in agreement (both use the same dateFrom/dateTo when the modal is opened).
+  // Refresh the approval summary whenever uid is resolved.
+  // Approvals are CROSS-PERIOD — a rep may have sent an order yesterday that is
+  // still pending today; filtering by the current period picker would hide it.
+  // We always use the 60-day default window (no dateFrom/dateTo) so the stat card
+  // and the modal always agree and no pending item is silently omitted.
   useEffect(() => {
     if (!uid) return
-    loadMyApprovalSummary({ salesRepId: uid, dateFrom: range.start, dateTo: range.end })
+    loadMyApprovalSummary({ salesRepId: uid })
       .then(setApprovalSummary)
       .catch(() => {})
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [uid, range])
+  }, [uid])
 
   // Load performance for the selected period + route. Empty route → all
   // routes (original behaviour unchanged when mode='today'/no route picked).
@@ -449,8 +449,6 @@ export default function PerformancePage({ onBack, onEditOrder }) {
       {openModal === 'adminPending' && (
         <ApprovalDetailModal
           onClose={() => setOpenModal(null)}
-          dateFrom={range.start}
-          dateTo={range.end}
         />
       )}
 

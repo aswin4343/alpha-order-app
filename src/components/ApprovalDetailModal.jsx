@@ -3,6 +3,7 @@ import { useAuth } from '../context/AuthContext.jsx'
 import { loadMyApprovalItems, loadMyApprovalSummary, resubmitRejectedOrder, currentUserId } from '../utils/cloudSync.js'
 import { supabase } from '../utils/supabase.js'
 import { CloseIcon } from './Icons.jsx'
+import AddOnFlowModal from './AddOnFlowModal.jsx'
 
 const rupee = (n) => n != null ? `₹${Number(n).toLocaleString('en-IN')}` : '—'
 
@@ -51,6 +52,9 @@ export default function ApprovalDetailModal({ onClose, dateFrom, dateTo }) {
   const [newPrices,     setNewPrices]     = useState({})     // { [itemId]: newPrice string }
   const [resubmitting,  setResubmitting]  = useState(false)
   const [resubmitError, setResubmitError] = useState('')
+
+  // ADD-ON flow — for approved orders: rep can add more products to the same billing order
+  const [addOnOrder, setAddOnOrder] = useState(null)
 
   // dateFrom/dateTo come from the period picker in PerformancePage so the
   // modal shows the same date window as the stat card that was tapped.
@@ -150,6 +154,18 @@ export default function ApprovalDetailModal({ onClose, dateFrom, dateTo }) {
   const visibleOrders = activeTab === 'all'
     ? allOrders
     : allOrders.filter((o) => o.bill_approval_status === activeTab)
+
+  // ── ADD-ON flow (approved orders) ─────────────────────────────────────────
+  if (addOnOrder) {
+    return (
+      <AddOnFlowModal
+        order={addOnOrder}
+        userId={uid}
+        onClose={() => setAddOnOrder(null)}
+        onSaved={() => { setAddOnOrder(null); reload(uid) }}
+      />
+    )
+  }
 
   // ── Resubmit screen ────────────────────────────────────────────────────────
   if (resubmitOrder) {
@@ -348,6 +364,7 @@ export default function ApprovalDetailModal({ onClose, dateFrom, dateTo }) {
               key={order.id}
               order={order}
               onResubmit={() => openResubmit(order)}
+              onAddOn={() => setAddOnOrder(order)}
             />
           ))}
         </div>
@@ -357,7 +374,7 @@ export default function ApprovalDetailModal({ onClose, dateFrom, dateTo }) {
 }
 
 // ── Per-order card (ORDER-LEVEL) ──────────────────────────────────────────────
-function OrderApprovalCard({ order, onResubmit }) {
+function OrderApprovalCard({ order, onResubmit, onAddOn }) {
   const [expanded, setExpanded] = useState(false)
   const [showHistory, setShowHistory] = useState(false)
 
@@ -499,6 +516,21 @@ function OrderApprovalCard({ order, onResubmit }) {
           </button>
           <p className="text-[10px] text-slate-400 text-center mt-1.5">
             Opens all {totalItems} products — change any rates and send back to Admin
+          </p>
+        </div>
+      )}
+
+      {/* ADD-ON button — only for approved orders */}
+      {status === 'approved' && onAddOn && (
+        <div className="px-4 py-3 border-t border-green-100 bg-green-50">
+          <button
+            onClick={onAddOn}
+            className="w-full rounded-xl bg-green-600 text-white py-3 font-bold text-sm active:bg-green-700"
+          >
+            ➕ Add Products to This Order
+          </button>
+          <p className="text-[10px] text-slate-400 text-center mt-1.5">
+            Add more products to the same billing order for {order.shop_name}
           </p>
         </div>
       )}
