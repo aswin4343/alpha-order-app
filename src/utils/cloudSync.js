@@ -5175,9 +5175,9 @@ export async function loadPendingApprovalBills({ salesRepId } = {}) {
   let q = supabase
     .from('orders')
     .select(`id, shop_name, route, order_date, created_at, total_value, total_products,
-             sales_rep_id, bill_approval_status, bill_approval_required, approval_version,
+             sales_rep_id, bill_approval_status, bill_approval_required,
              profiles(full_name),
-             order_items(id, product_name, product_id, qty, unit, unit_price, normal_price,
+             order_items(id, product_name, qty, unit, unit_price, normal_price,
                          approval_status, approved_price, approval_reason_type, approval_other_reason, approval_competitor_name)`)
     .eq('bill_approval_required', true)
     .eq('bill_approval_status', 'pending')
@@ -5295,7 +5295,7 @@ export async function approveBill(orderId, itemOverrides, adminUser, reasonPaylo
     bill_approved_at: now,
     bill_approved_by: adminUser?.id || null,
     billing_status: 'pending'
-  }).eq('id', orderId).select('shop_name, order_date, approval_version').single()
+  }).eq('id', orderId).select('shop_name, order_date').single()
   if (error) throw error
 
   // 5. Release sibling orders (same shop+date) that were also blocked
@@ -5311,7 +5311,7 @@ export async function approveBill(orderId, itemOverrides, adminUser, reasonPaylo
   // 6. Audit history (non-fatal)
   try {
     const { data: ord } = await supabase.from('orders')
-      .select('shop_name, route, order_date, sales_rep_id, approval_version')
+      .select('shop_name, route, order_date, sales_rep_id')
       .eq('id', orderId).maybeSingle()
     if (ord) {
       let repName = null
@@ -5330,8 +5330,7 @@ export async function approveBill(orderId, itemOverrides, adminUser, reasonPaylo
         decided_at: now,
         reason_type: reasonPayload.reasonType || null,
         competitor_name: reasonPayload.competitorName || null,
-        other_reason: reasonPayload.otherReason || null,
-        approval_version: ord.approval_version || 1
+        other_reason: reasonPayload.otherReason || null
       })
     }
   } catch (e) { console.error('[approveBill] audit history (non-fatal):', e) }
@@ -5368,7 +5367,7 @@ export async function rejectBill(orderId, adminUser, reason) {
   // Write audit history record (non-fatal)
   try {
     const { data: ord } = await supabase.from('orders')
-      .select('shop_name, route, order_date, sales_rep_id, approval_version')
+      .select('shop_name, route, order_date, sales_rep_id')
       .eq('id', orderId).maybeSingle()
     if (ord) {
       let repName = null
@@ -5386,8 +5385,7 @@ export async function rejectBill(orderId, adminUser, reason) {
         decided_by: adminUser?.full_name || null,
         decided_by_id: adminUser?.id || null,
         decided_at: now,
-        rejection_reason: reason || null,
-        approval_version: ord.approval_version || 1
+        rejection_reason: reason || null
       })
     }
   } catch (e) { console.error('[rejectBill] audit history (non-fatal):', e) }
@@ -6093,11 +6091,12 @@ export async function loadMyApprovalItems({ salesRepId } = {}) {
   // v205 FIX: NO date filter — an approval order is relevant regardless of
   // when it was placed. A 90-day-old pending order is still pending; filtering
   // by date silently hides it and creates a stat card vs. modal mismatch.
+  // NOTE: approval_version and bill_rejection_reason require sql/72 to be run.
+  // They are fetched separately below so a missing column doesn't kill the whole query.
   const { data, error } = await supabase
     .from('orders')
     .select(`id, shop_name, route, order_date, created_at, billing_status,
-             bill_approval_status, bill_approval_required, bill_rejection_reason,
-             bill_approved_at, approval_version,
+             bill_approval_status, bill_approval_required, bill_approved_at,
              order_items(id, product_name, qty, unit, unit_price, normal_price, price_type,
                          approval_status, approved_price, approved_by, approved_at,
                          approval_reason_type, approval_competitor_name, approval_other_reason,
@@ -6117,7 +6116,7 @@ export async function loadMyApprovalItems({ salesRepId } = {}) {
     try {
       const { data: hist } = await supabase
         .from('price_approval_history')
-        .select('order_id, decision, decided_by, decided_at, rejection_reason, approval_version, product_name')
+        .select('order_id, decision, decided_by, decided_at, rejection_reason, product_name')
         .in('order_id', allOrderIds)
         .order('decided_at', { ascending: true })
       if (hist) {
@@ -6220,7 +6219,7 @@ export async function resubmitRejectedOrder(orderId, priceUpdates = [], repName,
   // 1. Read current order + all items for audit trail
   const { data: ord, error: ordErr } = await supabase
     .from('orders')
-    .select('id, shop_name, route, order_date, bill_approval_status, approval_version')
+    .select('id, shop_name, route, order_date, bill_approval_status')
     .eq('id', orderId)
     .maybeSingle()
   if (ordErr || !ord) throw ordErr || new Error('Order not found')
@@ -6255,13 +6254,11 @@ export async function resubmitRejectedOrder(orderId, priceUpdates = [], repName,
   }).eq('order_id', orderId).eq('approval_status', 'rejected').neq('removed', true)
   if (itemErr) throw itemErr
 
-  // 4. Bump the approval_version and reset the order to pending
-  const nextVersion = (ord.approval_version || 1) + 1
+  // 4. Reset the order to pending
   const { error: orderErr } = await supabase.from('orders').update({
     bill_approval_status: 'pending',
     bill_rejection_reason: null,
-    billing_status: 'pending_approval',  // keep hidden from Billing
-    approval_version: nextVersion
+    billing_status: 'pending_approval'  // keep hidden from Billing
   }).eq('id', orderId).eq('bill_approval_status', 'rejected')  // idempotency guard
   if (orderErr) throw orderErr
 
@@ -6269,14 +6266,13 @@ export async function resubmitRejectedOrder(orderId, priceUpdates = [], repName,
   try {
     await supabase.from('price_approval_history').insert({
       order_id: orderId,
-      product_name: `[ORDER RESUBMITTED v${nextVersion}] ${ord.shop_name || '—'}`,
+      product_name: `[ORDER RESUBMITTED] ${ord.shop_name || '—'}`,
       shop_name: ord.shop_name, route: ord.route,
       sales_rep_name: repName || null,
       order_date: ord.order_date,
       decision: 'resubmitted',
       decided_by: repName || null, decided_by_id: repId || null,
-      decided_at: now,
-      approval_version: nextVersion
+      decided_at: now
     })
   } catch (e) { console.error('[resubmitRejectedOrder] audit history (non-fatal):', e) }
 }
