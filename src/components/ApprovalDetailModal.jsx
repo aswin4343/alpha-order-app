@@ -384,8 +384,14 @@ function OrderApprovalCard({ order, onResubmit, onAddOn }) {
   const totalItems = (order.items || []).length
   const specialItems = (order.items || []).filter((i) => i.approval_status === 'pending' || i.approval_status === 'rejected').length
 
+  // Detect item-level rejections on a still-pending order (admin rejected specific
+  // items but hasn't closed the whole bill yet). Rep should be able to resubmit.
+  const hasItemRejections = (order.items || []).some((i) => i.approval_status === 'rejected')
+  const canResubmit = status === 'rejected' || (status === 'pending' && hasItemRejections)
+
   const statusBadge = {
-    pending:  { text: '⏳ With Admin',    cls: 'text-amber-700 bg-amber-100' },
+    pending:  { text: hasItemRejections ? '⚠️ Partial Rejection' : '⏳ With Admin',
+                cls:  hasItemRejections ? 'text-red-700 bg-red-100' : 'text-amber-700 bg-amber-100' },
     approved: { text: '✅ Approved',       cls: 'text-green-700 bg-green-100' },
     rejected: { text: '❌ Rejected',       cls: 'text-red-700   bg-red-100'   },
   }[status] || { text: status, cls: 'text-slate-600 bg-slate-100' }
@@ -414,11 +420,20 @@ function OrderApprovalCard({ order, onResubmit, onAddOn }) {
           </span>
         </div>
 
-        {/* Rejection reason */}
+        {/* Rejection reason (order-level rejection) */}
         {status === 'rejected' && rejReason && (
           <div className="mt-2 rounded-lg bg-red-100 border border-red-200 px-2.5 py-1.5">
             <p className="text-[11px] text-red-700">
               <span className="font-semibold">Rejected: </span>{rejReason}
+            </p>
+          </div>
+        )}
+        {/* Item-level rejections on a pending order */}
+        {status === 'pending' && hasItemRejections && (
+          <div className="mt-2 rounded-lg bg-red-100 border border-red-200 px-2.5 py-1.5">
+            <p className="text-[11px] text-red-700">
+              <span className="font-semibold">⚠️ Some items were rejected by Admin.</span>{' '}
+              You can revise prices and resubmit.
             </p>
           </div>
         )}
@@ -505,8 +520,8 @@ function OrderApprovalCard({ order, onResubmit, onAddOn }) {
         </div>
       )}
 
-      {/* RESUBMIT ORDER button — only for rejected orders */}
-      {status === 'rejected' && (
+      {/* RESUBMIT ORDER button — for rejected orders OR pending orders with item-level rejections */}
+      {canResubmit && (
         <div className="px-4 py-3 border-t border-red-100 bg-red-50">
           <button
             onClick={onResubmit}
