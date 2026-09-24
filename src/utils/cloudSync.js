@@ -6088,14 +6088,12 @@ export async function loadCustomerLedgerCategory(shopName, route) {
  *   'rejected' — Admin rejected the order; rep needs to resubmit
  *   'approved' — Admin approved; order went to Billing
  */
-export async function loadMyApprovalItems({ salesRepId, limitDays = 60, dateFrom, dateTo } = {}) {
+export async function loadMyApprovalItems({ salesRepId } = {}) {
   if (!salesRepId) return []
-  // Normalize Date objects → YYYY-MM-DD strings (period picker passes Date objects)
-  const fromStr = dateFrom instanceof Date ? dateFrom.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }) : dateFrom
-  const toStr   = dateTo   instanceof Date ? dateTo.toLocaleDateString('en-CA',   { timeZone: 'Asia/Kolkata' }) : dateTo
-  // If explicit date range provided (from period picker), use it; otherwise fall back to limitDays window
-  const since = fromStr || new Date(Date.now() - limitDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
-  let query = supabase
+  // v205 FIX: NO date filter — an approval order is relevant regardless of
+  // when it was placed. A 90-day-old pending order is still pending; filtering
+  // by date silently hides it and creates a stat card vs. modal mismatch.
+  const { data, error } = await supabase
     .from('orders')
     .select(`id, shop_name, route, order_date, created_at, billing_status,
              bill_approval_status, bill_approval_required, bill_rejection_reason,
@@ -6107,11 +6105,8 @@ export async function loadMyApprovalItems({ salesRepId, limitDays = 60, dateFrom
     .eq('bill_approval_required', true)
     .eq('hidden', false)
     .eq('sales_rep_id', salesRepId)
-    .gte('order_date', since)
     .order('created_at', { ascending: false })
     .limit(200)
-  if (toStr) query = query.lte('order_date', toStr)
-  const { data, error } = await query
   if (error) { console.error('[loadMyApprovalItems]', error); return [] }
 
   // Fetch order-level approval history from price_approval_history
@@ -6154,29 +6149,24 @@ export async function loadMyApprovalItems({ salesRepId, limitDays = 60, dateFrom
  * IMPORTANT: uses the IDENTICAL query strategy as loadMyApprovalItems so the
  * counts always match the lists.
  */
-export async function loadMyApprovalSummary({ salesRepId, limitDays = 60, dateFrom, dateTo } = {}) {
+export async function loadMyApprovalSummary({ salesRepId } = {}) {
   if (!salesRepId) return { pending: 0, approved: 0, rejected: 0 }
-  // Normalize Date objects → YYYY-MM-DD strings (period picker passes Date objects)
-  const fromStr = dateFrom instanceof Date ? dateFrom.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }) : dateFrom
-  const toStr   = dateTo   instanceof Date ? dateTo.toLocaleDateString('en-CA',   { timeZone: 'Asia/Kolkata' }) : dateTo
-  // If explicit date range provided (from period picker), use it; otherwise fall back to limitDays window
-  const since = fromStr || new Date(Date.now() - limitDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+  // v205 FIX: NO date filter — approval status has nothing to do with the period
+  // picker. A pending order from 90 days ago is still pending; a date cutoff
+  // would make the stat card and modal show 0 while the order silently rots.
+  // loadPendingApprovalBills (used by the stat card fallback) also has no date
+  // filter — this now matches it exactly.
 
   // Include order_items so we can apply the SAME existence filter that
   // loadMyApprovalItems applies: only count orders that have at least one
   // non-removed item. Without this, a pending order whose items are all
-  // removed=true would be counted here but never appear in the list — the
-  // exact "Pending: 2 / No orders waiting for approval" mismatch seen in the
-  // v190 screenshot bug.
-  let query = supabase
+  // removed=true would be counted here but never appear in the list.
+  const { data, error } = await supabase
     .from('orders')
     .select('id, bill_approval_status, order_items(id, removed)')
     .eq('bill_approval_required', true)
     .eq('hidden', false)
     .eq('sales_rep_id', salesRepId)
-    .gte('order_date', since)
-  if (toStr) query = query.lte('order_date', toStr)
-  const { data, error } = await query
   if (error) { console.error('[loadMyApprovalSummary]', error); return { pending: 0, approved: 0, rejected: 0 } }
 
   // Mirror loadMyApprovalItems: only count orders with at least one non-removed item.
