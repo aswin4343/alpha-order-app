@@ -600,11 +600,14 @@ function OrderDetailPanel({ order, onBackToOrders, onVerified, singleOrderId, em
           <div className="rounded-xl bg-blue-50 border border-blue-100 px-3 py-2.5 mb-3">
             <p className="text-[11px] font-bold text-blue-700 uppercase tracking-wide mb-1">New Customer — First Order</p>
             <div className="text-[12px] text-blue-900 space-y-0.5">
+              {order.original.intro_area && <p>Area: {order.original.intro_area}</p>}
+              {order.original.intro_category && <p>Category: {order.original.intro_category}</p>}
+              {order.original.intro_ledger_category && <p>Ledger: {order.original.intro_ledger_category}</p>}
               {order.original.intro_phone && <p>Phone: {order.original.intro_phone}</p>}
-              {order.original.intro_gstn && <p>GST: {order.original.intro_gstn}</p>}
               {order.original.intro_credit_days && <p>Credit Days: {order.original.intro_credit_days}</p>}
+              {order.original.intro_gstn && <p>GST: {order.original.intro_gstn}</p>}
               {order.original.intro_email && <p>Email: {order.original.intro_email}</p>}
-              {!order.original.intro_phone && !order.original.intro_gstn && !order.original.intro_email && (
+              {!order.original.intro_phone && !order.original.intro_area && !order.original.intro_category && (
                 <p className="text-blue-500">No additional details entered at creation.</p>
               )}
             </div>

@@ -2618,7 +2618,7 @@ export async function loadBillingOrders(repId, deliveryType, status = 'pending',
   // reverse). Filtering happens after grouping, based on the tab selected.
   const data = await fetchAllPaged(
     'orders',
-    'id, shop_name, route, customer_id, total_quantity, total_value, created_at, order_date, sales_rep_id, billing_status, billing_verified_at, is_new_customer, intro_phone, intro_gstn, intro_credit_days, intro_email, brand',
+    'id, shop_name, route, customer_id, total_quantity, total_value, created_at, order_date, sales_rep_id, billing_status, billing_verified_at, is_new_customer, intro_phone, intro_gstn, intro_credit_days, intro_email, intro_area, intro_category, intro_ledger_category, brand',
     (q) => {
       q = q.eq('sales_rep_id', repId).eq('hidden', false)
         // Bills requiring Admin approval use billing_status='pending_approval'
