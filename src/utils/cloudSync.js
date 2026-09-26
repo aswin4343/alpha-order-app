@@ -5681,7 +5681,7 @@ export async function approveSpecialPrice(itemId, adminName, adminId, reasonPayl
 
       const finalApprovedPrice = approvedPrice != null ? Number(approvedPrice) : it.unit_price
 
-      await supabase.from('price_approval_history').insert({
+      const histPayload = {
         order_item_id: it.id, order_id: it.order_id,
         product_name: it.product_name, shop_name: it.orders?.shop_name,
         route: it.orders?.route, sales_rep_name: repName,
@@ -5696,7 +5696,33 @@ export async function approveSpecialPrice(itemId, adminName, adminId, reasonPayl
         // v205: record which price_version was current at approval time so
         // staleness can be audited even from the history table
         ...(priceVer != null ? { approved_price_version: priceVer } : {})
-      })
+      }
+      const { error: histErr1 } = await supabase.from('price_approval_history').insert(histPayload)
+      if (histErr1) {
+        // If unique constraint violation (item already has a history row from a
+        // previous approval attempt or backfill), update instead of insert so the
+        // audit log always reflects the latest decision.
+        if (histErr1.code === '23505') {
+          const { error: histErr2 } = await supabase
+            .from('price_approval_history')
+            .update({
+              decision: histPayload.decision,
+              decided_by: histPayload.decided_by,
+              decided_by_id: histPayload.decided_by_id,
+              decided_at: histPayload.decided_at,
+              approved_price: histPayload.approved_price,
+              reason_type: histPayload.reason_type,
+              competitor_name: histPayload.competitor_name,
+              other_reason: histPayload.other_reason,
+              ...(priceVer != null ? { approved_price_version: priceVer } : {})
+            })
+            .eq('order_item_id', it.id)
+          if (histErr2) console.error('[ITEM APPROVAL] price_approval_history update after conflict failed:', histErr2)
+          else console.log('[ITEM APPROVAL] price_approval_history updated (was duplicate):', it.id)
+        } else {
+          console.error('[ITEM APPROVAL] price_approval_history insert failed:', histErr1)
+        }
+      }
 
       // ─── v205 FIX: write per-customer approval cache ────────────────────────
       // approveBill() (bill-level path) already does this; approveSpecialPrice()
@@ -5817,7 +5843,7 @@ export async function rejectSpecialPrice(itemId, adminName, adminId, reason) {
         const { data: prof } = await supabase.from('profiles').select('full_name').eq('id', it.orders.sales_rep_id).maybeSingle()
         repName = prof?.full_name || null
       }
-      await supabase.from('price_approval_history').insert({
+      const rejHistPayload = {
         order_item_id: it.id, order_id: it.order_id,
         product_name: it.product_name, shop_name: it.orders?.shop_name,
         route: it.orders?.route, sales_rep_name: repName,
@@ -5826,9 +5852,29 @@ export async function rejectSpecialPrice(itemId, adminName, adminId, reason) {
         order_date: it.orders?.order_date,
         decision: 'rejected', decided_by: adminName || null, decided_by_id: adminId || null,
         decided_at: new Date().toISOString(), rejection_reason: reason || null
-      })
+      }
+      const { error: rejHistErr1 } = await supabase.from('price_approval_history').insert(rejHistPayload)
+      if (rejHistErr1) {
+        // Unique constraint: item already has a history row — update it instead
+        if (rejHistErr1.code === '23505') {
+          const { error: rejHistErr2 } = await supabase
+            .from('price_approval_history')
+            .update({
+              decision: 'rejected',
+              decided_by: rejHistPayload.decided_by,
+              decided_by_id: rejHistPayload.decided_by_id,
+              decided_at: rejHistPayload.decided_at,
+              rejection_reason: rejHistPayload.rejection_reason
+            })
+            .eq('order_item_id', it.id)
+          if (rejHistErr2) console.error('[ITEM REJECTION] price_approval_history update after conflict failed:', rejHistErr2)
+          else console.log('[ITEM REJECTION] price_approval_history updated (was duplicate):', it.id)
+        } else {
+          console.error('[ITEM REJECTION] price_approval_history insert failed:', rejHistErr1)
+        }
+      }
     }
-  } catch (histErr) { console.error('price_approval_history insert failed (non-fatal):', histErr) }
+  } catch (histErr) { console.error('[ITEM REJECTION] price_approval_history write failed (non-fatal):', histErr) }
 }
 
 /** Load approval history for the Admin reports page. */
