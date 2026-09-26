@@ -377,15 +377,24 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
       order_date: orderDate || new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }),
       latitude: location?.latitude ?? null,
       longitude: location?.longitude ?? null,
-      // Bill-level approval (requires SQL migration 63_price_versioning.sql).
-      // When not migrated, billNeedsApproval is always false (see above guard),
-      // so billing_status always stays 'pending' — orders reach Billing normally.
-      // billing_status: always 'pending' unless bill-level approval is active.
-      // bill_approval_required column is ONLY included in insert if it already
-      // exists (i.e. 63_price_versioning.sql has been run). Sending an unknown
-      // column to Supabase causes a 400 error that returns null from this
-      // function — which was the root cause of orders not saving.
+      // Bill-level approval gate (requires SQL migration 63_price_versioning.sql,
+      // which added bill_approval_required, bill_approval_status, bill_approval_required).
+      // billing_status: 'pending_approval' (hidden from Billing) ONLY when the rep
+      // explicitly clicked "Request Admin Approval" AND has genuine special-price items.
+      // All other orders (including normal orders with special-price items for Admin
+      // visibility only) stay as 'pending' so Billing Team can process them normally.
       billing_status: billNeedsApproval ? 'pending_approval' : 'pending',
+      // Explicitly set bill_approval_required so that every order has this field
+      // unambiguously in the DB — false for normal orders, true only when the rep
+      // explicitly clicked "Request Admin Approval" (billNeedsApproval=true).
+      // Without this explicit insert, the DB default (false) is used, but future
+      // migration scripts that search for "orders with pending items but no
+      // bill_approval_required flag" cannot distinguish between:
+      //   (a) a normal order where the column was always false (correct)
+      //   (b) a normal order where the column happened to be null (ambiguous)
+      // Migrations 70/71 exploited this ambiguity and incorrectly promoted normal
+      // special-price orders to pending_approval. Explicit false prevents this.
+      bill_approval_required: !!billNeedsApproval,
       // New-customer intro: stored ONLY on this order (never on the customer
       // record), and only when this genuinely is their first order — see
       // isIntroPending/clearIntro in AppContext, the existing "first order"
