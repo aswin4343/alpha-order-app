@@ -860,6 +860,59 @@ export async function loadCustomerPriceApprovals(customerId) {
 }
 
 /**
+ * Load approval history from price_approval_history for a specific shop.
+ *
+ * This is a fallback for when customer_price_approvals has no rows (which
+ * happens when order_items.product_id is null — the column was never added —
+ * so approveSpecialPrice() skips writing the cache). Instead we query the
+ * immutable audit log directly and reconstruct approval validity from there.
+ *
+ * Returns: { [PRODUCT_NAME_UPPERCASE]: { approvedPrice, approvedPriceVersion, decidedAt } }
+ * Only the MOST RECENT approved decision per product_name is returned.
+ * product_name is uppercased to match loadCustomerLastPrices key convention.
+ *
+ * Staleness is checked in the caller (ProductCard) by comparing
+ * approvedPriceVersion against product.price_version — same as the existing
+ * shopApproval path. No timestamp comparison needed: price_version is the
+ * canonical staleness signal (bumped on every price change).
+ *
+ * Non-fatal: returns {} on any error.
+ */
+export async function loadShopPriceApprovalHistory(shopName) {
+  if (!shopName) return {}
+  try {
+    const { data, error } = await supabase
+      .from('price_approval_history')
+      .select('product_name, approved_price, approved_price_version, decided_at')
+      .eq('shop_name', shopName)
+      .eq('decision', 'approved')
+      .order('decided_at', { ascending: false })
+      .limit(300)
+    if (error) {
+      console.warn('[loadShopPriceApprovalHistory] non-fatal:', error.message)
+      return {}
+    }
+    // Keep only the most recent approved row per product (data is DESC decided_at)
+    const out = {}
+    for (const row of (data || [])) {
+      const key = (row.product_name || '').trim().toUpperCase()
+      if (!key || key.startsWith('[ORDER ')) continue  // skip order-level audit rows
+      if (!out[key]) {
+        out[key] = {
+          approvedPrice: row.approved_price,
+          approvedPriceVersion: row.approved_price_version,
+          decidedAt: row.decided_at
+        }
+      }
+    }
+    return out
+  } catch (e) {
+    console.warn('[loadShopPriceApprovalHistory] fetch failed (non-fatal):', e.message)
+    return {}
+  }
+}
+
+/**
  * Personal performance counts for the logged-in rep.
  * Returns orders + visits totals for today / this week / this month.
  */
@@ -6286,20 +6339,38 @@ export async function resubmitRejectedOrder(orderId, priceUpdates = [], repName,
 }
 
 /**
- * Rep removes a rejected item from the order so the remaining items can
- * proceed to Billing. Marks the item as removed=true, approval_status='rejected'
- * (already is, but ensures consistency). If all items in the bill are
- * now either approved or removed, releases the bill to Billing.
+ * Rep removes a rejected (or pending) item from the order so the remaining
+ * items can proceed to Billing. Marks the item as removed=true.
+ *
+ * Guards:
+ *  - Only items with approval_status='rejected' or 'pending' can be removed
+ *    this way. Approved or normal (null) items cannot be removed here.
+ *  - If, after removal, all remaining active items are approved or normal (null),
+ *    the order is auto-released to Billing (billing_status→'pending').
+ *    Otherwise only the totals are recalculated.
+ *
+ * An audit record is written to price_approval_history (non-fatal).
+ *
  * @param {string} itemId   - order_items.id to remove
- * @param {string} repId    - for re-evaluation check
+ * @param {string} repId    - sales rep user id (for audit trail)
+ * @param {string} repName  - sales rep full name (for audit trail)
  */
-export async function removeRejectedItemFromOrder(itemId, repId) {
+export async function removeRejectedItemFromOrder(itemId, repId, repName) {
   const { data: it, error: itErr } = await supabase
     .from('order_items')
-    .select('id, order_id, product_name, qty, unit, unit_price')
+    .select('id, order_id, product_name, qty, unit, unit_price, approval_status, removed')
     .eq('id', itemId)
     .maybeSingle()
   if (itErr || !it) throw itErr || new Error('Item not found')
+
+  // Guard: only rejected or pending items can be removed this way
+  if (it.removed) throw new Error(`${it.product_name || 'Item'} has already been removed from this order.`)
+  if (it.approval_status !== 'rejected' && it.approval_status !== 'pending') {
+    throw new Error(
+      `Only rejected or pending-approval items can be removed. ` +
+      `"${it.product_name || 'Item'}" has status: ${it.approval_status ?? 'normal'}.`
+    )
+  }
 
   // Mark removed
   const { error } = await supabase
@@ -6308,39 +6379,134 @@ export async function removeRejectedItemFromOrder(itemId, repId) {
     .eq('id', itemId)
   if (error) throw error
 
-  // Check if all remaining (non-removed) items for this order are approved.
-  // If so, release the bill to Billing.
+  const now = new Date().toISOString()
+
+  // Re-evaluate remaining items
   const { data: remaining } = await supabase
     .from('order_items')
     .select('id, approval_status, removed, qty, unit_price, approved_price')
     .eq('order_id', it.order_id)
   const active = (remaining || []).filter((r) => !r.removed)
-  const allApproved = active.length > 0 && active.every((r) => r.approval_status === 'approved' || r.approval_status == null)
-  const stillPending = active.some((r) => r.approval_status === 'pending')
 
-  if (allApproved && !stillPending) {
-    // All remaining items approved — release to Billing automatically
-    const now = new Date().toISOString()
-    const totalValue = active.reduce((s, r) => s + ((r.approved_price ?? r.unit_price ?? 0) * r.qty), 0)
-    const totalQty = active.reduce((s, r) => s + r.qty, 0)
+  // "All valid" = every remaining item is either explicitly approved or normal (null = no approval needed)
+  const allValid    = active.length > 0 && active.every((r) => r.approval_status === 'approved' || r.approval_status == null)
+  const stillBlocked = active.some((r) => r.approval_status === 'pending' || r.approval_status === 'rejected')
+
+  const totalValue  = active.reduce((s, r) => s + ((r.approved_price ?? r.unit_price ?? 0) * r.qty), 0)
+  const totalQty    = active.reduce((s, r) => s + r.qty, 0)
+
+  if (allValid && !stillBlocked) {
+    // Auto-release: all remaining items are valid — promote to Billing
     await supabase.from('orders').update({
       bill_approval_status: 'approved',
       bill_approved_at: now,
       billing_status: 'pending',
+      bill_rejection_reason: null,
       total_value: Math.round(totalValue),
       total_quantity: totalQty,
       total_products: active.length
     }).eq('id', it.order_id)
   } else {
-    // Still pending/rejected items — just recalculate totals
-    const totalValue = active.reduce((s, r) => s + ((r.approved_price ?? r.unit_price ?? 0) * r.qty), 0)
-    const totalQty = active.reduce((s, r) => s + r.qty, 0)
+    // Items still need review — just recalculate totals
     await supabase.from('orders').update({
       total_value: Math.round(totalValue),
       total_quantity: totalQty,
       total_products: active.length
     }).eq('id', it.order_id)
   }
+
+  // Audit trail (non-fatal)
+  try {
+    const { data: ord } = await supabase.from('orders').select('shop_name, route, order_date').eq('id', it.order_id).maybeSingle()
+    await supabase.from('price_approval_history').insert({
+      order_id: it.order_id,
+      order_item_id: itemId,
+      product_name: it.product_name || '—',
+      shop_name: ord?.shop_name || null,
+      route: ord?.route || null,
+      order_date: ord?.order_date || null,
+      sales_rep_name: repName || null,
+      requested_price: it.unit_price,
+      qty: it.qty,
+      unit: it.unit,
+      decision: 'removed_by_rep',
+      decided_by: repName || null,
+      decided_by_id: repId || null,
+      decided_at: now
+    })
+  } catch (e) { console.error('[removeRejectedItemFromOrder] audit (non-fatal):', e) }
+}
+
+/**
+ * Sales Rep explicitly sends the remaining valid items to Billing after
+ * removing rejected/unwanted items from the order.
+ *
+ * Validates that no remaining item is still pending/rejected, then promotes
+ * the order from billing_status='pending_approval' → 'pending' so Billing
+ * Team can see and verify it.
+ *
+ * @param {string} orderId   - orders.id
+ * @param {string} repName   - for audit trail
+ * @param {string} repId     - for audit trail
+ */
+export async function sendRemainingItemsToBilling(orderId, repName, repId) {
+  if (!orderId) throw new Error('orderId required')
+  const now = new Date().toISOString()
+
+  // 1. Load current non-removed items
+  const { data: items, error: itemsErr } = await supabase
+    .from('order_items')
+    .select('id, product_name, qty, unit_price, approval_status, removed')
+    .eq('order_id', orderId)
+  if (itemsErr) throw itemsErr
+
+  const active = (items || []).filter((i) => !i.removed)
+
+  // 2. Guard: must have at least one remaining item
+  if (active.length === 0) {
+    throw new Error('No products remaining in this order. Add products before sending to Billing.')
+  }
+
+  // 3. Guard: no remaining item can be pending or rejected
+  const blocked = active.filter((i) => i.approval_status === 'pending' || i.approval_status === 'rejected')
+  if (blocked.length > 0) {
+    const names = blocked.map((i) => i.product_name).join(', ')
+    throw new Error(`Cannot send to Billing — the following items still need Admin approval or removal: ${names}`)
+  }
+
+  // 4. Recalculate totals from active items
+  const totalValue = active.reduce((s, i) => s + ((i.unit_price || 0) * i.qty), 0)
+  const totalQty   = active.reduce((s, i) => s + i.qty, 0)
+
+  // 5. Promote the order to Billing
+  const { error: orderErr } = await supabase.from('orders').update({
+    bill_approval_status: 'approved',
+    bill_approved_at: now,
+    billing_status: 'pending',
+    bill_rejection_reason: null,
+    total_value: Math.round(totalValue),
+    total_quantity: totalQty,
+    total_products: active.length
+  }).eq('id', orderId)
+  if (orderErr) throw orderErr
+
+  // 6. Audit trail (non-fatal)
+  try {
+    const { data: ord } = await supabase.from('orders').select('shop_name, route, order_date').eq('id', orderId).maybeSingle()
+    await supabase.from('price_approval_history').insert({
+      order_id: orderId,
+      product_name: `[ORDER PARTIAL-APPROVED → BILLING] ${ord?.shop_name || '—'}`,
+      shop_name: ord?.shop_name || null,
+      route: ord?.route || null,
+      order_date: ord?.order_date || null,
+      sales_rep_name: repName || null,
+      decision: 'approved',
+      decided_by: repName || null,
+      decided_by_id: repId || null,
+      decided_at: now,
+      reason_type: 'partial_approval_after_item_removal'
+    })
+  } catch (e) { console.error('[sendRemainingItemsToBilling] audit (non-fatal):', e) }
 }
 
 /**

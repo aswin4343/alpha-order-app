@@ -163,7 +163,7 @@ const PRICE_CHANGED_RECENT_DAYS = 7
  *   itself so OrderPage (which owns items[]) can mark the line and run
  *   checkViolations consistently.
  */
-function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVersion, shopApproval, defaultPriceType, onRemoveProduct, onRequestApproval, schemeOnly }) {
+function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVersion, shopApproval, shopHistoryApproval, defaultPriceType, onRemoveProduct, onRequestApproval, schemeOnly, boxMode }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   // Warning modal state: shown when rep selects LAST price but the official
@@ -216,7 +216,14 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
   const defaultType = has('LAST')
     ? 'LAST'
     : (has(preferred) ? preferred : (has('WHOLESALE') ? 'WHOLESALE' : options[0].type))
-  const activeType = override?.priceType || defaultType
+  // boxMode: the LAST chip is offered as an alternative to the EditableBoxTag (WP),
+  // but WP is the actual billing price when no override is set. The LAST chip starts
+  // INACTIVE — the rep must explicitly tap it to select it. Without this, the schemeOnly
+  // PriceSelector in Box mode would auto-default activeType='LAST' (the only option it
+  // shows) and fire the approval banner even when the rep hasn't selected Last at all.
+  const activeType = boxMode
+    ? (override?.priceType || null)   // null = nothing active in box mode
+    : (override?.priceType || defaultType)
   const isCustom = activeType === 'CUSTOM'
   const activeOption = options.find((o) => o.type === activeType)
   const finalRate = isCustom
@@ -250,20 +257,30 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
         : (product.retail ?? product.wholesale ?? null)
 
       // Determine whether a valid approval exists for this shop + product (spec §8).
-      // shopApproval (per-customer row) wins over product.last_approved_price (global).
+      // Check order: (1) shopApproval from customer_price_approvals (per-customer cache,
+      //   keyed by product_id UUID — populated only when product_id exists on order_items);
+      // (2) shopHistoryApproval from price_approval_history (fallback for when cache is
+      //   empty because product_id column never existed — keyed by product_name UPPERCASE);
+      // (3) product.last_approved_price (global fallback — not per-shop, last resort only).
       const shopApprovalValid =
         shopApproval != null &&
         shopApproval.approvedPriceVersion === priceVer &&
         Math.abs(shopApproval.approvedPrice - lastPrice) < 0.01
 
+      const shopHistoryApprovalValid =
+        !shopApprovalValid &&
+        shopHistoryApproval != null &&
+        shopHistoryApproval.approvedPriceVersion === priceVer &&
+        Math.abs(shopHistoryApproval.approvedPrice - lastPrice) < 0.01
+
       const productApprovalValid =
-        !shopApproval &&  // only fall back when no shop-level row exists
+        !shopApprovalValid && !shopHistoryApprovalValid &&
         product.last_approved_price != null &&
         product.last_approved_version != null &&
         product.last_approved_version === priceVer &&
         Math.abs(product.last_approved_price - lastPrice) < 0.01
 
-      const lastApprovedValid = shopApprovalValid || productApprovalValid
+      const lastApprovedValid = shopApprovalValid || shopHistoryApprovalValid || productApprovalValid
 
       // Condition A: version mismatch
       const lastPriceIsStale = lastPriceVersion != null &&
@@ -322,6 +339,10 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
   const activeApprovalBannerState = (() => {
     // Only evaluate when the order is still editable (onRequestApproval present)
     if (!onRequestApproval) return null
+    // boxMode: the billing price is WP (controlled by EditableBoxTag), not the LAST
+    // chip. The LAST chip starts inactive and only becomes active if explicitly tapped.
+    // No auto-approval-banner here — if the rep taps LAST, selectType() handles it.
+    if (boxMode) return null
 
     const activeFinalRate = finalRate  // the price that will actually be charged
     if (activeFinalRate == null) return null
@@ -336,19 +357,25 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
     const isBelowFloor = activeFinalRate < currentFloor - 0.001
     if (!isBelowFloor) return null
 
-    // Check for valid approval (per-shop first, product-level fallback)
+    // Check for valid approval: (1) customer_price_approvals cache, (2) history fallback,
+    // (3) global product-level (last resort). Same priority as selectType() above.
     const priceVer = product.price_version ?? 1
     const shopApprovalValid =
       shopApproval != null &&
       shopApproval.approvedPriceVersion === priceVer &&
       Math.abs(shopApproval.approvedPrice - activeFinalRate) < 0.01
+    const shopHistoryApprovalValid =
+      !shopApprovalValid &&
+      shopHistoryApproval != null &&
+      shopHistoryApproval.approvedPriceVersion === priceVer &&
+      Math.abs(shopHistoryApproval.approvedPrice - activeFinalRate) < 0.01
     const productApprovalValid =
-      !shopApproval &&
+      !shopApprovalValid && !shopHistoryApprovalValid &&
       product.last_approved_price != null &&
       product.last_approved_version != null &&
       product.last_approved_version === priceVer &&
       Math.abs(product.last_approved_price - activeFinalRate) < 0.01
-    const approvalValid = shopApprovalValid || productApprovalValid
+    const approvalValid = shopApprovalValid || shopHistoryApprovalValid || productApprovalValid
 
     if (approvalValid) return null  // valid approval — no banner needed
 
@@ -387,13 +414,18 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
             shopApproval != null &&
             shopApproval.approvedPriceVersion === priceVer &&
             Math.abs(shopApproval.approvedPrice - lastPrice) < 0.01
+          const chipHistoryApprovalValid =
+            !shopApprovalValid &&
+            shopHistoryApproval != null &&
+            shopHistoryApproval.approvedPriceVersion === priceVer &&
+            Math.abs(shopHistoryApproval.approvedPrice - lastPrice) < 0.01
           const productApprovalValid =
-            !shopApproval &&
+            !shopApprovalValid && !chipHistoryApprovalValid &&
             product.last_approved_price != null &&
             product.last_approved_version != null &&
             product.last_approved_version === priceVer &&
             Math.abs(product.last_approved_price - lastPrice) < 0.01
-          const chipApprovalValid = shopApprovalValid || productApprovalValid
+          const chipApprovalValid = shopApprovalValid || chipHistoryApprovalValid || productApprovalValid
           const chipPriceIsStale = lastPriceVersion != null &&
             product.price_version != null &&
             lastPriceVersion !== product.price_version
@@ -591,7 +623,7 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
  * Product row. Scheme products show BR/NR; all others show RP/WP.
  * Layout is tuned for one-hand use on a phone.
  */
-function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, lastPrice, lastPriceVersion, shopApproval, defaultPriceType, inventory, onRemoveProduct, onRequestApproval }) {
+function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, lastPrice, lastPriceVersion, shopApproval, shopHistoryApproval, defaultPriceType, inventory, onRemoveProduct, onRequestApproval }) {
   const selected = qty > 0
   const units = availableUnits(product)
   const stockStatus = inventoryStatus(inventory)
@@ -735,6 +767,7 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, 
                 lastPrice={lastPrice}
                 lastPriceVersion={lastPriceVersion}
                 shopApproval={shopApproval}
+                shopHistoryApproval={shopHistoryApproval}
                 defaultPriceType={defaultPriceType}
                 onRemoveProduct={onRemoveProduct}
                 onRequestApproval={onRequestApproval}
@@ -743,22 +776,38 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, 
             )}
           </>
         ) : unit === 'Box' ? (
-          // BOX selected: this line bills at the master Wholesale Price
-          // regardless of customer category. Now editable (pencil icon) —
-          // writes to its own dedicated boxRate override, kept separate from
-          // the Piece-based finalRate override (see the scheme-branch
-          // comment above for why: reusing finalRate would leak a custom
-          // Box price into Piece pricing after switching units back).
-          // Choosing Piece again brings the selector — and the customer's
-          // normal pricing — straight back; boxRate is simply not consulted
-          // once unit != Box.
-          <EditableBoxTag
-            value={override?.boxRate != null ? override.boxRate : product.wholesale}
-            overridden={override?.boxRate != null}
-            onChange={(v) => onOverride(product.id, { boxRate: v })}
-          />
+          // BOX selected: shows the editable WP tag (bills at Wholesale Price)
+          // plus a LAST chip when the customer has a previous purchase price.
+          // The LAST chip uses schemeOnly mode so only the LAST button shows —
+          // RP/WP chips are irrelevant here since Box always bills at WP. This
+          // matches the scheme-product pattern (line above) for consistency:
+          // rep can reuse their last agreed price even while Box is selected.
+          // Switching back to Piece restores the full PriceSelector normally.
+          <>
+            <EditableBoxTag
+              value={override?.boxRate != null ? override.boxRate : product.wholesale}
+              overridden={override?.boxRate != null}
+              onChange={(v) => onOverride(product.id, { boxRate: v })}
+            />
+            {lastPrice != null && (
+              <PriceSelector
+                product={product}
+                override={override}
+                onOverride={onOverride}
+                lastPrice={lastPrice}
+                lastPriceVersion={lastPriceVersion}
+                shopApproval={shopApproval}
+                shopHistoryApproval={shopHistoryApproval}
+                defaultPriceType={defaultPriceType}
+                onRemoveProduct={onRemoveProduct}
+                onRequestApproval={onRequestApproval}
+                schemeOnly
+                boxMode
+              />
+            )}
+          </>
         ) : (
-          <PriceSelector product={product} override={override} onOverride={onOverride} lastPrice={lastPrice} lastPriceVersion={lastPriceVersion} shopApproval={shopApproval} defaultPriceType={defaultPriceType} onRemoveProduct={onRemoveProduct} onRequestApproval={onRequestApproval} />
+          <PriceSelector product={product} override={override} onOverride={onOverride} lastPrice={lastPrice} lastPriceVersion={lastPriceVersion} shopApproval={shopApproval} shopHistoryApproval={shopHistoryApproval} defaultPriceType={defaultPriceType} onRemoveProduct={onRemoveProduct} onRequestApproval={onRequestApproval} />
         )}
       </div>
 

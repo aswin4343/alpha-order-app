@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
-import { loadMyApprovalItems, loadMyApprovalSummary, resubmitRejectedOrder, currentUserId } from '../utils/cloudSync.js'
+import { loadMyApprovalItems, loadMyApprovalSummary, resubmitRejectedOrder, removeRejectedItemFromOrder, sendRemainingItemsToBilling, currentUserId } from '../utils/cloudSync.js'
 import { supabase } from '../utils/supabase.js'
 import { CloseIcon } from './Icons.jsx'
 import AddOnFlowModal from './AddOnFlowModal.jsx'
@@ -52,6 +52,13 @@ export default function ApprovalDetailModal({ onClose, dateFrom, dateTo }) {
   const [newPrices,     setNewPrices]     = useState({})     // { [itemId]: newPrice string }
   const [resubmitting,  setResubmitting]  = useState(false)
   const [resubmitError, setResubmitError] = useState('')
+
+  // Item-removal state (within the resubmit screen)
+  // removedItemIds — set of item IDs the rep has removed from the order (optimistic UI)
+  const [removedItemIds,   setRemovedItemIds]   = useState(new Set())
+  const [removingItemId,   setRemovingItemId]   = useState(null)   // which item is mid-removal
+  const [sendingToBilling, setSendingToBilling] = useState(false)
+  const [sentToBilling,    setSentToBilling]    = useState(false)  // show success state
 
   // ADD-ON flow — for approved orders: rep can add more products to the same billing order
   const [addOnOrder, setAddOnOrder] = useState(null)
@@ -113,14 +120,27 @@ export default function ApprovalDetailModal({ onClose, dateFrom, dateTo }) {
     }
     setNewPrices(prices)
     setResubmitError('')
+    setRemovedItemIds(new Set())
+    setRemovingItemId(null)
+    setSendingToBilling(false)
+    setSentToBilling(false)
   }
-  const closeResubmit = () => { setResubmitOrder(null); setNewPrices({}); setResubmitError('') }
+  const closeResubmit = () => {
+    setResubmitOrder(null)
+    setNewPrices({})
+    setResubmitError('')
+    setRemovedItemIds(new Set())
+    setRemovingItemId(null)
+    setSendingToBilling(false)
+    setSentToBilling(false)
+  }
 
   const confirmResubmit = async () => {
     if (!resubmitOrder) return
-    // Collect items where rep actually changed the price
+    // Only resubmit items that are not locally removed
     const updates = []
     for (const item of (resubmitOrder.items || [])) {
+      if (removedItemIds.has(item.id)) continue  // skip removed items
       const entered = parseFloat(newPrices[item.id])
       const original = Number(item.unit_price ?? 0)
       if (!isNaN(entered) && entered > 0 && Math.abs(entered - original) > 0.001) {
@@ -139,6 +159,41 @@ export default function ApprovalDetailModal({ onClose, dateFrom, dateTo }) {
       setResubmitError(e?.message || 'Could not resubmit. Try again.')
     } finally {
       setResubmitting(false)
+    }
+  }
+
+  // ── Remove rejected item from order ───────────────────────────────────────
+  const handleRemoveItem = async (itemId) => {
+    if (!resubmitOrder || removingItemId) return
+    setRemovingItemId(itemId)
+    setResubmitError('')
+    try {
+      await removeRejectedItemFromOrder(itemId, uid, profile?.full_name)
+      // Optimistically add to removed set
+      setRemovedItemIds((prev) => new Set([...prev, itemId]))
+    } catch (e) {
+      console.error('[removeRejectedItem]', e)
+      setResubmitError(e?.message || 'Could not remove item. Try again.')
+    } finally {
+      setRemovingItemId(null)
+    }
+  }
+
+  // ── Send remaining valid items directly to Billing ────────────────────────
+  const handleSendToBilling = async () => {
+    if (!resubmitOrder) return
+    setSendingToBilling(true)
+    setResubmitError('')
+    try {
+      await sendRemainingItemsToBilling(resubmitOrder.id, profile?.full_name, uid)
+      setSentToBilling(true)
+      await reload(uid)
+      // Auto-close after a brief success display
+      setTimeout(() => { closeResubmit(); setActiveTab('approved') }, 2000)
+    } catch (e) {
+      console.error('[sendToBilling]', e)
+      setResubmitError(e?.message || 'Could not send to Billing. Try again.')
+      setSendingToBilling(false)
     }
   }
 
@@ -171,106 +226,290 @@ export default function ApprovalDetailModal({ onClose, dateFrom, dateTo }) {
   if (resubmitOrder) {
     const rejReason = resubmitOrder.bill_rejection_reason
     const version   = resubmitOrder.approval_version || 1
+
+    // Compute per-item visible state
+    const allItems = (resubmitOrder.items || [])
+    // Active = not removed in DB (item.removed=false) AND not removed this session
+    const activeItems = allItems.filter((i) => !removedItemIds.has(i.id))
+    const removedCount = removedItemIds.size
+
+    // Approval state of each remaining item
+    const pendingItems  = activeItems.filter((i) => i.approval_status === 'pending')
+    const rejectedItems = activeItems.filter((i) => i.approval_status === 'rejected')
+    const needsApproval = pendingItems.length > 0 || rejectedItems.length > 0
+
+    // Can send to billing: has items, none pending/rejected
+    const canSendToBilling = activeItems.length > 0 && !needsApproval
+    // Can resubmit: has at least one pending/rejected item remaining
+    const canResubmitToAdmin = pendingItems.length > 0 || rejectedItems.length > 0
+
     return (
       <div className="fixed inset-0 z-[80] bg-black/40 flex items-end sm:items-center justify-center">
         <div className="bg-white w-full sm:max-w-lg rounded-t-3xl sm:rounded-3xl max-h-[95vh] flex flex-col">
           <div className="flex items-center justify-between px-4 py-3 border-b shrink-0">
             <div className="min-w-0">
-              <h2 className="font-bold text-slate-800">Resubmit for Admin Approval</h2>
+              <h2 className="font-bold text-slate-800">
+                {sentToBilling ? '✅ Sent to Billing' : canSendToBilling ? 'Send to Billing Team' : 'Resubmit for Admin Approval'}
+              </h2>
               <p className="text-xs text-slate-500 truncate">{resubmitOrder.shop_name} · {fmtDate(resubmitOrder.order_date)}</p>
-              <p className="text-[10px] text-blue-600 font-semibold">Version {version + 1} (was v{version})</p>
+              {!sentToBilling && canResubmitToAdmin && (
+                <p className="text-[10px] text-blue-600 font-semibold">Version {version + 1} (was v{version})</p>
+              )}
             </div>
             <button onClick={closeResubmit} className="p-2 text-slate-400" aria-label="Close">
               <CloseIcon className="h-5 w-5" />
             </button>
           </div>
 
-          {/* Rejection reason */}
-          {rejReason && (
-            <div className="mx-4 mt-3 rounded-xl bg-red-50 border border-red-200 px-3 py-2.5 shrink-0">
-              <p className="text-xs font-semibold text-red-700 mb-0.5">Admin Rejection Reason</p>
-              <p className="text-xs text-red-700">{rejReason}</p>
+          {/* Success: sent to billing */}
+          {sentToBilling && (
+            <div className="flex-1 flex flex-col items-center justify-center px-4 py-12 text-center">
+              <p className="text-5xl mb-3">🎉</p>
+              <p className="font-bold text-green-700 text-lg mb-1">Order sent to Billing Team!</p>
+              <p className="text-sm text-slate-500">{activeItems.length} product{activeItems.length !== 1 ? 's' : ''} are now with Billing.</p>
+              {removedCount > 0 && (
+                <p className="text-xs text-slate-400 mt-1">{removedCount} rejected product{removedCount !== 1 ? 's were' : ' was'} removed from this order.</p>
+              )}
             </div>
           )}
 
-          <p className="text-xs text-slate-500 mx-4 mt-2 shrink-0">
-            Change any prices below. Products you don't change will keep their current price.
-          </p>
-
-          {/* Item list */}
-          <div className="overflow-y-auto flex-1 px-4 py-3 space-y-3">
-            {(resubmitOrder.items || []).map((item) => {
-              const isSpecial = item.approval_status === 'rejected' || item.approval_status === 'pending'
-              const currentPrice = newPrices[item.id] ?? String(item.unit_price ?? '')
-              return (
-                <div key={item.id} className={`rounded-xl border p-3 ${
-                  isSpecial ? 'border-amber-200 bg-amber-50' : 'border-slate-100 bg-slate-50'
-                }`}>
-                  <div className="flex items-start justify-between gap-2 mb-2">
-                    <div className="min-w-0">
-                      <p className="text-sm font-semibold text-slate-800">{item.product_name}</p>
-                      <p className="text-[11px] text-slate-400">Qty: {item.qty} {item.unit}</p>
-                    </div>
-                    {isSpecial && (
-                      <span className="shrink-0 text-[9px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded-full">
-                        CUSTOM PRICE
-                      </span>
-                    )}
-                  </div>
-                  <div className="grid grid-cols-2 gap-2 text-[11px] mb-2">
-                    <div className="rounded-lg border border-slate-200 bg-white p-1.5 text-center">
-                      <div className="font-bold text-slate-700">{rupee(item.normal_price)}</div>
-                      <div className="text-slate-400">Normal</div>
-                    </div>
-                    <div className="rounded-lg border border-red-200 bg-red-50 p-1.5 text-center">
-                      <div className="font-bold text-red-700">{rupee(item.unit_price)}</div>
-                      <div className="text-red-400">Previous</div>
-                    </div>
-                  </div>
-                  <div>
-                    <label className="text-[10px] font-semibold text-slate-500 uppercase">New Selling Price (₹)</label>
-                    <input
-                      type="number"
-                      inputMode="decimal"
-                      value={currentPrice}
-                      onChange={(e) => setNewPrices((prev) => ({ ...prev, [item.id]: e.target.value }))}
-                      className={`w-full mt-1 rounded-lg border px-2 py-1.5 text-sm outline-none ${
-                        isSpecial ? 'border-amber-300 focus:border-brand-500' : 'border-slate-200 focus:border-brand-500'
-                      }`}
-                      placeholder={String(item.unit_price ?? '')}
-                    />
-                    {(() => {
-                      const entered = parseFloat(currentPrice)
-                      const original = Number(item.unit_price ?? 0)
-                      if (!isNaN(entered) && Math.abs(entered - original) > 0.001) {
-                        return (
-                          <p className="text-[10px] text-blue-600 mt-0.5">
-                            Changed: {rupee(original)} → {rupee(entered)}
-                          </p>
-                        )
-                      }
-                      return null
-                    })()}
-                  </div>
+          {!sentToBilling && (
+            <>
+              {/* Rejection reason */}
+              {rejReason && (
+                <div className="mx-4 mt-3 rounded-xl bg-red-50 border border-red-200 px-3 py-2.5 shrink-0">
+                  <p className="text-xs font-semibold text-red-700 mb-0.5">Admin Rejection Reason</p>
+                  <p className="text-xs text-red-700">{rejReason}</p>
                 </div>
-              )
-            })}
-          </div>
+              )}
 
-          {resubmitError && <p className="text-xs text-red-600 mx-4 mb-1">{resubmitError}</p>}
+              {/* Context message */}
+              {canSendToBilling ? (
+                <div className="mx-4 mt-2 rounded-xl bg-green-50 border border-green-200 px-3 py-2 shrink-0">
+                  <p className="text-xs text-green-700 font-semibold">
+                    ✅ All remaining products are valid — ready to send directly to Billing Team.
+                  </p>
+                  {removedCount > 0 && (
+                    <p className="text-[10px] text-green-600 mt-0.5">
+                      {removedCount} rejected product{removedCount !== 1 ? 's' : ''} removed from this order.
+                    </p>
+                  )}
+                </div>
+              ) : activeItems.length === 0 ? (
+                <div className="mx-4 mt-2 rounded-xl bg-slate-50 border border-slate-200 px-3 py-2 shrink-0">
+                  <p className="text-xs text-slate-600 font-semibold">
+                    ⚠️ No products remaining in this order.
+                  </p>
+                  <p className="text-[10px] text-slate-400 mt-0.5">All products have been removed. Nothing to send to Billing.</p>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500 mx-4 mt-2 shrink-0">
+                  Remove rejected products or change prices and resubmit for Admin approval.
+                </p>
+              )}
 
-          <div className="px-4 py-3 border-t flex gap-2 shrink-0">
-            <button onClick={closeResubmit} className="flex-1 rounded-xl border border-slate-200 py-3 font-semibold text-slate-600">
-              Cancel
-            </button>
-            <button
-              onClick={confirmResubmit}
-              disabled={resubmitting}
-              className="flex-2 rounded-xl bg-brand-600 text-white px-5 py-3 font-bold disabled:opacity-50"
-            >
-              {resubmitting ? 'Sending…' : 'Send Full Order for Approval'}
-            </button>
-          </div>
+              {/* Item list */}
+              <div className="overflow-y-auto flex-1 px-4 py-3 space-y-3">
+                {/* Removed items (greyed out, shown for context) */}
+                {allItems.filter((i) => removedItemIds.has(i.id)).map((item) => (
+                  <div key={item.id} className="rounded-xl border border-slate-100 bg-slate-50 p-3 opacity-50">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-slate-400 line-through">{item.product_name}</p>
+                        <p className="text-[11px] text-slate-300">Qty: {item.qty} {item.unit}</p>
+                      </div>
+                      <span className="shrink-0 text-[9px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded-full">
+                        REMOVED
+                      </span>
+                    </div>
+                  </div>
+                ))}
+
+                {/* Active items */}
+                {activeItems.map((item) => {
+                  const isRejected  = item.approval_status === 'rejected'
+                  const isPending   = item.approval_status === 'pending'
+                  const isSpecial   = isRejected || isPending
+                  const isNormal    = !isSpecial
+                  const currentPrice = newPrices[item.id] ?? String(item.unit_price ?? '')
+                  const isBeingRemoved = removingItemId === item.id
+
+                  return (
+                    <div key={item.id} className={`rounded-xl border p-3 ${
+                      isRejected ? 'border-red-200 bg-red-50' :
+                      isPending  ? 'border-amber-200 bg-amber-50' :
+                      'border-slate-100 bg-slate-50'
+                    }`}>
+                      <div className="flex items-start justify-between gap-2 mb-2">
+                        <div className="min-w-0 flex-1">
+                          <p className="text-sm font-semibold text-slate-800">{item.product_name}</p>
+                          <p className="text-[11px] text-slate-400">Qty: {item.qty} {item.unit}</p>
+                        </div>
+                        <div className="flex flex-col items-end gap-1 shrink-0">
+                          {isRejected && (
+                            <span className="text-[9px] font-bold text-red-700 bg-red-100 px-1.5 py-0.5 rounded-full">
+                              REJECTED
+                            </span>
+                          )}
+                          {isPending && (
+                            <span className="text-[9px] font-bold text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded-full">
+                              PENDING
+                            </span>
+                          )}
+                          {isNormal && (
+                            <span className="text-[9px] font-bold text-green-700 bg-green-100 px-1.5 py-0.5 rounded-full">
+                              NORMAL
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 text-[11px] mb-2">
+                        <div className="rounded-lg border border-slate-200 bg-white p-1.5 text-center">
+                          <div className="font-bold text-slate-700">{rupee(item.normal_price)}</div>
+                          <div className="text-slate-400">Normal</div>
+                        </div>
+                        <div className={`rounded-lg border p-1.5 text-center ${isRejected ? 'border-red-200 bg-red-50' : 'border-slate-200 bg-white'}`}>
+                          <div className={`font-bold ${isRejected ? 'text-red-700' : 'text-slate-700'}`}>{rupee(item.unit_price)}</div>
+                          <div className={isRejected ? 'text-red-400' : 'text-slate-400'}>Previous</div>
+                        </div>
+                      </div>
+
+                      {/* Rejected: show Remove button prominently + optional price edit */}
+                      {isRejected && (
+                        <div className="space-y-2">
+                          <button
+                            onClick={() => handleRemoveItem(item.id)}
+                            disabled={isBeingRemoved || !!removingItemId}
+                            className="w-full rounded-lg bg-red-600 text-white py-2 text-xs font-bold active:bg-red-700 disabled:opacity-50 flex items-center justify-center gap-1.5"
+                          >
+                            {isBeingRemoved ? (
+                              <><span className="h-3 w-3 rounded-full border-2 border-white/30 border-t-white animate-spin inline-block" /> Removing…</>
+                            ) : (
+                              '🗑 Remove from Order'
+                            )}
+                          </button>
+                          <details className="text-[10px]">
+                            <summary className="text-slate-400 cursor-pointer select-none">Or edit price &amp; resubmit instead</summary>
+                            <div className="mt-1.5">
+                              <label className="text-[10px] font-semibold text-slate-500 uppercase">New Selling Price (₹)</label>
+                              <input
+                                type="number"
+                                inputMode="decimal"
+                                value={currentPrice}
+                                onChange={(e) => setNewPrices((prev) => ({ ...prev, [item.id]: e.target.value }))}
+                                className="w-full mt-1 rounded-lg border border-red-300 focus:border-brand-500 px-2 py-1.5 text-sm outline-none"
+                                placeholder={String(item.unit_price ?? '')}
+                              />
+                              {(() => {
+                                const entered = parseFloat(currentPrice)
+                                const original = Number(item.unit_price ?? 0)
+                                if (!isNaN(entered) && Math.abs(entered - original) > 0.001) {
+                                  return <p className="text-[10px] text-blue-600 mt-0.5">Changed: {rupee(original)} → {rupee(entered)}</p>
+                                }
+                                return null
+                              })()}
+                            </div>
+                          </details>
+                        </div>
+                      )}
+
+                      {/* Pending: show price edit (resubmit only) */}
+                      {isPending && (
+                        <div>
+                          <label className="text-[10px] font-semibold text-slate-500 uppercase">New Selling Price (₹)</label>
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            value={currentPrice}
+                            onChange={(e) => setNewPrices((prev) => ({ ...prev, [item.id]: e.target.value }))}
+                            className="w-full mt-1 rounded-lg border border-amber-300 focus:border-brand-500 px-2 py-1.5 text-sm outline-none"
+                            placeholder={String(item.unit_price ?? '')}
+                          />
+                          {(() => {
+                            const entered = parseFloat(currentPrice)
+                            const original = Number(item.unit_price ?? 0)
+                            if (!isNaN(entered) && Math.abs(entered - original) > 0.001) {
+                              return <p className="text-[10px] text-blue-600 mt-0.5">Changed: {rupee(original)} → {rupee(entered)}</p>
+                            }
+                            return null
+                          })()}
+                        </div>
+                      )}
+
+                      {/* Normal: price edit still available */}
+                      {isNormal && (
+                        <div>
+                          <label className="text-[10px] font-semibold text-slate-500 uppercase">New Selling Price (₹)</label>
+                          <input
+                            type="number"
+                            inputMode="decimal"
+                            value={currentPrice}
+                            onChange={(e) => setNewPrices((prev) => ({ ...prev, [item.id]: e.target.value }))}
+                            className="w-full mt-1 rounded-lg border border-slate-200 focus:border-brand-500 px-2 py-1.5 text-sm outline-none"
+                            placeholder={String(item.unit_price ?? '')}
+                          />
+                          {(() => {
+                            const entered = parseFloat(currentPrice)
+                            const original = Number(item.unit_price ?? 0)
+                            if (!isNaN(entered) && Math.abs(entered - original) > 0.001) {
+                              return <p className="text-[10px] text-blue-600 mt-0.5">Changed: {rupee(original)} → {rupee(entered)}</p>
+                            }
+                            return null
+                          })()}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+
+                {activeItems.length === 0 && (
+                  <div className="py-8 text-center">
+                    <p className="text-3xl mb-2">📭</p>
+                    <p className="text-sm font-semibold text-slate-500">No products remaining</p>
+                    <p className="text-xs text-slate-400 mt-1">All products were removed from this order.</p>
+                  </div>
+                )}
+              </div>
+
+              {resubmitError && <p className="text-xs text-red-600 mx-4 mb-1 shrink-0">{resubmitError}</p>}
+
+              <div className="px-4 py-3 border-t flex flex-col gap-2 shrink-0">
+                {/* Primary action: Send to Billing (when all remaining valid) */}
+                {canSendToBilling && (
+                  <button
+                    onClick={handleSendToBilling}
+                    disabled={sendingToBilling}
+                    className="w-full rounded-xl bg-green-600 text-white py-3 font-bold text-sm active:bg-green-700 disabled:opacity-50"
+                  >
+                    {sendingToBilling ? 'Sending to Billing…' : '✅ Send to Billing Team'}
+                  </button>
+                )}
+
+                {/* Primary action: Resubmit to Admin (when pending/rejected items remain) */}
+                {canResubmitToAdmin && (
+                  <button
+                    onClick={confirmResubmit}
+                    disabled={resubmitting}
+                    className="w-full rounded-xl bg-brand-600 text-white py-3 font-bold text-sm active:bg-brand-700 disabled:opacity-50"
+                  >
+                    {resubmitting ? 'Sending…' : 'Send for Admin Approval'}
+                  </button>
+                )}
+
+                {/* When no action is possible (all removed, nothing to bill) */}
+                {!canSendToBilling && !canResubmitToAdmin && activeItems.length === 0 && (
+                  <p className="text-center text-xs text-slate-400 py-1">
+                    No products remaining — nothing to submit.
+                  </p>
+                )}
+
+                <button onClick={closeResubmit} className="w-full rounded-xl border border-slate-200 py-2.5 font-semibold text-slate-600 text-sm">
+                  Cancel
+                </button>
+              </div>
+            </>
+          )}
         </div>
       </div>
     )
@@ -433,7 +672,7 @@ function OrderApprovalCard({ order, onResubmit, onAddOn }) {
           <div className="mt-2 rounded-lg bg-red-100 border border-red-200 px-2.5 py-1.5">
             <p className="text-[11px] text-red-700">
               <span className="font-semibold">⚠️ Some items were rejected by Admin.</span>{' '}
-              You can revise prices and resubmit.
+              You can remove rejected items and send the rest to Billing, or revise prices and resubmit.
             </p>
           </div>
         )}
@@ -527,10 +766,10 @@ function OrderApprovalCard({ order, onResubmit, onAddOn }) {
             onClick={onResubmit}
             className="w-full rounded-xl bg-brand-600 text-white py-3 font-bold text-sm active:bg-brand-700"
           >
-            🔄 Resubmit Full Order
+            🔄 Review &amp; Resubmit Order
           </button>
           <p className="text-[10px] text-slate-400 text-center mt-1.5">
-            Opens all {totalItems} products — change any rates and send back to Admin
+            Remove rejected items or change prices — then send to Billing or Admin
           </p>
         </div>
       )}

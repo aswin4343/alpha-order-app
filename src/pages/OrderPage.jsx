@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
-import { saveCloudOrder, currentUserId, countUnreadAnnouncements, listAllRoutes, ensureCloudCustomer, updateCustomerDefaultRoute, loadCustomerLastPrices, loadCustomerPriceApprovals, loadPendingStockOuts, notifyBillingOfAddon, updateCloudOrder, evaluatePriceApproval } from '../utils/cloudSync.js'
+import { saveCloudOrder, currentUserId, countUnreadAnnouncements, listAllRoutes, ensureCloudCustomer, updateCustomerDefaultRoute, loadCustomerLastPrices, loadCustomerPriceApprovals, loadShopPriceApprovalHistory, loadPendingStockOuts, notifyBillingOfAddon, updateCloudOrder, evaluatePriceApproval } from '../utils/cloudSync.js'
 import PreviousOrdersModal from '../components/PreviousOrdersModal.jsx'
 import PendingOrdersModal from '../components/PendingOrdersModal.jsx'
 import OrderSummaryModal from '../components/OrderSummaryModal.jsx'
@@ -144,6 +144,11 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   // to check if a LAST price below retail already has a valid Admin approval for THIS shop
   // specifically (spec §7-9). Prevents Shop X's approval from covering Shop Y (spec §8).
   const [shopApprovals, setShopApprovals] = useState({})
+  // Fallback approval map keyed by PRODUCT_NAME_UPPERCASE. Used when customer_price_approvals
+  // has no rows (order_items.product_id is null — column never added — so approveSpecialPrice
+  // cannot write the cache). Comes from price_approval_history filtered by shop_name.
+  // See loadShopPriceApprovalHistory() in cloudSync.js.
+  const [shopHistoryApprovals, setShopHistoryApprovals] = useState({})
   const [toast, setToast] = useState('')
   const [visitStatus, setVisitStatus] = useState(saved?.visitStatus ?? '')
   const [visitRemark, setVisitRemark] = useState(saved?.visitRemark ?? '')
@@ -823,6 +828,17 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
     } else {
       setShopApprovals({})
     }
+    // Fallback: history-based approvals keyed by product_name (UPPERCASE).
+    // Used when customer_price_approvals has no rows because product_id is null
+    // on order_items (column never added). Without this, every previously-approved
+    // Last Price below retail shows "Admin Approval Required" on re-order.
+    if (customer?.name) {
+      loadShopPriceApprovalHistory(customer.name)
+        .then((map) => { if (!cancelled) setShopHistoryApprovals(map || {}) })
+        .catch(() => { if (!cancelled) setShopHistoryApprovals({}) })
+    } else {
+      setShopHistoryApprovals({})
+    }
     return () => { cancelled = true }
   }, [customer?.name, customer?.id, customer?.route])
 
@@ -1084,6 +1100,23 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
           })
           continue
         }
+        // Per-shop history approval bypass: if the rep selected LAST price and
+        // price_approval_history shows a valid approval for this shop+product at
+        // this exact price+version, skip the violation. This covers the case where
+        // customer_price_approvals has no row (product_id never existed on order_items)
+        // but the immutable history log confirms Admin approved this price.
+        // Guard: lastPriceStale=true (above) already caught genuinely stale prices.
+        if (i.priceType === 'LAST' && !i.lastPriceStale) {
+          const histKey = (i.name || '').trim().toUpperCase()
+          const histEntry = shopHistoryApprovals[histKey]
+          if (
+            histEntry != null &&
+            histEntry.approvedPriceVersion === (i.priceVersion ?? 1) &&
+            Math.abs(histEntry.approvedPrice - ep) < 0.01
+          ) {
+            continue  // valid per-shop history approval — no violation
+          }
+        }
         const { approvalRequired, currentPrice } = evaluatePriceApproval({
           product: {
             retail: i.normalPrice,
@@ -1125,7 +1158,15 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
             i.lastApprovedPrice != null &&
             i.lastApprovedVersion === (i.priceVersion ?? 1) &&
             Math.abs(i.lastApprovedPrice - ep) < 0.001
-          if (!lastApprovedCurrentVersion) {
+          // Also accept per-shop history approval as valid (covers the case where
+          // customer_price_approvals is empty because product_id never existed).
+          const histKeyS = (i.name || '').trim().toUpperCase()
+          const histEntryS = shopHistoryApprovals[histKeyS]
+          const shopHistoryCurrentVersion =
+            histEntryS != null &&
+            histEntryS.approvedPriceVersion === (i.priceVersion ?? 1) &&
+            Math.abs(histEntryS.approvedPrice - ep) < 0.001
+          if (!lastApprovedCurrentVersion && !shopHistoryCurrentVersion) {
             violations.push({
               id: i.id,
               name: i.name,
@@ -1140,6 +1181,14 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
 
       // Method 2: Basic check — selected price < current applicable retail/wholesale
       // Works even without SQL 63. Catches Last/Custom prices below floor.
+      // History bypass: if LAST price and per-shop history approval is valid, skip.
+      if (i.priceType === 'LAST') {
+        const histKey2 = (i.name || '').trim().toUpperCase()
+        const histEntry2 = shopHistoryApprovals[histKey2]
+        // No version info available here (Method 2 = pre-SQL63), so just check price match.
+        // If history shows an approved price matching this ep, trust it.
+        if (histEntry2 != null && Math.abs(histEntry2.approvedPrice - ep) < 0.01) continue
+      }
       const currentFloor = i.normalPrice ?? i.wholesaleAtOrderTime ?? null
       if (currentFloor != null && ep < currentFloor - 0.001) {
         violations.push({
@@ -1407,6 +1456,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
                 return entry?.priceVersion ?? null
               })() : null}
               shopApproval={shopApprovals[p.id] ?? null}
+              shopHistoryApproval={shopHistoryApprovals[(p.name || '').trim().toUpperCase()] ?? null}
               defaultPriceType={defaultPriceType}
               inventory={inventoryMap.get(p.id)}
               onRemoveProduct={() => {
