@@ -218,7 +218,7 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
               .filter((i) => {
                 const ep = i.finalSellingPrice != null ? i.finalSellingPrice : null
                 if (ep == null || i.normalPrice == null) return false
-                return ep !== i.normalPrice
+                return Math.abs(ep - i.normalPrice) >= 0.01
                   && !(i.isBoxUnit && ep >= (i.wholesaleAtOrderTime ?? ep))
                   && !(isWholesaleCustomer && i.wholesaleAtOrderTime != null && Math.abs(ep - i.wholesaleAtOrderTime) < 0.001)
               })
@@ -435,7 +435,7 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     // a price field happens to be populated. Three exemptions:
     //   (a) Box unit at or above wholesale → normal wholesale sale
     //   (b) Wholesale customer at exactly the wholesale price → not special
-    const isSpecial = i.normalPrice != null && effectivePrice != null && effectivePrice !== i.normalPrice
+    const isSpecial = i.normalPrice != null && effectivePrice != null && Math.abs(effectivePrice - i.normalPrice) >= 0.01
       && !(i.isBoxUnit && effectivePrice >= (i.wholesaleAtOrderTime ?? effectivePrice))
       && !(isWholesaleCustomer && i.wholesaleAtOrderTime != null && Math.abs(effectivePrice - i.wholesaleAtOrderTime) < 0.001)
     const schemeSnapshot = i.schemeEnabled === false ? null : schemeText(i)
@@ -565,7 +565,7 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     const approvalNeededItems = items.filter((i) => {
       const ep = i.finalSellingPrice ?? null
       if (ep == null || i.normalPrice == null) return false
-      if (ep === i.normalPrice) return false
+      if (Math.abs(ep - i.normalPrice) < 0.01) return false
       if (i.isBoxUnit && ep >= (i.wholesaleAtOrderTime ?? ep)) return false
       if (isWholesaleCustomer && i.wholesaleAtOrderTime != null && Math.abs(ep - i.wholesaleAtOrderTime) < 0.001) return false
       return true  // isSpecial — same as order_items insert
@@ -4044,7 +4044,7 @@ export async function updateCloudOrder(orderId, { items, userId, isApprovalReque
 
     // isSpecial: same formula as saveCloudOrder — ep genuinely differs from
     // normalPrice, excluding box-unit wholesale sales and wholesale-customer WP sales.
-    const isSpecial = i.normalPrice != null && ep != null && ep !== i.normalPrice
+    const isSpecial = i.normalPrice != null && ep != null && Math.abs(ep - i.normalPrice) >= 0.01
       && !(i.isBoxUnit && ep >= (i.wholesaleAtOrderTime ?? ep))
       && !(isWholesaleCustomer && i.wholesaleAtOrderTime != null && Math.abs(ep - i.wholesaleAtOrderTime) < 0.001)
 
