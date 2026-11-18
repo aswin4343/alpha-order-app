@@ -3,6 +3,8 @@ import QtyStepper from './QtyStepper.jsx'
 import { schemeBadge, calculateScheme, netRate } from '../utils/schemes.js'
 import { availableUnits, unitOptionLabel, toPieces } from '../utils/packaging.js'
 import { inventoryStatus, STATUS_DOT } from '../utils/inventoryStatus.js'
+import { productPriceChangedYesterday } from '../utils/cloudSync.js'
+import { priceInList, samePrice } from '../utils/priceApproval.js'
 
 const UNITS = ['Piece', 'Box']
 
@@ -152,10 +154,11 @@ const PRICE_CHANGED_RECENT_DAYS = 7
  * line's own priceType + finalRate (stored in `override`), so the master
  * catalogue is completely unaffected by a rep's per-order choice.
  *
- * shopApproval — per-customer approval from customer_price_approvals table:
- *   { approvedPrice, approvedPriceVersion } | null
- *   When present, takes precedence over product.last_approved_price for the
- *   approval validity check, so Shop X's approval doesn't apply to Shop Y.
+ * approvedPrices — prices Admin has approved for THIS shop + product at the
+ *   product's CURRENT master price revision (shop_price_approvals, v227).
+ *   Shown as "Approved ₹x" chips and used to skip the approval prompt for that
+ *   exact price. Another shop's approval, or one from an older revision, is
+ *   never in this list.
  *
  * onRequestApproval — callback fired when the rep taps "Request Admin Approval"
  *   from the inline banner. Receives { priceType, finalRate, lastPriceStale }.
@@ -163,7 +166,7 @@ const PRICE_CHANGED_RECENT_DAYS = 7
  *   itself so OrderPage (which owns items[]) can mark the line and run
  *   checkViolations consistently.
  */
-function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVersion, shopApproval, shopHistoryApproval, defaultPriceType, onRemoveProduct, onRequestApproval, schemeOnly, boxMode }) {
+function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVersion, approvedPrices = [], defaultPriceType, onRemoveProduct, onRequestApproval, schemeOnly, boxMode }) {
   const [editing, setEditing] = useState(false)
   const [draft, setDraft] = useState('')
   // Warning modal state: shown when rep selects LAST price but the official
@@ -197,9 +200,16 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
    // everything except LAST, and return null when there's no LAST to show.
    .filter((o) => !schemeOnly || o.type === 'LAST')
 
-  const options = sellingOptions.length > 0
+  const baseOptions = sellingOptions.length > 0
     ? sellingOptions
     : (schemeOnly ? [] : [{ type: 'MRP', value: product.mrp }].filter((o) => o.value != null && o.value !== ''))
+  // "Approved ₹x" — a custom price Admin already approved for THIS shop at the
+  // current master price revision. Reusable without a new approval until the
+  // next price revision. Skipped when it equals a chip already shown.
+  const approvedOptions = (approvedPrices || [])
+    .filter((v) => !baseOptions.some((o) => samePrice(o.value, v)))
+    .map((v) => ({ type: 'APPROVED', value: v }))
+  const options = [...baseOptions, ...approvedOptions]
 
   if (options.length === 0) return null
 
@@ -215,7 +225,7 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
   const has = (t) => options.some((o) => o.type === t)
   const defaultType = has('LAST')
     ? 'LAST'
-    : (has(preferred) ? preferred : (has('WHOLESALE') ? 'WHOLESALE' : options[0].type))
+    : (has(preferred) ? preferred : (has('WHOLESALE') ? 'WHOLESALE' : (baseOptions[0] || options[0]).type))
   // boxMode: the LAST chip is offered as an alternative to the EditableBoxTag (WP),
   // but WP is the actual billing price when no override is set. The LAST chip starts
   // INACTIVE — the rep must explicitly tap it to select it. Without this, the schemeOnly
@@ -231,7 +241,7 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
     : (activeOption?.value ?? options[0].value)
 
   const selectType = (type) => {
-    // When rep selects LAST price, check two conditions — either one can
+    // When rep selects LAST price, check three conditions — any one can
     // trigger the Admin Approval warning modal:
     //
     // Condition A — Version mismatch (spec §4-5):
@@ -243,10 +253,17 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
     //   case where versioning info is absent (older order rows) but the price
     //   is still clearly below the current authorized floor.
     //
-    // In both cases, the warning is skipped when a valid shop-specific approval
+    // Condition C — Price changed yesterday (spec §PRICE_CHANGE_MONITORING):
+    //   Product's price_changed_at was yesterday (IST). Even if the LAST price
+    //   happens to equal the new price, Admin must re-confirm that this customer's
+    //   last price is still valid after the change. The approval is mandatory and
+    //   cannot be waived by an existing approval (the version bump from the price
+    //   change already invalidates any prior shop approval).
+    //
+    // Conditions A and B: the warning is skipped when a valid shop-specific approval
     // already exists for this exact product + customer + price (spec §3, §8).
-    // shopApproval (from customer_price_approvals) takes precedence over the
-    // product-level last_approved_price so Shop X's approval never covers Shop Y.
+    // Condition C: never skipped — the price changed yesterday so any prior approval
+    // (which was for an older price_version) is always invalid by definition.
     if (type === 'LAST' && lastPrice != null) {
       const priceVer = product.price_version ?? 1
       // Category-aware floor: compare against the customer's own default price
@@ -256,31 +273,16 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
         ? (product.wholesale ?? product.retail ?? null)
         : (product.retail ?? product.wholesale ?? null)
 
-      // Determine whether a valid approval exists for this shop + product (spec §8).
-      // Check order: (1) shopApproval from customer_price_approvals (per-customer cache,
-      //   keyed by product_id UUID — populated only when product_id exists on order_items);
-      // (2) shopHistoryApproval from price_approval_history (fallback for when cache is
-      //   empty because product_id column never existed — keyed by product_name UPPERCASE);
-      // (3) product.last_approved_price (global fallback — not per-shop, last resort only).
-      const shopApprovalValid =
-        shopApproval != null &&
-        shopApproval.approvedPriceVersion === priceVer &&
-        Math.abs(shopApproval.approvedPrice - lastPrice) < 0.01
+      // Is this exact Last Price approved for THIS shop at the current revision?
+      const lastApprovedValid = priceInList(approvedPrices, lastPrice)
 
-      const shopHistoryApprovalValid =
-        !shopApprovalValid &&
-        shopHistoryApproval != null &&
-        shopHistoryApproval.approvedPriceVersion === priceVer &&
-        Math.abs(shopHistoryApproval.approvedPrice - lastPrice) < 0.01
-
-      const productApprovalValid =
-        !shopApprovalValid && !shopHistoryApprovalValid &&
-        product.last_approved_price != null &&
-        product.last_approved_version != null &&
-        product.last_approved_version === priceVer &&
-        Math.abs(product.last_approved_price - lastPrice) < 0.01
-
-      const lastApprovedValid = shopApprovalValid || shopHistoryApprovalValid || productApprovalValid
+      // Condition C: price changed yesterday — requires approval unless this
+      // shop already has an approval at the CURRENT revision for this price.
+      const priceChangedYesterday = productPriceChangedYesterday(product)
+      if (priceChangedYesterday && !lastApprovedValid) {
+        setShowLastPriceWarning(true)
+        return
+      }
 
       // Condition A: version mismatch
       const lastPriceIsStale = lastPriceVersion != null &&
@@ -298,6 +300,10 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
     }
     const opt = options.find((o) => o.type === type)
     onOverride(product.id, { priceType: type, finalRate: opt?.value ?? null })
+  }
+  // Reuse an approved shop price: stored as a CUSTOM rate (same as typing it).
+  const selectApproved = (value) => {
+    onOverride(product.id, { priceType: 'CUSTOM', finalRate: value })
   }
   const startEdit = () => {
     setDraft(String(finalRate ?? ''))
@@ -347,6 +353,20 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
     const activeFinalRate = finalRate  // the price that will actually be charged
     if (activeFinalRate == null) return null
 
+    const isLastType = activeType === 'LAST'
+
+    // Condition C (price changed yesterday + LAST price auto-defaulted):
+    // The rep never had a chance to see the selectType() guard because the price
+    // was auto-defaulted to LAST. Show the approval banner immediately.
+    // Already in pending state = rep already clicked Request Approval this session.
+    if (isLastType && productPriceChangedYesterday(product) && !priceInList(approvedPrices, activeFinalRate)) {
+      if (override?.lastPriceStale === true) return 'pending'
+      const currentFloor = defaultPriceType === 'WHOLESALE'
+        ? (product.wholesale ?? product.retail ?? null)
+        : (product.retail ?? product.wholesale ?? null)
+      return { isBelowFloor: false, versionMismatch: false, priceChangedYesterday: true, activeFinalRate, currentFloor }
+    }
+
     // Category-aware floor: Wholesale customer → WP floor, Retail → RP floor.
     const currentFloor = defaultPriceType === 'WHOLESALE'
       ? (product.wholesale ?? product.retail ?? null)
@@ -357,32 +377,14 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
     const isBelowFloor = activeFinalRate < currentFloor - 0.001
     if (!isBelowFloor) return null
 
-    // Check for valid approval: (1) customer_price_approvals cache, (2) history fallback,
-    // (3) global product-level (last resort). Same priority as selectType() above.
-    const priceVer = product.price_version ?? 1
-    const shopApprovalValid =
-      shopApproval != null &&
-      shopApproval.approvedPriceVersion === priceVer &&
-      Math.abs(shopApproval.approvedPrice - activeFinalRate) < 0.01
-    const shopHistoryApprovalValid =
-      !shopApprovalValid &&
-      shopHistoryApproval != null &&
-      shopHistoryApproval.approvedPriceVersion === priceVer &&
-      Math.abs(shopHistoryApproval.approvedPrice - activeFinalRate) < 0.01
-    const productApprovalValid =
-      !shopApprovalValid && !shopHistoryApprovalValid &&
-      product.last_approved_price != null &&
-      product.last_approved_version != null &&
-      product.last_approved_version === priceVer &&
-      Math.abs(product.last_approved_price - activeFinalRate) < 0.01
-    const approvalValid = shopApprovalValid || shopHistoryApprovalValid || productApprovalValid
+    // Valid only for THIS shop + current master price revision + exact price.
+    const approvalValid = priceInList(approvedPrices, activeFinalRate)
 
     if (approvalValid) return null  // valid approval — no banner needed
 
     // Determine if this is a stale-LAST scenario (version mismatch on top of
     // below-retail). We mark lastPriceStale=true so checkViolations can catch
     // the edge case where a stale Last is ABOVE the new floor (price decreased).
-    const isLastType = activeType === 'LAST'
     const versionMismatch = isLastType &&
       lastPriceVersion != null &&
       product.price_version != null &&
@@ -391,67 +393,57 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
     // Already in pending state (rep already clicked Request Approval this session)
     if (override?.lastPriceStale === true) return 'pending'
 
-    return { isBelowFloor, versionMismatch, activeFinalRate, currentFloor }
+    return { isBelowFloor, versionMismatch, priceChangedYesterday: false, activeFinalRate, currentFloor }
   })()
 
   return (
     <>
     <div className="flex flex-wrap items-center gap-1">
       {options.map((o) => {
-        const isActive = !isCustom && activeType === o.type
+        const isActive = o.type === 'APPROVED'
+          ? (isCustom && samePrice(finalRate, o.value))
+          : (!isCustom && activeType === o.type)
         // Show amber ⚠ on LAST chip when approval is needed for this price.
-        // Two conditions trigger it (matching selectType above):
+        // Three conditions trigger it (matching selectType above):
         //   A) Version mismatch — price_version changed since last price was set
         //   B) Last price is below current retail floor
-        // Neither triggers when a valid per-shop OR product-level approval exists.
+        //   C) Price changed yesterday — always requires approval regardless of value
+        // Conditions A and B are suppressed when a valid per-shop OR product-level
+        // approval exists. Condition C is never suppressed.
         if (o.type === 'LAST' && lastPrice != null) {
           const priceVer = product.price_version ?? 1
           // Category-aware floor for chip warning ⚠ — same rule as selectType().
           const currentFloor = defaultPriceType === 'WHOLESALE'
             ? (product.wholesale ?? product.retail ?? null)
             : (product.retail ?? product.wholesale ?? null)
-          const shopApprovalValid =
-            shopApproval != null &&
-            shopApproval.approvedPriceVersion === priceVer &&
-            Math.abs(shopApproval.approvedPrice - lastPrice) < 0.01
-          const chipHistoryApprovalValid =
-            !shopApprovalValid &&
-            shopHistoryApproval != null &&
-            shopHistoryApproval.approvedPriceVersion === priceVer &&
-            Math.abs(shopHistoryApproval.approvedPrice - lastPrice) < 0.01
-          const productApprovalValid =
-            !shopApprovalValid && !chipHistoryApprovalValid &&
-            product.last_approved_price != null &&
-            product.last_approved_version != null &&
-            product.last_approved_version === priceVer &&
-            Math.abs(product.last_approved_price - lastPrice) < 0.01
-          const chipApprovalValid = shopApprovalValid || chipHistoryApprovalValid || productApprovalValid
+          const chipApprovalValid = priceInList(approvedPrices, lastPrice)
+          const chipPriceChangedYesterday = productPriceChangedYesterday(product) && !chipApprovalValid
           const chipPriceIsStale = lastPriceVersion != null &&
             product.price_version != null &&
             lastPriceVersion !== product.price_version
           const chipBelowFloor = currentFloor != null && lastPrice < currentFloor - 0.001
-          var lastPriceNeedsApproval = (chipPriceIsStale || chipBelowFloor) && !chipApprovalValid
+          var lastPriceNeedsApproval = chipPriceChangedYesterday || ((chipPriceIsStale || chipBelowFloor) && !chipApprovalValid)
         } else {
           var lastPriceNeedsApproval = false  // eslint-disable-line no-redeclare
         }
         return (
           <button
-            key={o.type}
+            key={`${o.type}-${o.value}`}
             type="button"
-            onClick={() => selectType(o.type)}
+            onClick={() => (o.type === 'APPROVED' ? selectApproved(o.value) : selectType(o.type))}
             className={`text-[10px] leading-none font-semibold px-1.5 py-1 rounded-md border ${
               isActive
-                ? (o.type === 'LAST'
+                ? (o.type === 'LAST' || o.type === 'APPROVED'
                     ? 'bg-emerald-600 border-emerald-600 text-white'
                     : 'bg-brand-600 border-brand-600 text-white')
                 : (lastPriceNeedsApproval
                     ? 'bg-amber-50 border-amber-300 text-amber-800'
-                    : o.type === 'LAST'
+                    : o.type === 'LAST' || o.type === 'APPROVED'
                     ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
                     : 'bg-slate-50 border-slate-200 text-slate-600')
             }`}
           >
-            {o.type === 'WHOLESALE' ? 'WP' : o.type === 'RETAIL' ? 'RP' : o.type === 'LAST' ? 'Last' : 'MRP'} ₹{o.value}
+            {o.type === 'WHOLESALE' ? 'WP' : o.type === 'RETAIL' ? 'RP' : o.type === 'LAST' ? 'Last' : o.type === 'APPROVED' ? '✓ Approved' : 'MRP'} ₹{o.value}
             {lastPriceNeedsApproval && ' ⚠'}
           </button>
         )
@@ -464,12 +456,12 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
           type="button"
           onClick={startEdit}
           className={`text-[10px] leading-none font-semibold px-1.5 py-1 rounded-md border ${
-            isCustom
+            isCustom && !priceInList(approvedPrices, finalRate)
               ? 'bg-amber-50 border-amber-300 text-amber-800'
               : 'bg-white border-dashed border-slate-300 text-slate-400'
           }`}
         >
-          {isCustom ? `✎ ₹${finalRate}` : '✎ Custom'}
+          {isCustom && !priceInList(approvedPrices, finalRate) ? `✎ ₹${finalRate}` : '✎ Custom'}
         </button>
       )}
     </div>
@@ -498,7 +490,10 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
           <p className="text-[11px] font-bold text-red-800 leading-tight">Admin Approval Required</p>
         </div>
         <p className="text-[10px] text-red-700 leading-snug mb-2.5">
-          Selected price <span className="font-bold">₹{activeApprovalBannerState.activeFinalRate}</span> is below the current {defaultPriceType === 'WHOLESALE' ? 'wholesale' : 'retail'} price of <span className="font-bold">₹{activeApprovalBannerState.currentFloor}</span>. Admin must approve this before billing.
+          {activeApprovalBannerState.priceChangedYesterday
+            ? <>Price was updated yesterday. Admin must confirm the Last Price of <span className="font-bold">₹{activeApprovalBannerState.activeFinalRate}</span> is still valid for this customer.</>
+            : <>Selected price <span className="font-bold">₹{activeApprovalBannerState.activeFinalRate}</span> is below the current {defaultPriceType === 'WHOLESALE' ? 'wholesale' : 'retail'} price of <span className="font-bold">₹{activeApprovalBannerState.currentFloor}</span>. Admin must approve this before billing.</>
+          }
         </p>
         <button
           type="button"
@@ -540,31 +535,41 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
       const absPct = lastPrice > 0 ? Math.abs(diff / lastPrice) * 100 : 0
       const priceWentUp = diff > 0.001
       const priceWentDown = diff < -0.001
+      // Condition C: price changed yesterday is the trigger (may or may not be a floor issue)
+      const changedYesterdayTrigger = productPriceChangedYesterday(product)
       return (
         <div className="fixed inset-0 z-[100] bg-black/50 flex items-end sm:items-center justify-center px-0 sm:px-4">
           <div className="bg-white w-full sm:max-w-sm rounded-t-3xl sm:rounded-3xl p-5 shadow-2xl max-h-[92vh] overflow-y-auto">
             <div className="text-center mb-3">
               <div className="text-3xl mb-1.5">⚠️</div>
-              <p className="font-bold text-slate-800 text-base">Price Has Been Revised</p>
+              <p className="font-bold text-slate-800 text-base">
+                {changedYesterdayTrigger ? 'Price Changed Yesterday' : 'Price Has Been Revised'}
+              </p>
               <p className="text-sm text-slate-500 mt-0.5 truncate px-2">{product.name}</p>
             </div>
 
             {/* Price comparison */}
             <div className="rounded-xl bg-amber-50 border border-amber-200 p-3 text-sm mb-4 space-y-1.5">
               <div className="flex justify-between items-center">
-                <span className="text-slate-500">Last Price (old)</span>
+                <span className="text-slate-500">Last Price</span>
                 <span className="font-bold text-purple-700">₹{lastPrice}</span>
               </div>
               <div className="flex justify-between items-center">
                 <span className="text-slate-500">Current Price</span>
                 <span className="font-bold text-slate-800">₹{currentFloor}</span>
               </div>
-              <div className="flex justify-between items-center border-t border-amber-200 pt-1.5 mt-1">
-                <span className="text-slate-500">Change</span>
-                <span className={`font-bold ${priceWentUp ? 'text-red-700' : priceWentDown ? 'text-emerald-700' : 'text-slate-600'}`}>
-                  {priceWentUp ? '+' : ''}{diff.toFixed(2)} ({priceWentUp ? '+' : priceWentDown ? '-' : ''}{absPct.toFixed(1)}%)
-                </span>
-              </div>
+              {changedYesterdayTrigger ? (
+                <div className="flex justify-between items-center border-t border-amber-200 pt-1.5 mt-1">
+                  <span className="text-slate-500 text-[11px]">Price updated yesterday — Admin confirmation needed</span>
+                </div>
+              ) : (
+                <div className="flex justify-between items-center border-t border-amber-200 pt-1.5 mt-1">
+                  <span className="text-slate-500">Change</span>
+                  <span className={`font-bold ${priceWentUp ? 'text-red-700' : priceWentDown ? 'text-emerald-700' : 'text-slate-600'}`}>
+                    {priceWentUp ? '+' : ''}{diff.toFixed(2)} ({priceWentUp ? '+' : priceWentDown ? '-' : ''}{absPct.toFixed(1)}%)
+                  </span>
+                </div>
+              )}
             </div>
 
             <div className="space-y-2.5">
@@ -623,7 +628,7 @@ function PriceSelector({ product, override, onOverride, lastPrice, lastPriceVers
  * Product row. Scheme products show BR/NR; all others show RP/WP.
  * Layout is tuned for one-hand use on a phone.
  */
-function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, lastPrice, lastPriceVersion, shopApproval, shopHistoryApproval, defaultPriceType, inventory, onRemoveProduct, onRequestApproval }) {
+function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, lastPrice, lastPriceVersion, approvedPrices, defaultPriceType, inventory, onRemoveProduct, onRequestApproval }) {
   const selected = qty > 0
   const units = availableUnits(product)
   const stockStatus = inventoryStatus(inventory)
@@ -766,8 +771,7 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, 
                 onOverride={onOverride}
                 lastPrice={lastPrice}
                 lastPriceVersion={lastPriceVersion}
-                shopApproval={shopApproval}
-                shopHistoryApproval={shopHistoryApproval}
+                approvedPrices={approvedPrices}
                 defaultPriceType={defaultPriceType}
                 onRemoveProduct={onRemoveProduct}
                 onRequestApproval={onRequestApproval}
@@ -796,8 +800,7 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, 
                 onOverride={onOverride}
                 lastPrice={lastPrice}
                 lastPriceVersion={lastPriceVersion}
-                shopApproval={shopApproval}
-                shopHistoryApproval={shopHistoryApproval}
+                approvedPrices={approvedPrices}
                 defaultPriceType={defaultPriceType}
                 onRemoveProduct={onRemoveProduct}
                 onRequestApproval={onRequestApproval}
@@ -807,7 +810,7 @@ function ProductCard({ product, qty, unit, onQty, onUnit, override, onOverride, 
             )}
           </>
         ) : (
-          <PriceSelector product={product} override={override} onOverride={onOverride} lastPrice={lastPrice} lastPriceVersion={lastPriceVersion} shopApproval={shopApproval} shopHistoryApproval={shopHistoryApproval} defaultPriceType={defaultPriceType} onRemoveProduct={onRemoveProduct} onRequestApproval={onRequestApproval} />
+          <PriceSelector product={product} override={override} onOverride={onOverride} lastPrice={lastPrice} lastPriceVersion={lastPriceVersion} approvedPrices={approvedPrices} defaultPriceType={defaultPriceType} onRemoveProduct={onRemoveProduct} onRequestApproval={onRequestApproval} />
         )}
       </div>
 

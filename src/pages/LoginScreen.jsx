@@ -20,6 +20,7 @@ export default function LoginScreen() {
       setError('Enter username and password')
       return
     }
+
     // Allow either a bare username or a full email.
     const email = u.includes('@') ? u : u + LOGIN_DOMAIN
     setBusy(true)
@@ -73,6 +74,7 @@ export default function LoginScreen() {
         <p className="text-xs text-slate-400 text-center mt-6">
           Contact your administrator if you cannot sign in.
         </p>
+
       </div>
     </div>
   )

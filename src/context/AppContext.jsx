@@ -183,6 +183,37 @@ export function AppProvider({ children }) {
   // Set of customer ids awaiting their one-time "NEW CUSTOMER" block.
   const [pendingIntro, setPendingIntro] = useState(loadPendingIntro)
   const [products, setProducts] = useState([])
+
+  // v227: a rep who keeps the app open all day must still get a new master
+  // price revision (new price, Last Price reset, shop approvals reset) without
+  // reopening the app. When the app returns to the foreground — and every 10
+  // minutes while open — re-check the catalogue version: one tiny catalogue_meta
+  // read; the full product list downloads only if the Admin uploaded a new one.
+  // (The database enforces the current revision on every saved line anyway.)
+  useEffect(() => {
+    let lastCheck = Date.now()
+    let busy = false
+    const check = (force = false) => {
+      if (busy || document.visibilityState !== 'visible') return
+      if (!force && Date.now() - lastCheck < 60 * 1000) return
+      lastCheck = Date.now()
+      busy = true
+      getAll('products')
+        .then((local) => syncProductsFromCloud(local))
+        .then((fresh) => { if (fresh) setProducts(fresh) })
+        .catch(() => {})
+        .finally(() => { busy = false })
+    }
+    const onVisible = () => check(false)
+    document.addEventListener('visibilitychange', onVisible)
+    window.addEventListener('focus', onVisible)
+    const timer = setInterval(() => check(true), 10 * 60 * 1000)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible)
+      window.removeEventListener('focus', onVisible)
+      clearInterval(timer)
+    }
+  }, [])
   const [customers, setCustomers] = useState([])
   const [ready, setReady] = useState(false)
 

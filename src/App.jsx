@@ -30,8 +30,6 @@ export default function App() {
   const [route, setRoute] = useState('order')
   const [unreadTick, setUnreadTick] = useState(0)
   const [updateReady, setUpdateReady] = useState(false)
-  // When a rep taps "Edit Order" in My Performance, we store the order here
-  // and switch back to the order screen, which pre-loads the order for editing.
   const [editOrderIntent, setEditOrderIntent] = useState(null)
 
   const handleEditOrder = (order) => {
@@ -39,9 +37,6 @@ export default function App() {
     setRoute('order')
   }
 
-  // Listen for the service-worker "new version available" event emitted by
-  // main.jsx. Shows a slim non-blocking banner — user taps it when convenient.
-  // Never auto-reloads mid-session (that was the v99 bug that interrupted Billing).
   useEffect(() => {
     const handler = () => setUpdateReady(true)
     window.addEventListener('sw-update-available', handler)
@@ -62,12 +57,9 @@ export default function App() {
     return <><UpdateBanner show={updateReady} /><AdminApp /></>
   }
 
-  // V4 Delivery roles — completely separate screens. Sales users never reach
-  // here, so the existing Sales experience is unchanged (backward compatible).
+  // V4 Delivery roles — completely separate screens.
   if (profile.role === 'delivery_admin') return <><UpdateBanner show={updateReady} /><DeliveryAdminDashboard /></>
   if (profile.role === 'delivery_rep') return <><UpdateBanner show={updateReady} /><DeliveryRepDashboard /></>
-  // Billing sees the same on-entry announcement popup as reps (admin
-  // price/product updates now target both roles).
   if (profile.role === 'billing_team') return (
     <>
       <UpdateBanner show={updateReady} />

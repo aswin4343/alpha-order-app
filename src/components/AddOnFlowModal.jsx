@@ -1,7 +1,8 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
-import { saveCloudOrder, currentUserId, notifyBillingOfAddon, loadCustomerLastPrices, loadCustomerPriceApprovals, loadCustomerLedgerCategory } from '../utils/cloudSync.js'
+import { saveCloudOrder, currentUserId, notifyBillingOfAddon, loadCustomerLastPrices, loadShopPriceApprovals, loadCustomerLedgerCategory } from '../utils/cloudSync.js'
+import { currentLastPriceEntry, approvedPricesFor, isShopApproved } from '../utils/priceApproval.js'
 import { buildAddOnMessage } from '../utils/whatsapp.js'
 import { useSearch } from '../hooks/useSearch.js'
 import { useDebounce } from '../hooks/useDebounce.js'
@@ -46,7 +47,8 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
   // loads them for its own selected customer, using this order's own
   // shop_name/route (the only customer identity AddOnFlowModal has).
   const [lastPrices, setLastPrices] = useState({})
-  const [shopApprovals, setShopApprovals] = useState({})
+  // Shop-specific approvals (product + this customer + current revision + price).
+  const [approvalIndex, setApprovalIndex] = useState(() => new Map())
   const [defaultPriceType, setDefaultPriceType] = useState('RETAIL')
 
   useEffect(() => {
@@ -54,12 +56,10 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
     // Pass order.customer_id when available (correct per-customer scoping);
     // falls back to shop_name for older rows without a customer_id.
     loadCustomerLastPrices(order.shop_name, order.customer_id ?? null).then((p) => { if (!cancelled) setLastPrices(p) }).catch(() => {})
-    // Per-customer price approvals so the LAST chip knows about shop-specific approvals
-    if (order.customer_id) {
-      loadCustomerPriceApprovals(order.customer_id)
-        .then((m) => { if (!cancelled) setShopApprovals(m || {}) })
-        .catch(() => { if (!cancelled) setShopApprovals({}) })
-    }
+    // Shop-specific approvals (shop_price_approvals, migration 74)
+    loadShopPriceApprovals(order.customer_id)
+      .then((idx) => { if (!cancelled) setApprovalIndex(idx) })
+      .catch(() => { if (!cancelled) setApprovalIndex(new Map()) })
     loadCustomerLedgerCategory(order.shop_name, order.route)
       .then((cat) => {
         if (cancelled) return
@@ -135,13 +135,10 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
           // Use unit-aware key (e.g. "PRODUCT NAME||Piece") first so Box prices
           // don't appear as Piece last prices. Falls back to plain name key for
           // older rows that pre-date unit storage in loadCustomerLastPrices.
+          // A Last Price from an older master price revision is ignored.
           if (priceOverrides[id] == null) {
-            const lpNameKey = (p.name || '').trim().toUpperCase()
-            const currentUnit = (units[id] || 'Piece').trim()
-            const lpUnitKey = `${lpNameKey}||${currentUnit}`
-            const lpEntry = lastPrices[lpUnitKey] ?? lastPrices[lpNameKey]
-            const lastPriceVal = lpEntry?.price ?? (typeof lpEntry === 'number' ? lpEntry : null)
-            if (lastPriceVal != null) return lastPriceVal
+            const lpEntry = currentLastPriceEntry(lastPrices, p, units[id] || 'Piece')
+            if (lpEntry?.price != null) return lpEntry.price
           }
 
           // Category-driven fallback: Wholesale customer → Wholesale Price,
@@ -167,8 +164,11 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
         })(),
         schemeEnabled: priceOverrides[id]?.schemeEnabled !== false
       }
-    }).filter(Boolean),
-    [quantities, units, productMap, priceOverrides, defaultPriceType, lastPrices]
+    }).filter(Boolean)
+      // Lines already approved for this shop at the current revision + price.
+      // The database re-checks this on save.
+      .map((it) => ({ ...it, hasShopApproval: isShopApproved(approvalIndex, productMap.get(it.id), it.finalSellingPrice) })),
+    [quantities, units, productMap, priceOverrides, defaultPriceType, lastPrices, approvalIndex]
   )
 
   const totalQty = items.reduce((s, i) => s + i.qty, 0)
@@ -305,7 +305,7 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
           <button onClick={onClose} className="w-full rounded-xl bg-brand-600 text-white py-3 font-bold active:bg-brand-700">
             Done
           </button>
-          <p className="text-[10px] text-slate-300 mt-3">build v219</p>
+          <p className="text-[10px] text-slate-300 mt-3">build v225</p>
         </div>
       </div>
     )
@@ -320,7 +320,7 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
             <p className="text-xs text-slate-400 truncate">{order.shop_name} — original order stays as-is</p>
             {/* Deploy check: if this doesn't say v78, the device is running an
                 older cached build and none of the fixes below it are live yet. */}
-            <p className="text-[10px] text-emerald-600 font-semibold mt-0.5">build v219</p>
+            <p className="text-[10px] text-emerald-600 font-semibold mt-0.5">build v225</p>
           </div>
           <button onClick={onClose} className="p-2 text-slate-400" aria-label="Close">
             <CloseIcon className="h-5 w-5" />
@@ -349,21 +349,9 @@ export default function AddOnFlowModal({ order, userId, onClose, onSaved }) {
                 onUnit={onUnit}
                 override={priceOverrides[p.id]}
                 onOverride={onOverride}
-                lastPrice={(() => {
-                  const nameKey = (p.name || '').trim().toUpperCase()
-                  const currentUnit = (units[p.id] || 'Piece').trim()
-                  const unitKey = `${nameKey}||${currentUnit}`
-                  const entry = lastPrices[unitKey] ?? lastPrices[nameKey]
-                  return entry?.price ?? (typeof entry === 'number' ? entry : undefined)
-                })()}
-                lastPriceVersion={(() => {
-                  const nameKey = (p.name || '').trim().toUpperCase()
-                  const currentUnit = (units[p.id] || 'Piece').trim()
-                  const unitKey = `${nameKey}||${currentUnit}`
-                  const entry = lastPrices[unitKey] ?? lastPrices[nameKey]
-                  return entry?.priceVersion ?? null
-                })()}
-                shopApproval={shopApprovals[p.id] ?? null}
+                lastPrice={currentLastPriceEntry(lastPrices, p, units[p.id] || 'Piece')?.price ?? undefined}
+                lastPriceVersion={currentLastPriceEntry(lastPrices, p, units[p.id] || 'Piece')?.priceVersion ?? null}
+                approvedPrices={approvedPricesFor(approvalIndex, p)}
                 defaultPriceType={defaultPriceType}
                 onRequestApproval={({ priceType, finalRate: rate }) => {
                   setPriceOverrides(prev => ({

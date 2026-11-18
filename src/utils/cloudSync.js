@@ -2,6 +2,8 @@ import { supabase } from './supabase.js'
 import { schemeText } from './productDiff.js'
 import { calculateScheme } from './schemes.js'
 import { PRICE_APPROVAL_ENABLED } from './featureFlags.js'
+import { buildReplacePayload, buildMergePayload } from './catalogueImport.js'
+import { buildShopApprovalIndex } from './priceApproval.js'
 
 // Matches BillingDashboard.jsx's own definition — used below to distinguish
 // "viewing the default Today tab" from "explicitly browsing a specific past
@@ -215,6 +217,7 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
         if (approvalEnabled) {
           const specialProductNames = new Set(
             items
+              .filter((i) => !i.hasShopApproval)
               .filter((i) => {
                 const ep = i.finalSellingPrice != null ? i.finalSellingPrice : null
                 if (ep == null || i.normalPrice == null) return false
@@ -243,41 +246,44 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
       return 'DUPLICATE'
     }
 
-    // 2. ONE-NORMAL-ROUTE-BILL-PER-SHOP-PER-BUSINESS-DATE.
-    //    STORE-COUNTER is exempt (always a new separate bill).
-    //    A different order_date is ALWAYS a different order — no blocking.
+    // 2. ONE-BILL-PER-ROUTE-PER-SHOP-PER-BUSINESS-DATE.
+    //    STORE-COUNTER is always a new separate bill.
+    //    A different route is ALWAYS a different bill — EXP and STD are separate
+    //    deliveries and must both reach Billing independently.
+    //    Only block when new order's route exactly matches an existing order's route.
     if (!isSpecialChannel(orderRoute)) {
-      const normalRouteOnSameDate = (sameDate || []).some((o) => !isSpecialChannel(o.route))
-      if (normalRouteOnSameDate) {
-        // APPROVAL REQUEST: promote special-price items on ANY matching order for this
-        // shop today, then return without creating a new order (same as the exact-dup path).
+      const normalizedNewRoute = (orderRoute || '').trim().toUpperCase()
+      const sameRouteOnSameDate = (sameDate || []).find((o) =>
+        !isSpecialChannel(o.route) &&
+        (o.route || '').trim().toUpperCase() === normalizedNewRoute
+      )
+      if (sameRouteOnSameDate) {
+        // APPROVAL REQUEST: promote special-price items on the matching same-route order.
         if (isApprovalRequest) {
           const approvalEnabled = _runtimeApprovalEnabled !== false && PRICE_APPROVAL_ENABLED
           if (approvalEnabled) {
-            const existingNormal = (sameDate || []).find((o) => !isSpecialChannel(o.route))
-            if (existingNormal) {
-              const specialProductNames = items
-                .filter((i) => {
-                  const ep = i.finalSellingPrice != null ? i.finalSellingPrice : null
-                  if (ep == null || i.normalPrice == null) return false
-                  return ep !== i.normalPrice
-                    && !(i.isBoxUnit && ep >= (i.wholesaleAtOrderTime ?? ep))
-                    && !(isWholesaleCustomer && i.wholesaleAtOrderTime != null && Math.abs(ep - i.wholesaleAtOrderTime) < 0.001)
-                })
-                .map((i) => i.name)
-              if (specialProductNames.length > 0) {
-                await supabase
-                  .from('order_items')
-                  .update({ approval_status: 'pending' })
-                  .eq('order_id', existingNormal.id)
-                  .in('product_name', specialProductNames)
-                  .is('approval_status', null)
-              }
-              return existingNormal.id
+            const specialProductNames = items
+              .filter((i) => !i.hasShopApproval)
+              .filter((i) => {
+                const ep = i.finalSellingPrice != null ? i.finalSellingPrice : null
+                if (ep == null || i.normalPrice == null) return false
+                return Math.abs(ep - i.normalPrice) >= 0.01
+                  && !(i.isBoxUnit && ep >= (i.wholesaleAtOrderTime ?? ep))
+                  && !(isWholesaleCustomer && i.wholesaleAtOrderTime != null && Math.abs(ep - i.wholesaleAtOrderTime) < 0.001)
+              })
+              .map((i) => i.name)
+            if (specialProductNames.length > 0) {
+              await supabase
+                .from('order_items')
+                .update({ approval_status: 'pending' })
+                .eq('order_id', sameRouteOnSameDate.id)
+                .in('product_name', specialProductNames)
+                .is('approval_status', null)
             }
+            return sameRouteOnSameDate.id
           }
         }
-        console.log('Normal-route order already exists for this shop on', newOrderDate, '— blocking.')
+        console.log('Same-route order already exists for this shop on', newOrderDate, 'route:', orderRoute, '— blocking.')
         return 'DUPLICATE'
       }
     }
@@ -328,6 +334,7 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     if (approvalEnabled && isApprovalRequest) {
       // Rep explicitly invoked the approval flow → gate the entire bill.
       billNeedsApproval = items.some((i) => {
+        if (i.hasShopApproval) return false   // valid approval for this shop + revision + price
         const ep = i.finalSellingPrice != null ? i.finalSellingPrice : null
         if (ep == null || i.normalPrice == null) return false
         // Exact isSpecial formula — same as order_items insert (~line 424):
@@ -349,6 +356,7 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
 
   // [PRICE APPROVAL] Debug: log what is about to be saved
   const _pendingItems = items.filter((i) => {
+    if (i.hasShopApproval) return false
     const ep = i.finalSellingPrice != null ? i.finalSellingPrice : null
     if (ep == null || i.normalPrice == null) return false
     const diff = ep !== i.normalPrice
@@ -450,6 +458,9 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     return {
       order_id: order.id,
       product_name: i.name,
+      // Catalogue product id (add-on split lines carry baseId). The database
+      // re-resolves it from product_name, so a wrong id can never bypass checks.
+      product_id: i.baseId ?? i.productId ?? i.id ?? null,
       qty: i.qty,
       unit: i.unit || 'Piece',
       is_addon: !!i.isAddon,
@@ -462,7 +473,11 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
       // and proceeds through Billing normally). Ordinary lines get null —
       // no workflow applies to them. Controlled by the runtime toggle in
       // Admin → Price Approvals (stored in app_settings.price_approval_enabled).
-      approval_status: (_runtimeApprovalEnabled !== false && PRICE_APPROVAL_ENABLED && isSpecial) ? 'pending' : null,
+      // Shop-specific approval (v227): hasShopApproval=true means
+      // shop_price_approvals holds an approval for THIS shop + product + current
+      // master price revision + this exact price. The database trigger re-checks
+      // it on insert and forces 'pending' if it is not really valid.
+      approval_status: (_runtimeApprovalEnabled !== false && PRICE_APPROVAL_ENABLED && isSpecial && !i.hasShopApproval) ? 'pending' : null,
       scheme_enabled: i.schemeEnabled !== false,
       // Selected Price Type (WHOLESALE | RETAIL | MRP | CUSTOM) alongside the
       // Final Rate above (unit_price) — stored together so Billing/invoicing
@@ -510,14 +525,14 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
   // then reach Billing empty, add-ons included. Strip the optional columns and
   // retry so the order is never lost over a column that only affects
   // reporting.
-  if (itemsErr && /approval_status|entered_qty|entered_unit|approved_price_version/i.test(String(itemsErr.message || ''))) {
+  if (itemsErr && /approval_status|entered_qty|entered_unit|approved_price_version|product_id/i.test(String(itemsErr.message || ''))) {
     console.warn(
       'order_items is missing approval_status/entered_qty/entered_unit/approved_price_version — run ' +
       'sql/55_price_approval.sql (and 42_product_packaging.sql and 63_price_versioning.sql). ' +
       'Saving order items without those columns for now.'
     )
     // eslint-disable-next-line no-unused-vars
-    const slimRows = rows.map(({ approval_status, entered_qty, entered_unit, approved_price_version, ...keep }) => keep)
+    const slimRows = rows.map(({ approval_status, entered_qty, entered_unit, approved_price_version, product_id, ...keep }) => keep)
     ;({ error: itemsErr } = await supabase.from('order_items').insert(slimRows))
   }
   if (itemsErr) {
@@ -563,6 +578,7 @@ export async function saveCloudOrder({ customer, brand, userId, items, location,
     // actually received approval_status='pending'. Previously this used
     // evaluatePriceApproval() for SQL-63 products, which could diverge.
     const approvalNeededItems = items.filter((i) => {
+      if (i.hasShopApproval) return false
       const ep = i.finalSellingPrice ?? null
       if (ep == null || i.normalPrice == null) return false
       if (Math.abs(ep - i.normalPrice) < 0.01) return false
@@ -680,7 +696,7 @@ export async function loadCustomerLastPrices(shopName, customerId = null) {
   //
   // Route is intentionally NOT filtered — it's irrelevant to "what did we
   // last sell this product for to this customer".
-  const DEBUG = true // set to false after Last Price is confirmed working
+  const DEBUG = false // set true to trace Last Price in the console
   const dbg = (...a) => DEBUG && console.log('[LastPrice]', ...a)
 
   // Only use customerId if it's a real Supabase UUID (8-4-4-4-12 hex).
@@ -715,7 +731,7 @@ export async function loadCustomerLastPrices(shopName, customerId = null) {
       // Box vs Outer have different prices; mixing them is a bug). entered_unit
       // is the rep's original selection before conversion to pieces; unit is the
       // final normalised value. We prefer entered_unit for keying.
-      .select('id, shop_name, customer_id, billing_status, order_date, created_at, billing_verified_at, order_items(product_name, unit, entered_unit, unit_price, approved_price, approved_price_version, removed)')
+      .select('id, shop_name, customer_id, billing_status, order_date, created_at, billing_verified_at, order_items(product_name, unit, entered_unit, unit_price, approved_price, approved_price_version, approval_status, removed)')
       .eq('hidden', false)
       .eq('billing_status', 'verified')
       // Pre-sort descending so the most-recent order tends to come first over
@@ -744,8 +760,8 @@ export async function loadCustomerLastPrices(shopName, customerId = null) {
   // ── Step 3: if still empty, do a diagnostic query (no status filter) ───────
   if (!data || data.length === 0) {
     dbg('⚠ NO VERIFIED ORDERS FOUND — running diagnostic (all statuses)...')
-    const filter = customerId
-      ? (q) => q.eq('customer_id', customerId)
+    const filter = realCustomerId
+      ? (q) => q.eq('customer_id', realCustomerId)
       : (q) => q.eq('shop_name', shopName)
     const { data: allOrders } = await filter(
       supabase
@@ -795,6 +811,9 @@ export async function loadCustomerLastPrices(shopName, customerId = null) {
       const nameKey = (it.product_name || '').trim().toUpperCase()
       if (!nameKey) continue
       if (it.removed) continue            // removed/stock-out lines never count
+      // A price Admin has not approved (pending) or refused (rejected) was never
+      // billed, so it must never become the shop's Last Price.
+      if (it.approval_status === 'pending' || it.approval_status === 'rejected') continue
       // approved_price = Admin overrode the price (custom approval flow)
       // unit_price     = what the rep entered / billing accepted as-is
       const price = it.approved_price ?? it.unit_price
@@ -805,7 +824,9 @@ export async function loadCustomerLastPrices(shopName, customerId = null) {
       const unitVal = (it.entered_unit || it.unit || 'Piece').trim()
       const unitKey = `${nameKey}||${unitVal}`
       const priceVersion = it.approved_price_version ?? null
-      const entry = { price, priceVersion, unit: unitVal }
+      // verifiedAt lets the app judge an entry with no recorded revision
+      // against the product's price_changed_at (utils/priceApproval.js).
+      const entry = { price, priceVersion, unit: unitVal, verifiedAt: o.billing_verified_at || o.order_date || o.created_at || null }
       // Per-unit key (precise): first time we see this product+unit combo wins (newest order)
       if (out[unitKey] == null) {
         out[unitKey] = entry
@@ -823,101 +844,37 @@ export async function loadCustomerLastPrices(shopName, customerId = null) {
 }
 
 /**
- * Load per-customer price approvals for a given customer (shop).
+ * Shop-specific approvals for ONE customer (v227, migration 74).
  *
- * Returns a map: { [product_id]: { approvedPrice, approvedPriceVersion, status } }
- * Only returns the MOST RECENT 'approved' row per product+customer pair.
+ * Source of truth: shop_price_approvals — one row per
+ *   product + customer + master price revision + approved price.
+ * Returns an index for utils/priceApproval.js. The app uses it only to show
+ * the rep what is already approved; the database re-checks every order line.
  *
- * Used by OrderPage to check whether a rep selecting a LAST price below retail
- * already has a valid Admin approval for this exact product + shop combination
- * (spec §7-9). Without this, the check fell back to the product-level global
- * last_approved_price — which made Shop X's approval valid for Shop Y (spec §8 bug).
- *
- * Requires SQL migration 73_customer_price_approvals.sql.
- * Falls back gracefully (returns {}) if the table doesn't exist yet.
+ * Replaces loadCustomerPriceApprovals (customer_price_approvals — never
+ * populated, product_id was never written) and loadShopPriceApprovalHistory
+ * (keyed by shop NAME, version usually missing).
+ * Non-fatal: returns an empty index on error (everything then needs approval).
  */
-export async function loadCustomerPriceApprovals(customerId) {
-  if (!customerId) return {}
+export async function loadShopPriceApprovals(customerId) {
+  const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+  const raw = customerId == null ? '' : String(customerId)
+  const id = raw.startsWith('cloud_') ? raw.slice(6) : raw
+  if (!UUID_RE.test(id)) return buildShopApprovalIndex([])
   try {
     const { data, error } = await supabase
-      .from('customer_price_approvals')
-      .select('product_id, approved_price, approved_price_version, status')
-      .eq('customer_id', customerId)
+      .from('shop_price_approvals')
+      .select('product_id, price_revision_id, revision_number, approved_price, status')
+      .eq('customer_id', id)
       .eq('status', 'approved')
-      .order('approved_at', { ascending: false })
     if (error) {
-      // Table may not exist yet — non-fatal, fall back to product-level approval
-      console.warn('[loadCustomerPriceApprovals] non-fatal:', error.message)
-      return {}
+      console.warn('[loadShopPriceApprovals] non-fatal:', error.message)
+      return buildShopApprovalIndex([])
     }
-    // Deduplicate: keep only the latest approved row per product
-    const out = {}
-    for (const row of (data || [])) {
-      if (!out[row.product_id]) {
-        out[row.product_id] = {
-          approvedPrice: row.approved_price,
-          approvedPriceVersion: row.approved_price_version,
-          status: row.status
-        }
-      }
-    }
-    return out
+    return buildShopApprovalIndex(data || [])
   } catch (e) {
-    console.warn('[loadCustomerPriceApprovals] fetch failed (non-fatal):', e.message)
-    return {}
-  }
-}
-
-/**
- * Load approval history from price_approval_history for a specific shop.
- *
- * This is a fallback for when customer_price_approvals has no rows (which
- * happens when order_items.product_id is null — the column was never added —
- * so approveSpecialPrice() skips writing the cache). Instead we query the
- * immutable audit log directly and reconstruct approval validity from there.
- *
- * Returns: { [PRODUCT_NAME_UPPERCASE]: { approvedPrice, approvedPriceVersion, decidedAt } }
- * Only the MOST RECENT approved decision per product_name is returned.
- * product_name is uppercased to match loadCustomerLastPrices key convention.
- *
- * Staleness is checked in the caller (ProductCard) by comparing
- * approvedPriceVersion against product.price_version — same as the existing
- * shopApproval path. No timestamp comparison needed: price_version is the
- * canonical staleness signal (bumped on every price change).
- *
- * Non-fatal: returns {} on any error.
- */
-export async function loadShopPriceApprovalHistory(shopName) {
-  if (!shopName) return {}
-  try {
-    const { data, error } = await supabase
-      .from('price_approval_history')
-      .select('product_name, approved_price, approved_price_version, decided_at')
-      .eq('shop_name', shopName)
-      .eq('decision', 'approved')
-      .order('decided_at', { ascending: false })
-      .limit(300)
-    if (error) {
-      console.warn('[loadShopPriceApprovalHistory] non-fatal:', error.message)
-      return {}
-    }
-    // Keep only the most recent approved row per product (data is DESC decided_at)
-    const out = {}
-    for (const row of (data || [])) {
-      const key = (row.product_name || '').trim().toUpperCase()
-      if (!key || key.startsWith('[ORDER ')) continue  // skip order-level audit rows
-      if (!out[key]) {
-        out[key] = {
-          approvedPrice: row.approved_price,
-          approvedPriceVersion: row.approved_price_version,
-          decidedAt: row.decided_at
-        }
-      }
-    }
-    return out
-  } catch (e) {
-    console.warn('[loadShopPriceApprovalHistory] fetch failed (non-fatal):', e.message)
-    return {}
+    console.warn('[loadShopPriceApprovals] failed (non-fatal):', e.message)
+    return buildShopApprovalIndex([])
   }
 }
 
@@ -968,6 +925,31 @@ function istDateStr(iso) {
   const d = new Date(iso)
   // en-CA gives YYYY-MM-DD directly, formatted in the target timezone.
   return d.toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' })
+}
+
+/**
+ * Returns 'YYYY-MM-DD' for yesterday in Asia/Kolkata (IST).
+ * Used to detect whether a product's price changed yesterday,
+ * which triggers Admin Approval for LAST price selections.
+ */
+function yesterdayISTStr() {
+  const parts = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Kolkata' }).split('-').map(Number)
+  const d = new Date(Date.UTC(parts[0], parts[1] - 1, parts[2]))
+  d.setUTCDate(d.getUTCDate() - 1)
+  return d.toISOString().slice(0, 10)
+}
+
+/**
+ * Returns true if the product's price was changed on the PREVIOUS IST calendar
+ * day (i.e. yesterday). Used by price-approval logic to require Admin sign-off
+ * when a rep selects the LAST price and the price changed yesterday
+ * (the last price may pre-date the change, or equal the new price coincidentally).
+ */
+export function productPriceChangedYesterday(product) {
+  if (!product?.price_changed_at) return false
+  const changedDate = istDateStr(product.price_changed_at)
+  if (!changedDate) return false
+  return changedDate === yesterdayISTStr()
 }
 
 /** Unique shop-day keys from orders alone — this IS "Orders Taken". */
@@ -1451,6 +1433,13 @@ export async function fetchAllCloudProducts() {
     sell_by_box:   p.sell_by_box   ?? false,
     // Price governance fields
     price_version:       p.price_version ?? 1,
+    // Server-owned price revision (migration 74). Approvals are tied to it.
+    current_price_revision_id: p.current_price_revision_id ?? null,
+    // Carried so a legacy merge never writes null over them.
+    sort_order:          p.sort_order ?? null,
+    price_changed_by:    p.price_changed_by ?? null,
+    last_approved_at:    p.last_approved_at ?? null,
+    last_approved_by:    p.last_approved_by ?? null,
     wholesale_threshold: p.wholesale_threshold ?? p.qty_in_box ?? null,
     last_approved_price:   p.last_approved_price ?? null,
     last_approved_version: p.last_approved_version ?? null,
@@ -1465,183 +1454,107 @@ export async function fetchAllCloudProducts() {
   }))
 }
 
-/**
- * REPLACE-ALL upload (admin only). Wipes the products table and inserts the
- * given list, then bumps the catalogue version so reps know to re-download.
- * Inserts in chunks to stay within request limits.
- */
-export async function replaceAllCloudProducts(products, fileName) {
-  // 1. delete everything
-  const { error: delErr } = await supabase.from('products').delete().neq('id', '')
-  if (delErr) throw delErr
-
-  // 2. insert in chunks
-  const rows = products.map((p, idx) => ({
-    id: p.id || `p${idx}`,
-    name: p.name,
-    slabs: p.slabs || [],
-    base: p.base ?? null,
-    mrp: p.mrp ?? null,
-    retail: p.retail ?? null,
-    wholesale: p.wholesale ?? null,
-    net: p.net || [],
-    gst: p.gst ?? null,
-    hsn: p.hsn || null,
-    qty_in_box: p.qty_in_box ?? null,
-    outer_qty: p.outer_qty ?? null,
-    box: p.box ?? null,
-    is_qt: p.is_qt ?? false,
-    sell_by_piece: p.sell_by_piece ?? true,
-    sell_by_outer: p.sell_by_outer ?? false,
-    sell_by_box:   p.sell_by_box   ?? false,
-    sort_order: idx
-  }))
-  const chunk = 500
-  for (let i = 0; i < rows.length; i += chunk) {
-    const { error } = await supabase.from('products').insert(rows.slice(i, i + chunk))
-    if (error) throw error
-  }
-
-  // 3. bump version + record the uploaded file name and time
-  const meta = await getCatalogueMeta()
-  const nextVersion = (meta?.version || 0) + 1
-  const { error: metaErr } = await supabase
-    .from('catalogue_meta')
-    .update({
-      version: nextVersion,
-      product_count: rows.length,
-      file_name: fileName || null,
-      uploaded_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
-    })
-    .eq('id', 1)
-  if (metaErr) throw metaErr
-
-  return { count: rows.length, version: nextVersion }
+/** True when the database does not have migration 74's import function yet. */
+function isMissingImportRpc(error) {
+  const msg = String(error?.message || '') + ' ' + String(error?.details || '')
+  return error?.code === 'PGRST202' || error?.code === '42883' ||
+    (/import_products_catalogue/i.test(msg) && /(could not find|does not exist|not found)/i.test(msg))
 }
 
 /**
- * NON-DESTRUCTIVE MERGE upload (admin only).
+ * REPLACE-ALL upload (admin only) — v227.
  *
- * Unlike replaceAllCloudProducts (which wipes and re-inserts the whole table),
- * this matches the uploaded products against the EXISTING catalogue by name and
- * updates ONLY the fields the Excel provides a valid value for. It never
- * deletes a product, never blanks an existing value, and never invents data.
+ * Runs as ONE database transaction (import_products_catalogue, migration 74):
+ *   • products are matched by NAME on the server and keep their id, so stock,
+ *     order history and shop approvals stay attached;
+ *   • new products get a collision-free id (fixes the v225 duplicate-id bug
+ *     that could leave the catalogue half-empty);
+ *   • products not in the file are removed — all-or-nothing, never a gap;
+ *   • the DATABASE creates a price revision only for products whose retail or
+ *     wholesale price actually changed. Re-uploading the same file changes no
+ *     revision, so no Last Price and no shop approval is reset.
+ */
+export async function replaceAllCloudProducts(products, fileName) {
+  const existing = await fetchAllCloudProducts()
+  const { rows } = buildReplacePayload(products, existing)
+  if (!rows.length) throw new Error('The uploaded file has no products.')
+  const { data, error } = await supabase.rpc('import_products_catalogue', {
+    p_mode: 'replace', p_rows: rows, p_file_name: fileName || null
+  })
+  if (error) {
+    if (isMissingImportRpc(error)) {
+      throw new Error('Replace All is disabled until database migration 74 ' +
+        '(sql/74_price_revisions_shop_approvals.sql) has been run. Use Merge for now.')
+    }
+    throw new Error('Catalogue upload failed — nothing was changed. ' + (error.message || ''))
+  }
+  return {
+    count: data?.count ?? rows.length,
+    version: data?.version ?? null,
+    inserted: data?.inserted ?? 0,
+    deleted: data?.deleted ?? 0,
+    priceChanges: data?.price_changes || []
+  }
+}
+
+/**
+ * NON-DESTRUCTIVE MERGE upload (admin only) — v227.
  *
- * Per-product rules (implementing the admin spec exactly):
- *  • Match key = product name, trimmed + upper-cased (same key used everywhere
- *    else in the app).
- *  • For each matched product, a field is updated ONLY when the Excel has a
- *    genuinely valid (non-null) value for it. A blank Excel cell leaves the
- *    existing value exactly as it was — it never overwrites with null.
- *  • Products in the Excel with NO valid data at all → skipped (untouched).
- *  • Products in the catalogue but NOT in the Excel → untouched.
- *  • Products in the Excel with NO name-match in the catalogue → ignored
- *    (reported back so the admin can review near-miss names). Never inserted.
- *  • GST%/HSN are applied even when a product still has no price — this is
- *    intentional (admin decision): it lets GST attach now, and the product
- *    simply keeps behaving as before until a price is also confirmed.
+ * Same per-product rules as before (see buildMergePayload): only products
+ * already in the catalogue, only fields the Excel has a valid value for; never
+ * deletes, never blanks, never inserts. Applied in ONE transaction by the
+ * database, which also decides price revisions (retail / wholesale changes
+ * only — MRP, GST, HSN, packaging, sell-by and scheme edits never reset Last
+ * Price or shop approvals).
  *
- * Returns a summary: { updated, skippedNoData, unmatched:[names], version }.
+ * Returns { updated, skippedNoData, unmatched:[names], version, priceChanges }.
  */
 export async function mergeUpdateCloudProducts(uploadedList, fileName) {
-  // 1. Fetch the current live catalogue (all pages).
   const existing = await fetchAllCloudProducts()
-  const byKey = new Map()
-  for (const p of existing) {
-    byKey.set((p.name || '').trim().toUpperCase(), p)
+  const { rows, unmatched, skippedNoData } = buildMergePayload(uploadedList, existing)
+  if (rows.length === 0) {
+    const meta = await getCatalogueMeta()
+    return { updated: 0, skippedNoData, unmatched, version: meta?.version ?? null, priceChanges: [] }
   }
 
-  // 2. Walk the uploaded list; build a targeted update for each match.
-  const updates = []          // { id, patch }
-  const unmatched = []        // Excel names with no catalogue match
-  let skippedNoData = 0
-
-  const hasVal = (v) => v !== null && v !== undefined && v !== ''
-
-  for (const u of uploadedList) {
-    const key = (u.name || '').trim().toUpperCase()
-    if (!key) continue
-    const target = byKey.get(key)
-    if (!target) { unmatched.push(u.name); continue }
-
-    // Only include fields the Excel actually provides. Never write a null over
-    // an existing value.
-    const patch = {}
-    if (hasVal(u.mrp)) patch.mrp = u.mrp
-    if (hasVal(u.retail)) patch.retail = u.retail
-    if (hasVal(u.wholesale)) patch.wholesale = u.wholesale
-    if (hasVal(u.base)) patch.base = u.base
-    if (hasVal(u.gst)) patch.gst = u.gst
-    if (hasVal(u.hsn)) patch.hsn = u.hsn
-    // Packaging conversion master data (new). Merged like prices: only a valid
-    // value overwrites; blanks are ignored so existing data is never wiped.
-    if (hasVal(u.qty_in_box)) patch.qty_in_box = u.qty_in_box
-    if (hasVal(u.outer_qty)) patch.outer_qty = u.outer_qty
-    if (hasVal(u.box)) patch.box = u.box
-    // QT differs from the price fields: because it's a true/false status, a
-    // blank in a file that HAS the QT column means "not QT" (unmark), not "no
-    // info". So we set is_qt whenever the file carried the QT column at all
-    // (_qtColPresent) — allowing both marking and unmarking. Files without the
-    // column (old templates) never touch existing QT status.
-    if (u._qtColPresent) patch.is_qt = !!u.is_qt
-    // Selling-unit permissions: same pattern as QT — only update when the file
-    // carried the SELL BY column(s). Blank = not provided, existing value kept.
-    // Validate: at least one unit must be YES per product.
-    if (u._sellColPresent) {
-      const piece = u.sell_by_piece != null ? !!u.sell_by_piece : (target.sell_by_piece ?? true)
-      const outer = u.sell_by_outer != null ? !!u.sell_by_outer : (target.sell_by_outer ?? false)
-      const box   = u.sell_by_box   != null ? !!u.sell_by_box   : (target.sell_by_box   ?? false)
-      if (!piece && !outer && !box) {
-        // Validation error — skip this product and surface the problem
-        console.warn(`Sell-by validation: ${u.name} has all units set to NO — skipped.`)
-        skippedNoData++; continue
-      }
-      patch.sell_by_piece = piece
-      patch.sell_by_outer = outer
-      patch.sell_by_box   = box
+  const { data, error } = await supabase.rpc('import_products_catalogue', {
+    p_mode: 'merge', p_rows: rows, p_file_name: fileName || null
+  })
+  if (!error) {
+    return {
+      updated: data?.updated ?? rows.length,
+      skippedNoData,
+      unmatched,
+      version: data?.version ?? null,
+      priceChanges: data?.price_changes || []
     }
-    // Scheme slabs: only replace when the Excel genuinely carried scheme rows
-    // for this product (non-empty). An empty slabs array means "no scheme info
-    // in this file" — NOT "clear the existing scheme".
-    if (Array.isArray(u.slabs) && u.slabs.length > 0) {
-      patch.slabs = u.slabs
-      if (Array.isArray(u.net) && u.net.length > 0) patch.net = u.net
-    }
-
-    if (Object.keys(patch).length === 0) { skippedNoData++; continue }
-    updates.push({ id: target.id, patch })
+  }
+  if (!isMissingImportRpc(error)) {
+    throw new Error('Merge failed — nothing was changed. ' + (error.message || ''))
   }
 
-  // 3. Apply updates in BATCHES via upsert, instead of one round-trip per
-  //    product (which made 800+ sequential network calls and took minutes).
-  //    Each patch is merged onto the product's EXISTING full row first, so the
-  //    upsert re-writes the same values for untouched columns and only the
-  //    patched fields actually change — nothing is blanked. Chunked to stay
-  //    within request limits; ~800 rows becomes a couple of calls, seconds not
-  //    minutes.
+  // Migration 74 not run yet: previous client-side merge, kept only so price
+  // updates are never blocked. Price revisions in this mode are best-effort.
+  console.warn('[catalogue] import_products_catalogue missing — run sql/74. Using legacy merge.')
+  return legacyMergeUpsert(rows, existing, fileName, unmatched, skippedNoData)
+}
+
+async function legacyMergeUpsert(rows, existing, fileName, unmatched, skippedNoData) {
   const byId = new Map(existing.map((p) => [p.id, p]))
   const nowTs = new Date().toISOString()
   let adminId = null
   try { const { data: u } = await supabase.auth.getUser(); adminId = u?.user?.id || null } catch {}
+  const cents = (v) => (v == null ? null : Math.round(Number(v) * 100))
 
-  const fullRows = updates.map(({ id, patch }) => {
+  const fullRows = rows.map(({ id, name: _n, ...patch }) => {
     const cur = byId.get(id) || {}
-
-    // Price change detection — if retail or wholesale changed, bump price_version
-    // and invalidate the last_approved_price so old approvals can't be reused.
     const newRetail = patch.retail ?? cur.retail ?? null
     const newWholesale = patch.wholesale ?? cur.wholesale ?? null
+    const priceChanged = cents(newRetail) !== cents(cur.retail) || cents(newWholesale) !== cents(cur.wholesale)
     const priceRaised =
       (newRetail != null && cur.retail != null && newRetail > cur.retail) ||
       (newWholesale != null && cur.wholesale != null && newWholesale > cur.wholesale)
-    const priceChanged =
-      (patch.retail != null && patch.retail !== cur.retail) ||
-      (patch.wholesale != null && patch.wholesale !== cur.wholesale)
-
     const curVersion = Math.round(cur.price_version ?? 1)
-    const nextVersion = priceChanged ? curVersion + 1 : curVersion
-
     return {
       id,
       name: cur.name,
@@ -1660,52 +1573,38 @@ export async function mergeUpdateCloudProducts(uploadedList, fileName) {
       sell_by_piece: patch.sell_by_piece ?? cur.sell_by_piece ?? true,
       sell_by_outer: patch.sell_by_outer ?? cur.sell_by_outer ?? false,
       sell_by_box:   patch.sell_by_box   ?? cur.sell_by_box   ?? false,
-      // Price versioning
-      price_version:    nextVersion,
+      price_version:    priceChanged ? curVersion + 1 : curVersion,
       price_changed_at: priceChanged ? nowTs : (cur.price_changed_at ?? null),
       price_changed_by: priceChanged ? adminId : (cur.price_changed_by ?? null),
-      price_increased:  priceRaised,
+      price_increased:  priceChanged ? priceRaised : (cur.price_increased ?? false),
       previous_retail:    priceChanged ? (cur.retail ?? null) : (cur.previous_retail ?? null),
       previous_wholesale: priceChanged ? (cur.wholesale ?? null) : (cur.previous_wholesale ?? null),
-      // Wholesale threshold defaults to qty_in_box if not explicitly set
-      wholesale_threshold: cur.wholesale_threshold != null
-        ? Math.round(cur.wholesale_threshold)
+      wholesale_threshold: cur.wholesale_threshold != null ? Math.round(cur.wholesale_threshold)
         : (patch.qty_in_box != null ? Math.round(patch.qty_in_box) : (cur.qty_in_box != null ? Math.round(cur.qty_in_box) : null)),
-      // Invalidate last_approved_price when price version bumps
       last_approved_price:   priceChanged ? null : (cur.last_approved_price ?? null),
-      last_approved_version: priceChanged ? null : (cur.last_approved_version != null ? Math.round(cur.last_approved_version) : null),
+      last_approved_version: priceChanged ? null : (cur.last_approved_version ?? null),
       last_approved_at:      priceChanged ? null : (cur.last_approved_at ?? null),
       last_approved_by:      priceChanged ? null : (cur.last_approved_by ?? null),
       sort_order: cur.sort_order ?? null
     }
   })
   let updated = 0
-  const CHUNK = 500
-  for (let i = 0; i < fullRows.length; i += CHUNK) {
-    const slice = fullRows.slice(i, i + CHUNK)
+  for (let i = 0; i < fullRows.length; i += 500) {
+    const slice = fullRows.slice(i, i + 500)
     const { error } = await supabase.from('products').upsert(slice, { onConflict: 'id' })
-    if (error) {
-      console.error('merge upsert batch failed', error)
-      throw new Error('Merge failed while updating products: ' + (error.message || 'unknown'))
-    }
+    if (error) throw new Error('Merge failed while updating products: ' + (error.message || 'unknown'))
     updated += slice.length
   }
-
-  // 4. Bump catalogue version so reps re-download the enriched data.
   const meta = await getCatalogueMeta()
   const nextVersion = (meta?.version || 0) + 1
-  const { error: metaErr } = await supabase
-    .from('catalogue_meta')
-    .update({
-      version: nextVersion,
-      file_name: fileName ? `${fileName} (merge)` : null,
-      uploaded_at: new Date().toISOString(),
-      updated_at: new Date().toISOString()
-    })
-    .eq('id', 1)
+  const { error: metaErr } = await supabase.from('catalogue_meta').update({
+    version: nextVersion,
+    file_name: fileName ? `${fileName} (merge)` : null,
+    uploaded_at: nowTs,
+    updated_at: nowTs
+  }).eq('id', 1)
   if (metaErr) throw metaErr
-
-  return { updated, skippedNoData, unmatched, version: nextVersion }
+  return { updated, skippedNoData, unmatched, version: nextVersion, priceChanges: [] }
 }
 
 /** List all salespeople (admin only). */
@@ -2660,8 +2559,13 @@ export async function loadBillingReps() {
       pendingStoreCounter: countByRoute(pending, r.id, (route) => route.toUpperCase() === 'STORE-COUNTER'),
       pendingAddons: 0 // add-ons are grouped differently; 0 is correct here as a safe placeholder
     }))
-    .filter((r) => r.pending > 0 || r.verifiedToday > 0)
-    .sort((a, b) => b.pending - a.pending)
+    // Show ALL salespersons — even those with 0 orders today — so Billing can
+    // immediately see which reps haven't submitted anything yet.
+    // Sort: reps with pending orders first (desc), then verified-only, then 0-order reps.
+    .sort((a, b) => {
+      if (b.pending !== a.pending) return b.pending - a.pending
+      return b.verifiedToday - a.verifiedToday
+    })
 }
 
 /** Pending orders for one rep (filtered by delivery type, date, express route). */
@@ -4054,7 +3958,7 @@ export async function updateCloudOrder(orderId, { items, userId, isApprovalReque
     // - If rep requested approval AND this item is special → 'pending'
     // - If the item is NOT special → null (normal item, no approval needed)
     // - If rep did NOT request approval → preserve whatever was already set (don't regress)
-    const approvalStatusForItem = (approvalEnabled && isApprovalRequest && isSpecial) ? 'pending' : null
+    const approvalStatusForItem = (approvalEnabled && isApprovalRequest && isSpecial && !i.hasShopApproval) ? 'pending' : null
 
     const ex = exMap.get(key)
     if (ex) {
@@ -4064,6 +3968,7 @@ export async function updateCloudOrder(orderId, { items, userId, isApprovalReque
         unit_price: ep != null ? ep : ex.unit_price,
         price_type: i.priceType || null,
         normal_price: i.normalPrice ?? null,
+        product_id: i.baseId ?? i.id ?? null,
         // Refresh price version on update so loadCustomerLastPrices can detect
         // staleness if the product's version bumps again after this edit.
         approved_price_version: i.priceVersion ?? null
@@ -4092,6 +3997,7 @@ export async function updateCloudOrder(orderId, { items, userId, isApprovalReque
       const insertRow = {
         order_id: orderId,
         product_name: i.name,
+        product_id: i.baseId ?? i.id ?? null,
         qty: i.qty,
         unit: i.unit || "Piece",
         is_addon: false,
@@ -4102,7 +4008,7 @@ export async function updateCloudOrder(orderId, { items, userId, isApprovalReque
         gst_percent: i.gst ?? null,
         hsn: i.hsn ?? null,
         scheme_enabled: i.schemeEnabled !== false,
-        approval_status: (approvalEnabled && isApprovalRequest && isSpecial) ? 'pending' : null,
+        approval_status: (approvalEnabled && isApprovalRequest && isSpecial && !i.hasShopApproval) ? 'pending' : null,
         // Price version at the time of edit — same as saveCloudOrder
         approved_price_version: i.priceVersion ?? null
       }
@@ -5144,18 +5050,26 @@ export function evaluatePriceApproval({ product, qty, selectedPrice, priceType, 
   const wholesale = product.wholesale ?? null
   const threshold = product.wholesale_threshold ?? product.qty_in_box ?? null
   const priceVer  = product.price_version ?? 1
-  const lastApprovedPrice   = product.last_approved_price ?? null
-  const lastApprovedVersion = product.last_approved_version ?? null
+  // v227: the global product-level last_approved_price is retired — an approval
+  // is valid only for one shop (shop_price_approvals), checked by the caller.
+  const lastApprovedPrice   = null
 
-  // 1. LAST APPROVED PRICE — valid only if it still belongs to the current
-  //    price version. Admin-approved prices from before a price change are invalid.
-  const lastApprovedValid =
-    lastApprovedPrice != null &&
-    lastApprovedVersion != null &&
-    lastApprovedVersion === priceVer
-
-  if (lastApprovedValid && Math.abs(selectedPrice - lastApprovedPrice) < 0.001) {
-    return { approvalRequired: false, reason: null, currentPrice: retail, lastApprovedPrice, priceVersion: priceVer }
+  // 0. PRICE CHANGED YESTERDAY + LAST price selected — always requires Admin approval.
+  //    When the price changed yesterday the rep's "last price" may be pre-change
+  //    (stale) OR may coincidentally equal the new price. In either case we require
+  //    a fresh Admin sign-off to confirm the LAST price is still correct for this
+  //    customer. This is the spec §PRICE_CHANGE_MONITORING requirement.
+  //    Standard / Retail / Wholesale price selections are unaffected.
+  //    Custom price already has its own mandatory approval path (checked further below).
+  if (priceType === 'LAST' && productPriceChangedYesterday(product)) {
+    return {
+      approvalRequired: true,
+      reason: 'PRICE_CHANGED_YESTERDAY',
+      currentPrice: retail ?? wholesale ?? null,
+      lastApprovedPrice,
+      priceVersion: priceVer,
+      message: `Price changed yesterday — Admin approval required before using Last Price`
+    }
   }
 
   // 2. RETAIL PRICE — always valid for retail customers
@@ -5271,7 +5185,7 @@ export async function approveBill(orderId, itemOverrides, adminUser, reasonPaylo
   const [{ data: orderRow }, { data: pendingItems, error: fetchErr }] = await Promise.all([
     supabase.from('orders').select('customer_id').eq('id', orderId).maybeSingle(),
     supabase.from('order_items')
-      .select('id, product_id, unit_price, qty')
+      .select('id, unit_price, qty')
       .eq('order_id', orderId)
       .eq('approval_status', 'pending')
       .neq('removed', true)
@@ -5292,45 +5206,11 @@ export async function approveBill(orderId, itemOverrides, adminUser, reasonPaylo
       approval_other_reason: reasonPayload.otherReason || null
     }).eq('order_id', orderId).eq('approval_status', 'pending')
 
-    // Save approval records — both product-level (existing, for backward compat)
-    // and per-customer (new, spec §8 — so Shop X's approval doesn't auto-apply to Shop Y).
-    for (const item of pendingItems) {
-      if (item.product_id && item.unit_price != null) {
-        try {
-          const { data: prod } = await supabase.from('products')
-            .select('price_version').eq('id', item.product_id).maybeSingle()
-          if (prod) {
-            const priceVer = prod.price_version ?? 1
-            // Product-level last_approved_price (backward compat — kept as fallback)
-            await supabase.from('products').update({
-              last_approved_price: Number(item.unit_price),
-              last_approved_version: priceVer,
-              last_approved_at: now,
-              last_approved_by: adminUser?.id || null
-            }).eq('id', item.product_id)
-
-            // Per-customer approval (spec §8 — shop-scoped, not global)
-            // Upsert: if a prior approval for this product+customer+version exists,
-            // update it; otherwise insert. Use a raw upsert on the unique constraint.
-            if (customerId) {
-              await supabase.from('customer_price_approvals').upsert({
-                product_id: item.product_id,
-                customer_id: customerId,
-                approved_price: Number(item.unit_price),
-                approved_price_version: priceVer,
-                status: 'approved',
-                order_id: orderId,
-                approved_by: adminUser?.id || null,
-                approved_at: now
-              }, {
-                onConflict: 'product_id,customer_id',
-                ignoreDuplicates: false
-              })
-            }
-          }
-        } catch (e) { console.error('approval records update (non-fatal):', e) }
-      }
-    }
+    // Shop-specific approval records (product + customer + revision + price)
+    // are written by the database trigger order_items_record_approval
+    // (migration 74) for every line approved above. The old global
+    // products.last_approved_price is no longer written: Shop X's approval
+    // must never apply to Shop Y.
   }
 
   // 3. Recalculate order totals from all active (non-removed) items
@@ -5724,37 +5604,9 @@ export async function approveSpecialPrice(itemId, adminName, adminId, reasonPayl
         }
       }
 
-      // ─── v205 FIX: write per-customer approval cache ────────────────────────
-      // approveBill() (bill-level path) already does this; approveSpecialPrice()
-      // (item-level path from AdminApprovalsPage) was missing it. Without this
-      // record, ProductCard's shopApproval check finds nothing and re-prompts the
-      // rep on every subsequent order for the same shop+product — even though
-      // Admin already approved it. With this record, the existing
-      // evaluatePriceApproval() logic correctly bypasses the prompt until the next
-      // price change (spec §7-9).
-      const customerId = it.orders?.customer_id
-      if (customerId && it.product_id && priceVer != null) {
-        try {
-          const now = new Date().toISOString()
-          await supabase.from('customer_price_approvals').upsert({
-            product_id: it.product_id,
-            customer_id: customerId,
-            approved_price: finalApprovedPrice,
-            approved_price_version: priceVer,
-            status: 'approved',
-            order_id: it.order_id,
-            approved_by: adminId || null,
-            approved_at: now
-          }, {
-            onConflict: 'product_id,customer_id',
-            ignoreDuplicates: false
-          })
-          console.log('[ITEM APPROVAL] customer_price_approvals upserted for customer', customerId, 'product', it.product_id, 'version', priceVer)
-        } catch (cpaErr) {
-          console.error('[ITEM APPROVAL] customer_price_approvals upsert failed (non-fatal):', cpaErr)
-        }
-      }
-      // ─── END v205 FIX ──────────────────────────────────────────────────────
+      // Shop-specific approval (product + customer + revision + price) is
+      // recorded by the database trigger order_items_record_approval
+      // (migration 74) when approval_status changes to 'approved' above.
     }
   } catch (histErr) { console.error('price_approval_history insert failed (non-fatal):', histErr) }
 }

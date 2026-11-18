@@ -17,6 +17,16 @@ import { BackIcon } from '../components/Icons.jsx'
  *  - One-time migration: push the app's bundled catalogue to the cloud.
  *  - Replace-all Excel upload with a confirm-count safety net.
  */
+// Summary of master price revisions created by an upload (migration 74).
+// Each revised product's Last Price and every shop approval for it are reset.
+function revisionNote(priceChanges) {
+  const list = priceChanges || []
+  if (!list.length) return ' No retail/wholesale price changed — Last Prices and shop approvals are untouched.'
+  const names = list.slice(0, 5).map((c) => c.product).join(', ')
+  const more = list.length > 5 ? ` and ${list.length - 5} more` : ''
+  return ` ${list.length} product(s) got a new price revision (${names}${more}): their Last Price and all shop approvals were reset.`
+}
+
 export default function ProductAdminPage({ onBack }) {
   const { products } = useApp()
   const [meta, setMeta] = useState(null)
@@ -147,10 +157,10 @@ export default function ProductAdminPage({ onBack }) {
       const skipNote = res.skippedNoData
         ? ` ${res.skippedNoData} had no new data and were left unchanged.`
         : ''
-      setMsg(`Done. ${res.updated} product(s) updated (version ${res.version}).${skipNote}${unmatchedNote} Reps get the update on next open.`)
+      setMsg(`Done. ${res.updated} product(s) updated (version ${res.version}).${skipNote}${unmatchedNote}${revisionNote(res.priceChanges)} Reps get the update on next open.`)
     } catch (err) {
       console.error(err)
-      setMsg('Merge failed: ' + (err.message || 'unknown error') + '. Some products may have been updated; re-running the merge is safe (it only re-applies the same values).')
+      setMsg('Merge failed: ' + (err.message || 'unknown error') + '. Re-running the merge is safe: uploading the same values never creates a new price revision.')
     } finally {
       setBusy(false)
     }
@@ -195,10 +205,11 @@ export default function ProductAdminPage({ onBack }) {
 
       setPending(null)
       await loadMeta()
-      setMsg(`Done. ${res.count} products published (version ${res.version}). Reps will get them on next open.${annNote}`)
+      const addRemove = (res.inserted || res.deleted) ? ` ${res.inserted || 0} added, ${res.deleted || 0} removed.` : ''
+      setMsg(`Done. ${res.count} products published (version ${res.version}).${addRemove}${revisionNote(res.priceChanges)} Reps will get them on next open.${annNote}`)
     } catch (err) {
       console.error(err)
-      setMsg('Upload failed: ' + (err.message || 'unknown error') + '. Nothing was changed if this was the delete step; try again.')
+      setMsg('Upload failed: ' + (err.message || 'unknown error') + ' The catalogue was not changed — it is updated all-or-nothing.')
     } finally {
       setBusy(false)
     }

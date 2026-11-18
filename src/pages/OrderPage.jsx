@@ -1,7 +1,7 @@
 import { useState, useMemo, useCallback, useEffect } from 'react'
 import { useApp } from '../context/AppContext.jsx'
 import { useAuth } from '../context/AuthContext.jsx'
-import { saveCloudOrder, currentUserId, countUnreadAnnouncements, listAllRoutes, ensureCloudCustomer, updateCustomerDefaultRoute, loadCustomerLastPrices, loadCustomerPriceApprovals, loadShopPriceApprovalHistory, loadPendingStockOuts, notifyBillingOfAddon, updateCloudOrder, evaluatePriceApproval } from '../utils/cloudSync.js'
+import { saveCloudOrder, currentUserId, countUnreadAnnouncements, listAllRoutes, ensureCloudCustomer, updateCustomerDefaultRoute, loadCustomerLastPrices, loadShopPriceApprovals, loadPendingStockOuts, notifyBillingOfAddon, updateCloudOrder, evaluatePriceApproval } from '../utils/cloudSync.js'
 import PreviousOrdersModal from '../components/PreviousOrdersModal.jsx'
 import PendingOrdersModal from '../components/PendingOrdersModal.jsx'
 import OrderSummaryModal from '../components/OrderSummaryModal.jsx'
@@ -39,6 +39,7 @@ function defaultPriceValueFor(p, pref) {
   return null
 }
 import { SearchIcon, CloseIcon, SettingsIcon, ReturnIcon, ChartIcon, BellIcon } from '../components/Icons.jsx'
+import { currentLastPriceEntry, approvedPricesFor, isShopApproved } from '../utils/priceApproval.js'
 import { buildOrderMessage, buildVisitMessage, buildWhatsappUrl } from '../utils/whatsapp.js'
 import VisitStatus from '../components/VisitStatus.jsx'
 import EnablePushBanner from '../components/EnablePushBanner.jsx'
@@ -139,16 +140,11 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   // Cleared on reset / new order / customer switch — never touches the DB.
   const [priceOverrides, setPriceOverrides] = useState(saved?.priceOverrides ?? {})
   const [lastPrices, setLastPrices] = useState({})
-  // Per-customer price approvals: { [product_id]: { approvedPrice, approvedPriceVersion } }
-  // Loaded alongside lastPrices when customer changes. Used by ProductCard's PriceSelector
-  // to check if a LAST price below retail already has a valid Admin approval for THIS shop
-  // specifically (spec §7-9). Prevents Shop X's approval from covering Shop Y (spec §8).
-  const [shopApprovals, setShopApprovals] = useState({})
-  // Fallback approval map keyed by PRODUCT_NAME_UPPERCASE. Used when customer_price_approvals
-  // has no rows (order_items.product_id is null — column never added — so approveSpecialPrice
-  // cannot write the cache). Comes from price_approval_history filtered by shop_name.
-  // See loadShopPriceApprovalHistory() in cloudSync.js.
-  const [shopHistoryApprovals, setShopHistoryApprovals] = useState({})
+  // Shop-specific approvals for the selected customer (v227, migration 74):
+  // product + THIS shop + current master price revision + exact price.
+  // Database-backed (shop_price_approvals), so it survives refresh, logout and
+  // a different rep logging in. The database re-checks every saved line.
+  const [approvalIndex, setApprovalIndex] = useState(() => new Map())
   const [toast, setToast] = useState('')
   const [visitStatus, setVisitStatus] = useState(saved?.visitStatus ?? '')
   const [visitRemark, setVisitRemark] = useState(saved?.visitRemark ?? '')
@@ -534,11 +530,9 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
                   // Mirror PriceSelector's defaultType: LAST wins when a last price exists.
                   // Use unit-aware key first (e.g. "PRODUCT NAME||Piece"), fall back to
                   // plain name key for legacy rows that pre-date unit storage.
-                  const lpNameKey = (p.name || '').trim().toUpperCase()
-                  const lpUnitKey = `${lpNameKey}||${enteredUnit}`
-                  const lpEntry = lastPrices[lpUnitKey] ?? lastPrices[lpNameKey]
-                  const lastPriceVal = lpEntry?.price ?? (typeof lpEntry === 'number' ? lpEntry : null)
-                  return lastPriceVal != null ? 'LAST' : defaultPriceTypeFor(p, defaultPriceType)
+                  // A Last Price from an older master price revision is not offered.
+                  const lpEntry = currentLastPriceEntry(lastPrices, p, enteredUnit)
+                  return lpEntry?.price != null ? 'LAST' : defaultPriceTypeFor(p, defaultPriceType)
                 })()),
             finalSellingPrice: (() => {
               // When the rep has set an explicit finalRate override (via chip click
@@ -566,11 +560,10 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
               // isSpecial=false and suppressing the approval request entirely.
               // Use unit-aware key first; fall back to plain name for legacy rows.
               if (priceOverrides[id] == null) {  // no override of any kind
-                const lpNameKey = (p.name || '').trim().toUpperCase()
-                const lpUnitKey = `${lpNameKey}||${enteredUnit}`
-                const lpEntry = lastPrices[lpUnitKey] ?? lastPrices[lpNameKey]
-                const lastPriceVal = lpEntry?.price ?? (typeof lpEntry === 'number' ? lpEntry : null)
-                if (lastPriceVal != null) return lastPriceVal
+                // Reset after a price revision: an older Last Price never overrides
+                // the new master price.
+                const lpEntry = currentLastPriceEntry(lastPrices, p, enteredUnit)
+                if (lpEntry?.price != null) return lpEntry.price
               }
 
               // No override, no last price — use the category-driven default
@@ -594,9 +587,15 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
             // Price governance fields — passed to saveCloudOrder for evaluatePriceApproval
             wholesaleThreshold:    p.wholesale_threshold ?? p.qty_in_box ?? null,
             priceVersion:          p.price_version ?? 1,
-            lastApprovedPrice:     p.last_approved_price ?? null,
-            lastApprovedVersion:   p.last_approved_version ?? null,
+            // Retired in v227 (global product-level approval). Kept as null so
+            // nothing can treat one shop's approval as valid for another.
+            lastApprovedPrice:     null,
+            lastApprovedVersion:   null,
             priceIncreased:        p.price_increased ?? false,
+            // Price change tracking — used by checkViolations to detect PRICE_CHANGED_YESTERDAY
+            // (spec §PRICE_CHANGE_MONITORING). If price_changed_at was yesterday (IST), any
+            // LAST-price line requires Admin approval even if the value equals current price.
+            priceChangedAt:        p.price_changed_at ?? null,
             // Stale Last Price flag: set by ProductCard's warning modal when the
             // rep clicks "Request Admin Approval" for a LAST price whose version
             // no longer matches the product's current price_version. Used by
@@ -811,34 +810,17 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   // when no customer is selected, so the badge disappears (display rule #1).
   useEffect(() => {
     let cancelled = false
-    if (!customer?.name) { setLastPrices({}); setShopApprovals({}); return }
+    if (!customer?.name) { setLastPrices({}); setApprovalIndex(new Map()); return }
     // Pass customer.id (stable UUID) when available so the query matches by
     // customer_id rather than shop_name — immune to name changes and correctly
     // scoped per customer. Falls back to shop_name for older rows.
     loadCustomerLastPrices(customer.name, customer?.id ?? null)
       .then((map) => { if (!cancelled) setLastPrices(map || {}) })
       .catch((e) => { console.error('last prices load failed', e); if (!cancelled) setLastPrices({}) })
-    // Per-customer price approvals (spec §7-9): fetch in parallel so PriceSelector
-    // knows which products have a valid Admin approval specifically for THIS shop.
-    // Falls back to {} if table doesn't exist yet (migration 73 not yet run).
-    if (customer?.id) {
-      loadCustomerPriceApprovals(customer.id)
-        .then((map) => { if (!cancelled) setShopApprovals(map || {}) })
-        .catch(() => { if (!cancelled) setShopApprovals({}) })
-    } else {
-      setShopApprovals({})
-    }
-    // Fallback: history-based approvals keyed by product_name (UPPERCASE).
-    // Used when customer_price_approvals has no rows because product_id is null
-    // on order_items (column never added). Without this, every previously-approved
-    // Last Price below retail shows "Admin Approval Required" on re-order.
-    if (customer?.name) {
-      loadShopPriceApprovalHistory(customer.name)
-        .then((map) => { if (!cancelled) setShopHistoryApprovals(map || {}) })
-        .catch(() => { if (!cancelled) setShopHistoryApprovals({}) })
-    } else {
-      setShopHistoryApprovals({})
-    }
+    // Shop-specific approvals for this customer (shop_price_approvals).
+    loadShopPriceApprovals(customer?.id ?? null)
+      .then((idx) => { if (!cancelled) setApprovalIndex(idx) })
+      .catch(() => { if (!cancelled) setApprovalIndex(new Map()) })
     return () => { cancelled = true }
   }, [customer?.name, customer?.id, customer?.route])
 
@@ -885,7 +867,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   // Every order attempts to capture current GPS. Soft policy: if it fails we
   // warn and let the rep retry, but never block the sale. A failed capture is
   // stamped 'Not captured' in the message for accountability.
-  const dispatchOrder = async (viaCopy, isApprovalRequest = false) => {
+  const dispatchOrder = async (viaCopy, isApprovalRequest = false, approvedItemIds = new Set()) => {
     if (!canSend) return
     if (sending) return // already sending — ignore double-tap
     setSending(true)
@@ -920,7 +902,7 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
           // updateCloudOrder without the flag, and the approval items/status would
           // never be set, leaving Admin's dashboard empty for that request.
           savedOrderId = await updateCloudOrder(editingOrderId, {
-            items,
+            items: items.map(it => ({ ...it, hasShopApproval: approvedItemIds.has(it.id) })),
             userId: uid,
             isApprovalRequest,
             isWholesaleCustomer: defaultPriceType === 'WHOLESALE'
@@ -928,11 +910,19 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
           setEditingOrderId(null)
           try { localStorage.removeItem('atl_edit_intent') } catch {}
         } else {
+          // hasShopApproval: a valid approval exists for this shop + product +
+          // current revision + exact price (shop_price_approvals). saveCloudOrder
+          // then does not request approval again; the database re-verifies it.
+          const taggedItems = items.map(it => ({
+            ...it,
+            hasShopApproval: approvedItemIds.has(it.id)
+          }))
+
           savedOrderId = await saveCloudOrder({
           customer,
           brand: settings.brand,
           userId: uid,
-          items,
+          items: taggedItems,
           location: ok ? loc : null,
           orderDate,
           route: routeOverride,
@@ -1078,129 +1068,49 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
 
   const checkViolations = () => {
     const violations = []
+    // Lines covered by a valid SHOP approval: this shop + product + current
+    // master price revision + this exact price (to the paisa). saveCloudOrder
+    // will not send them for approval again; the database re-checks each one.
+    const approvedItemIds = new Set()
+    const violation = (i, ep, cur) => ({
+      id: i.id, name: i.name, selectedPrice: ep, currentPrice: cur, diff: ep - (cur ?? ep)
+    })
+
     for (const i of items) {
       const ep = i.finalSellingPrice != null ? i.finalSellingPrice : null
       if (ep == null) continue
+      const product = productMap.get(i.baseId ?? i.id)
+      const shopApproved = !!product && isShopApproved(approvalIndex, product, ep)
+      if (shopApproved) approvedItemIds.add(i.id)
 
-      // Method 1: Use evaluatePriceApproval if price governance fields exist (SQL 63 run)
-      if (i.priceVersion || i.lastApprovedPrice != null || i.priceIncreased) {
-        // Special case: stale Last Price where the official price DECREASED —
-        // old Last Price (₹115) > new floor (₹110). evaluatePriceApproval won't
-        // flag this (selectedPrice is not < currentFloor) but it's still stale
-        // and requires Admin sign-off. The rep already saw the warning and clicked
-        // "Request Admin Approval", which set lastPriceStale=true on the override.
-        if (i.lastPriceStale) {
-          const currentFloor = i.normalPrice ?? i.wholesaleAtOrderTime ?? null
-          violations.push({
-            id: i.id,
-            name: i.name,
-            selectedPrice: ep,
-            currentPrice: currentFloor ?? ep,
-            diff: ep - (currentFloor ?? ep)
-          })
-          continue
-        }
-        // Per-shop history approval bypass: if the rep selected LAST price and
-        // price_approval_history shows a valid approval for this shop+product at
-        // this exact price+version, skip the violation. This covers the case where
-        // customer_price_approvals has no row (product_id never existed on order_items)
-        // but the immutable history log confirms Admin approved this price.
-        // Guard: lastPriceStale=true (above) already caught genuinely stale prices.
-        if (i.priceType === 'LAST' && !i.lastPriceStale) {
-          const histKey = (i.name || '').trim().toUpperCase()
-          const histEntry = shopHistoryApprovals[histKey]
-          if (
-            histEntry != null &&
-            histEntry.approvedPriceVersion === (i.priceVersion ?? 1) &&
-            Math.abs(histEntry.approvedPrice - ep) < 0.01
-          ) {
-            continue  // valid per-shop history approval — no violation
-          }
-        }
-        const { approvalRequired, currentPrice } = evaluatePriceApproval({
-          product: {
-            retail: i.normalPrice,
-            wholesale: i.wholesaleAtOrderTime,
-            wholesale_threshold: i.wholesaleThreshold ?? null,
-            price_version: i.priceVersion ?? 1,
-            last_approved_price: i.lastApprovedPrice ?? null,
-            last_approved_version: i.lastApprovedVersion ?? null,
-            price_increased: i.priceIncreased ?? false
-          },
-          qty: i.qty,
-          selectedPrice: ep,
-          priceType: i.priceType,
-          isBoxUnit: i.isBoxUnit,
-          isWholesaleCustomer: defaultPriceType === 'WHOLESALE'
-        })
-        if (approvalRequired) {
-          violations.push({
-            id: i.id,
-            name: i.name,
-            selectedPrice: ep,
-            currentPrice: currentPrice ?? i.normalPrice ?? i.wholesaleAtOrderTime,
-            diff: ep - (currentPrice ?? i.normalPrice ?? i.wholesaleAtOrderTime ?? ep)
-          })
-          continue
-        }
-        // Secondary check: LAST price type that is not equal to normalPrice
-        // catches the price-decreased case (stale ₹115, new ₹110 floor) —
-        // evaluatePriceApproval returns no-violation since ₹115 > ₹110, but
-        // ₹115 ≠ normalPrice (₹110) means the stale Last Price deviates from
-        // current pricing and requires Admin sign-off. A Last Price that
-        // exactly equals the new normalPrice is fine (no change needed).
-        if (i.priceType === 'LAST' && i.normalPrice != null && Math.abs(ep - i.normalPrice) > 0.001) {
-          // Only flag when there's a valid reason to think this is stale —
-          // i.e. the last approved version differs from current. If we have no
-          // version info on this item, skip (don't false-positive on old orders).
-          const lastApprovedCurrentVersion =
-            i.lastApprovedVersion != null &&
-            i.lastApprovedPrice != null &&
-            i.lastApprovedVersion === (i.priceVersion ?? 1) &&
-            Math.abs(i.lastApprovedPrice - ep) < 0.001
-          // Also accept per-shop history approval as valid (covers the case where
-          // customer_price_approvals is empty because product_id never existed).
-          const histKeyS = (i.name || '').trim().toUpperCase()
-          const histEntryS = shopHistoryApprovals[histKeyS]
-          const shopHistoryCurrentVersion =
-            histEntryS != null &&
-            histEntryS.approvedPriceVersion === (i.priceVersion ?? 1) &&
-            Math.abs(histEntryS.approvedPrice - ep) < 0.001
-          if (!lastApprovedCurrentVersion && !shopHistoryCurrentVersion) {
-            violations.push({
-              id: i.id,
-              name: i.name,
-              selectedPrice: ep,
-              currentPrice: i.normalPrice,
-              diff: ep - i.normalPrice
-            })
-          }
-        }
+      // Rep already tapped "Request Admin Approval" on the card for this line.
+      if (i.lastPriceStale && !shopApproved) {
+        violations.push(violation(i, ep, i.normalPrice ?? i.wholesaleAtOrderTime ?? ep))
         continue
       }
 
-      // Method 2: Basic check — selected price < current applicable retail/wholesale
-      // Works even without SQL 63. Catches Last/Custom prices below floor.
-      // History bypass: if LAST price and per-shop history approval is valid, skip.
-      if (i.priceType === 'LAST') {
-        const histKey2 = (i.name || '').trim().toUpperCase()
-        const histEntry2 = shopHistoryApprovals[histKey2]
-        // No version info available here (Method 2 = pre-SQL63), so just check price match.
-        // If history shows an approved price matching this ep, trust it.
-        if (histEntry2 != null && Math.abs(histEntry2.approvedPrice - ep) < 0.01) continue
-      }
-      const currentFloor = i.normalPrice ?? i.wholesaleAtOrderTime ?? null
-      if (currentFloor != null && ep < currentFloor - 0.001) {
-        violations.push({
-          id: i.id,
-          name: i.name,
-          selectedPrice: ep,
-          currentPrice: currentFloor,
-          diff: ep - currentFloor
-        })
+      // Existing rules (unchanged): below the customer's default price, a
+      // retail customer at wholesale price, Last Price after yesterday's change.
+      const { approvalRequired, currentPrice } = evaluatePriceApproval({
+        product: {
+          retail: i.normalPrice,
+          wholesale: i.wholesaleAtOrderTime,
+          wholesale_threshold: i.wholesaleThreshold ?? null,
+          price_version: i.priceVersion ?? 1,
+          price_increased: i.priceIncreased ?? false,
+          price_changed_at: i.priceChangedAt ?? null
+        },
+        qty: i.qty,
+        selectedPrice: ep,
+        priceType: i.priceType,
+        isBoxUnit: i.isBoxUnit,
+        isWholesaleCustomer: defaultPriceType === 'WHOLESALE'
+      })
+      if (approvalRequired && !shopApproved) {
+        violations.push(violation(i, ep, currentPrice ?? i.normalPrice ?? i.wholesaleAtOrderTime))
       }
     }
-    return violations
+    return { violations, approvedItemIds }
   }
 
   // Send Order: also checks price violations before dispatching — previously
@@ -1208,9 +1118,9 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
   // Admin sign-off. Now identical to Copy Order's pre-submit check.
   const handleSend = () => {
     if (!items.length) { dispatchOrder(false); return }
-    const violations = checkViolations()
+    const { violations, approvedItemIds } = checkViolations()
     if (violations.length === 0) {
-      dispatchOrder(false)
+      dispatchOrder(false, false, approvedItemIds)
     } else {
       // If the rep already clicked "Request Admin Approval" on the inline banner
       // for ALL violating items (lastPriceStale=true on each), treat that as
@@ -1221,19 +1131,19 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
       const allAlreadyApproved = violations.every(v => items.find(i => i.id === v.id)?.lastPriceStale === true)
       if (allAlreadyApproved) {
         console.log('[PRICE APPROVAL] handleSend — all violations pre-approved via inline banner, dispatching with isApprovalRequest=true')
-        dispatchOrder(false, true)
+        dispatchOrder(false, true, approvedItemIds)
       } else {
         console.log('[PRICE APPROVAL] handleSend blocked — violations found:', violations.map(v => `${v.name}: ₹${v.selectedPrice} vs ₹${v.currentPrice}`))
-        setPriceWarningModal({ violations, viaCopy: false })
+        setPriceWarningModal({ violations, viaCopy: false, approvedItemIds })
       }
     }
   }
 
   const handleCopy = () => {
     if (!items.length) { dispatchOrder(true); return }
-    const violations = checkViolations()
+    const { violations, approvedItemIds } = checkViolations()
     if (violations.length === 0) {
-      dispatchOrder(true)
+      dispatchOrder(true, false, approvedItemIds)
     } else {
       // Same pre-approved shortcut as handleSend: if the rep already tapped the
       // inline "Request Admin Approval" banner for every violating item, bypass
@@ -1241,10 +1151,10 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
       const allAlreadyApproved = violations.every(v => items.find(i => i.id === v.id)?.lastPriceStale === true)
       if (allAlreadyApproved) {
         console.log('[PRICE APPROVAL] handleCopy — all violations pre-approved via inline banner, dispatching with isApprovalRequest=true')
-        dispatchOrder(true, true)
+        dispatchOrder(true, true, approvedItemIds)
       } else {
         console.log('[PRICE APPROVAL] handleCopy blocked — violations found:', violations.map(v => `${v.name}: ₹${v.selectedPrice} vs ₹${v.currentPrice}`))
-        setPriceWarningModal({ violations, viaCopy: true })
+        setPriceWarningModal({ violations, viaCopy: true, approvedItemIds })
       }
     }
   }
@@ -1435,28 +1345,9 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
               unit={units[p.id] || 'Piece'}
               onQty={onQty}
               onUnit={onUnit}
-              lastPrice={customer ? (() => {
-                // Look up last price by product name + current unit (Piece/Box/Outer).
-                // A Box price and a Piece price are different values — don't mix them.
-                // Falls back to the plain name key for legacy rows without unit data.
-                const nameKey = (p.name || '').trim().toUpperCase()
-                const currentUnit = (units[p.id] || 'Piece').trim()
-                const unitKey = `${nameKey}||${currentUnit}`
-                const byUnit = lastPrices[unitKey]
-                const byName = lastPrices[nameKey]
-                // Prefer per-unit entry; fall back to name-only for older rows
-                const entry = byUnit ?? byName
-                return entry?.price ?? (typeof entry === 'number' ? entry : undefined)
-              })() : undefined}
-              lastPriceVersion={customer ? (() => {
-                const nameKey = (p.name || '').trim().toUpperCase()
-                const currentUnit = (units[p.id] || 'Piece').trim()
-                const unitKey = `${nameKey}||${currentUnit}`
-                const entry = lastPrices[unitKey] ?? lastPrices[nameKey]
-                return entry?.priceVersion ?? null
-              })() : null}
-              shopApproval={shopApprovals[p.id] ?? null}
-              shopHistoryApproval={shopHistoryApprovals[(p.name || '').trim().toUpperCase()] ?? null}
+              lastPrice={customer ? (currentLastPriceEntry(lastPrices, p, units[p.id] || 'Piece')?.price ?? undefined) : undefined}
+              lastPriceVersion={customer ? (currentLastPriceEntry(lastPrices, p, units[p.id] || 'Piece')?.priceVersion ?? null) : null}
+              approvedPrices={customer ? approvedPricesFor(approvalIndex, p) : []}
               defaultPriceType={defaultPriceType}
               inventory={inventoryMap.get(p.id)}
               onRemoveProduct={() => {
@@ -1638,11 +1529,12 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
                       violatingIds.forEach(id => delete next[id])
                       return next
                     })
+                    const approvedIds = priceWarningModal.approvedItemIds || new Set()
                     setPriceWarningModal(null)
                     const remainingQty = Object.keys(quantities).filter(id => !violatingIds.has(id))
                     if (remainingQty.length > 0) {
                       // Respect original button (Send or Copy) — don't always default to Copy.
-                      setTimeout(() => dispatchOrder(viaCopy), 100)
+                      setTimeout(() => dispatchOrder(viaCopy, false, approvedIds), 100)
                     }
                   }}
                   className="w-full rounded-2xl border-2 border-slate-200 py-3 text-sm font-bold text-slate-700 active:bg-slate-50"
@@ -1658,8 +1550,9 @@ export default function OrderPage({ onOpenSettings, onOpenReturns, onOpenPerform
                 <button
                   onClick={() => {
                     console.log('[PRICE APPROVAL] Rep tapped Request Admin Approval — dispatching with isApprovalRequest=true')
+                    const approvedIds = priceWarningModal.approvedItemIds || new Set()
                     setPriceWarningModal(null)
-                    dispatchOrder(true, true)  // viaCopy=true, isApprovalRequest=true
+                    dispatchOrder(true, true, approvedIds)  // viaCopy=true, isApprovalRequest=true
                   }}
                   className="w-full rounded-2xl bg-amber-500 text-white py-3 text-sm font-bold active:bg-amber-600"
                 >
