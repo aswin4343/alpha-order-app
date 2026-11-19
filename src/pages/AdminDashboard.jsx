@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useAuth } from '../context/AuthContext.jsx'
-import { loadAdminDashboard, loadSalesTrend, loadTopProducts, listAllRoutes, listSalespeople } from '../utils/cloudSync.js'
+import { loadAdminDashboard, loadSalesTrend, loadTopProducts, loadTopProductsReport, listAllRoutes, listSalespeople } from '../utils/cloudSync.js'
+import { exportTopProductsExcel } from '../utils/excel.js'
 import ReportPanel from '../components/ReportPanel.jsx'
 import SalesTrendChart from '../components/SalesTrendChart.jsx'
 import TopProductsChart from '../components/TopProductsChart.jsx'
@@ -167,6 +168,29 @@ export default function AdminDashboard({ onOpenProducts, onOpenSalespeople, onOp
   useEffect(() => {
     refresh()
   }, [])
+
+  // Top Selling Products → Excel (same date range / route / rep as the card).
+  const [exportingTop, setExportingTop] = useState(false)
+  const exportTopProducts = async () => {
+    if (exportingTop) return
+    setExportingTop(true)
+    try {
+      const report = await loadTopProductsReport(chartFrom, chartTo, chartRoute || null, chartRepId || null)
+      if (!report.products.length) { alert('No sales in this date range for the selected filters.'); return }
+      const dmy = (d) => d.split('-').reverse().join('/')
+      const repName = repOptions.find((r) => r.id === chartRepId)?.full_name
+      await exportTopProductsExcel(report, `Top_Selling_Products_${chartFrom}_to_${chartTo}.xlsx`, {
+        dateRangeLabel: `${dmy(chartFrom)} to ${dmy(chartTo)}`,
+        routeLabel: chartRoute || 'All Routes',
+        repLabel: repName || 'All Representatives'
+      })
+    } catch (e) {
+      console.error(e)
+      alert('Could not create the Excel report: ' + (e.message || 'unknown error'))
+    } finally {
+      setExportingTop(false)
+    }
+  }
 
   useEffect(() => {
     refreshCharts()
@@ -349,9 +373,19 @@ export default function AdminDashboard({ onOpenProducts, onOpenSalespeople, onOp
                 {trend && !chartError && <SalesTrendChart data={trend} />}
               </div>
               <div className="rounded-2xl bg-white shadow-card border border-slate-100 p-4">
-                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-3">
-                  Top Selling Products
-                </p>
+                <div className="flex items-center justify-between mb-3 gap-2">
+                  <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">
+                    Top Selling Products
+                  </p>
+                  <button
+                    onClick={exportTopProducts}
+                    disabled={exportingTop || !topProducts || chartError}
+                    title="Download Excel: products with sales rep breakdown for the selected range, route and rep"
+                    className="text-xs font-semibold rounded-lg border border-brand-200 text-brand-700 bg-brand-50 px-2.5 py-1 active:bg-brand-100 disabled:opacity-50"
+                  >
+                    {exportingTop ? 'Preparing…' : '⬇ Excel'}
+                  </button>
+                </div>
                 {chartError && <p className="text-sm text-red-500 text-center py-8">Could not load products.</p>}
                 {!topProducts && !chartError && (
                   <div className="py-12 flex justify-center">

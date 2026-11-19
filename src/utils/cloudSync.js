@@ -4,6 +4,7 @@ import { calculateScheme } from './schemes.js'
 import { PRICE_APPROVAL_ENABLED } from './featureFlags.js'
 import { buildReplacePayload, buildMergePayload } from './catalogueImport.js'
 import { buildShopApprovalIndex } from './priceApproval.js'
+import { buildTopProductsReport } from './topProductsReport.js'
 
 // Matches BillingDashboard.jsx's own definition — used below to distinguish
 // "viewing the default Today tab" from "explicitly browsing a specific past
@@ -1374,6 +1375,44 @@ export async function loadTopProducts(from, to, route = null, salesRepId = null)
   const byOrders = [...rows].sort((a, b) => b.orderCount - a.orderCount)
 
   return { byQty, byOrders, totalQty, totalOrders }
+}
+
+/**
+ * Data for the Top Selling Products Excel report (v228). Same filters and the
+ * same order set as loadTopProducts (dashboard card), plus the sales rep,
+ * shop, price and removed flag of every line, aggregated by
+ * buildTopProductsReport. `from`/`to` are 'YYYY-MM-DD', inclusive.
+ */
+export async function loadTopProductsReport(from, to, route = null, salesRepId = null) {
+  const orders = await fetchAllPaged(
+    'orders',
+    'id, sales_rep_id, customer_id, shop_name',
+    (q) => {
+      q = q.eq('hidden', false).gte('order_date', from).lte('order_date', to)
+      if (route) q = q.eq('route', route)
+      if (salesRepId) q = q.eq('sales_rep_id', salesRepId)
+      return q
+    }
+  )
+  const ids = orders.map((o) => o.id)
+  let items = []
+  for (let i = 0; i < ids.length; i += 500) {
+    // eslint-disable-next-line no-await-in-loop
+    const chunk = await fetchAllPaged(
+      'order_items',
+      'order_id, product_name, qty, unit_price, approved_price, removed',
+      (q) => q.in('order_id', ids.slice(i, i + 500))
+    )
+    items = items.concat(chunk)
+  }
+  const repIds = [...new Set(orders.map((o) => o.sales_rep_id).filter(Boolean))]
+  const repNames = {}
+  for (let i = 0; i < repIds.length; i += 200) {
+    // eslint-disable-next-line no-await-in-loop
+    const { data } = await supabase.from('profiles').select('id, full_name').in('id', repIds.slice(i, i + 200))
+    for (const p of data || []) repNames[p.id] = p.full_name || 'Unnamed rep'
+  }
+  return buildTopProductsReport(orders, items, repNames)
 }
 
 // ---------------------------------------------------------------------------

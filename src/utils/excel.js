@@ -394,3 +394,81 @@ export async function exportLoadingSheetExcel(rows, fileName, meta = {}) {
 
   XLSX.writeFile(wb, fileName)
 }
+
+/**
+ * Excel export: Top Selling Products report (v228), from the Admin Dashboard.
+ * report: output of buildTopProductsReport (utils/topProductsReport.js)
+ * meta:   { dateRangeLabel, routeLabel, repLabel }
+ * Three sheets, each with the same 4-line title banner as the Loading Sheet,
+ * frozen header, auto-filter, and real numeric cells (₹ format on values).
+ */
+export async function exportTopProductsExcel(report, fileName, meta = {}) {
+  const XLSX = await getXLSX()
+  const wb = XLSX.utils.book_new()
+  const RUPEE = '₹#,##,##0.00'
+
+  const addSheet = (sheetName, reportName, header, rows, opts = {}) => {
+    const banner = [
+      ['ALPHA TRADE LINKS'],
+      [`REPORT NAME: ${reportName}`],
+      [`DATE: ${meta.dateRangeLabel || ''}`],
+      [`ROUTE: ${meta.routeLabel || 'All Routes'}   ·   SALES REP: ${meta.repLabel || 'All Representatives'}`]
+    ]
+    const aoa = [...banner, header, ...rows]
+    if (opts.totalRow) aoa.push(opts.totalRow)
+    const ws = XLSX.utils.aoa_to_sheet(aoa)
+    const nCols = header.length
+    ws['!merges'] = banner.map((_, r) => ({ s: { r, c: 0 }, e: { r, c: nCols - 1 } }))
+    const headerRow = banner.length + 1               // 1-based
+    const firstData = headerRow + 1
+    const lastData = headerRow + rows.length
+    for (let r = firstData; r <= aoa.length; r++) {
+      for (const c of opts.rupeeCols || []) {
+        const cell = ws[XLSX.utils.encode_cell({ r: r - 1, c })]
+        if (cell && typeof cell.v === 'number') cell.z = RUPEE
+      }
+    }
+    ws['!cols'] = opts.widths || header.map(() => ({ wch: 14 }))
+    ws['!freeze'] = { xSplit: 0, ySplit: headerRow }
+    if (rows.length) ws['!autofilter'] = { ref: `A${headerRow}:${XLSX.utils.encode_col(nCols - 1)}${lastData}` }
+    XLSX.utils.book_append_sheet(wb, ws, sheetName)
+  }
+
+  const t = report.totals
+
+  // Sheet 1 — product ranking
+  addSheet('Top Products', 'TOP SELLING PRODUCTS',
+    ['RANK', 'PRODUCT', 'QTY (PCS)', 'ORDERS', 'SHOPS', 'VALUE (₹)', 'REMOVED / STOCK-OUT QTY', 'SALES REPS', 'TOP SALES REP', 'TOP REP QTY'],
+    report.products.map((p) => [p.rank, p.name, p.qty, p.orderCount, p.shopCount, p.value, p.removedQty,
+      p.repCount, p.topRep, p.reps[0]?.qty ?? 0]),
+    {
+      rupeeCols: [5],
+      totalRow: ['', `TOTAL (${t.products} products, ${t.orders} orders)`, t.qty, t.orders, '', t.value, t.removedQty, '', '', ''],
+      widths: [{ wch: 6 }, { wch: 40 }, { wch: 11 }, { wch: 9 }, { wch: 8 }, { wch: 14 }, { wch: 14 }, { wch: 10 }, { wch: 22 }, { wch: 11 }]
+    })
+
+  // Sheet 2 — every product broken down by sales rep (product rank order)
+  const pr = []
+  for (const p of report.products) {
+    for (const r of p.reps) {
+      pr.push([p.rank, p.name, r.repName, r.qty, r.orderCount, r.shopCount, r.value,
+        p.qty ? Math.round((r.qty / p.qty) * 1000) / 10 : 0])
+    }
+  }
+  addSheet('Product x Sales Rep', 'TOP SELLING PRODUCTS BY SALES REP',
+    ['PRODUCT RANK', 'PRODUCT', 'SALES REP', 'QTY (PCS)', 'ORDERS', 'SHOPS', 'VALUE (₹)', '% OF PRODUCT QTY'],
+    pr,
+    { rupeeCols: [6], widths: [{ wch: 8 }, { wch: 40 }, { wch: 22 }, { wch: 11 }, { wch: 9 }, { wch: 8 }, { wch: 14 }, { wch: 12 }] })
+
+  // Sheet 3 — sales rep summary
+  addSheet('Sales Rep Summary', 'SALES REP SUMMARY',
+    ['SALES REP', 'ORDERS', 'SHOPS', 'PRODUCTS SOLD', 'QTY (PCS)', 'VALUE (₹)', 'TOP PRODUCT', 'TOP PRODUCT QTY'],
+    report.reps.map((r) => [r.repName, r.orderCount, r.shopCount, r.productCount, r.qty, r.value, r.topProduct, r.topProductQty]),
+    {
+      rupeeCols: [5],
+      totalRow: ['TOTAL', t.orders, '', t.products, t.qty, t.value, '', ''],
+      widths: [{ wch: 22 }, { wch: 9 }, { wch: 8 }, { wch: 10 }, { wch: 11 }, { wch: 14 }, { wch: 40 }, { wch: 12 }]
+    })
+
+  XLSX.writeFile(wb, fileName)
+}
