@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
 import { loadApprovalHistory } from '../utils/cloudSync.js'
+import { formatDateTimeIST } from '../utils/formatDateTime.js'
 
 const fmt = (n) => n != null ? `₹${Number(n).toLocaleString('en-IN')}` : '—'
 const fmtPct = (norm, req) => {
@@ -8,9 +9,13 @@ const fmtPct = (norm, req) => {
   return `${parseFloat(p) > 0 ? '+' : ''}${p}%`
 }
 const REASON_LABELS = { competitor: 'Competitor Price', bulk: 'Bulk Quantity', near_expiry: 'Near Expiry', others: 'Others' }
+// Approved At: the server time the Admin approved (migration 75). Shown only
+// for approved rows; rows approved before it was recorded show '—' — never the
+// request date or the browser-recorded decided_at.
+const approvedAtLabel = (r) => (r.decision === 'approved' ? formatDateTimeIST(r.approved_at) : '—')
 
 function exportToCSV(rows) {
-  const cols = ['Date','Order Date','Sales Rep','Shop','Route','Product','Price Type','Normal Price','Requested Price','Approved Price','Diff','Diff %','Decision','Reason','Competitor','Other Reason','Decided By','Decided At']
+  const cols = ['Date','Order Date','Sales Rep','Shop','Route','Product','Price Type','Normal Price','Requested Price','Approved Price','Diff','Diff %','Decision','Approved At','Reason','Competitor','Other Reason','Decided By','Decided At']
   const lines = [cols.join(',')]
   for (const r of rows) {
     const effectiveApproved = r.approved_price ?? r.requested_price
@@ -21,6 +26,7 @@ function exportToCSV(rows) {
       r.product_name||'', r.price_type||'',
       r.normal_price??'', r.requested_price??'', effectiveApproved??'', diff, pct,
       r.decision||'',
+      approvedAtLabel(r),
       REASON_LABELS[r.reason_type]||r.reason_type||'',
       r.competitor_name||'', r.other_reason||r.rejection_reason||'',
       r.decided_by||'', r.decided_at?.slice(0,19)?.replace('T',' ')||''
@@ -80,7 +86,7 @@ export default function AdminPriceApprovalReportPage() {
         <div className="overflow-x-auto rounded-2xl border border-slate-100 shadow-sm">
           <table className="min-w-full text-[11px] text-left">
             <thead className="bg-slate-50 text-slate-500 uppercase text-[9px] tracking-wide">
-              <tr>{['Date','Rep','Shop','Product','Type','Normal','Requested','Approved','Diff','%','Decision','Reason','Details','By'].map(h=>(
+              <tr>{['Request Date','Rep','Shop','Product','Type','Normal','Requested','Approved','Diff','%','Decision','Approved At','Reason','Details','By'].map(h=>(
                 <th key={h} className="px-3 py-2 font-semibold whitespace-nowrap">{h}</th>
               ))}</tr>
             </thead>
@@ -113,6 +119,7 @@ export default function AdminPriceApprovalReportPage() {
                         {r.decision}
                       </span>
                     </td>
+                    <td className="px-3 py-2 whitespace-nowrap text-slate-600">{approvedAtLabel(r)}</td>
                     <td className="px-3 py-2 text-slate-500">{REASON_LABELS[r.reason_type]||r.reason_type||'—'}</td>
                     <td className="px-3 py-2 text-slate-500 max-w-[150px] truncate">{r.competitor_name||r.other_reason||r.rejection_reason||'—'}</td>
                     <td className="px-3 py-2 text-slate-400 whitespace-nowrap">{r.decided_by||'—'}</td>
